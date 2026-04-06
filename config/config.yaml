@@ -1,0 +1,41 @@
+# CloseCrab-Unified Configuration
+
+server:
+  port: 9001
+  host: "127.0.0.1"
+
+database:
+  path: "data/closecrab.db"
+
+logging:
+  level: "info"
+
+# ============================================
+# Provider: local, anthropic, openai
+# ============================================
+provider: "local"
+
+# ============================================
+# API Configuration (for anthropic/openai mode)
+# ============================================
+api:
+  base_url: ""
+  api_key: ""
+  model: ""
+
+# ============================================
+# Local LLM Configuration
+# ============================================
+llm:
+  model_path: "models/deepseek-moe-16b-chat.Q4_K_M.gguf"
+  max_tokens: 4096
+  temperature: 0.7
+
+# ============================================
+# RAG Configuration
+# ============================================
+rag:
+  embedding_model_path: "models/bge-small-zh/onnx/model_quantized.onnx"
+  embedding_tokenizer_path: "models/bge-small-zh/tokenizer.json"
+  reranker_model_path: "models/bge-reranker-base/onnx/model_uint8.onnx"
+  reranker_tokenizer_path: "models/bge-reranker-base/tokenizer.json"
