@@ -5,9 +5,9 @@
 [![Windows](https://img.shields.io/badge/Platform-Windows%20|%20Linux%20|%20macOS-0078d7.svg)](#platforms)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Tools](https://img.shields.io/badge/Tools-42-orange.svg)](#tools-42)
-[![Binary Size](https://img.shields.io/badge/Binary-~2.9MB-brightgreen.svg)](#)
+[![Binary Size](https://img.shields.io/badge/Binary-~3.0MB-brightgreen.svg)](#)
 
-A local-first AI coding assistant. Single C++17 binary, 42 tools, 50+ commands, runs LLMs on your GPU or connects to cloud APIs.
+A local-first AI coding assistant. Single C++17 binary, 42 tools, 66 commands, runs LLMs on your GPU or connects to cloud APIs.
 
 ---
 
@@ -15,7 +15,7 @@ A local-first AI coding assistant. Single C++17 binary, 42 tools, 50+ commands, 
 
 CloseCrab-Unified is a terminal-based AI coding assistant written in C++17. It runs large language models locally on your hardware via llama.cpp, or connects to Anthropic (Claude), OpenAI, and compatible APIs through a single configuration change. The AI gets the same 42 tools either way: file operations, shell execution, code search, multi-agent collaboration, web access, and more.
 
-The project merges two predecessors: **CloseCrab** (a C++ local inference engine with RAG and MoE streaming) and **JackProAi-claudecode** (a TypeScript CLI with 40+ tools). The result is a single ~2.9 MB executable built from 109 source files.
+The project merges two predecessors: **CloseCrab** (a C++ local inference engine with RAG and MoE streaming) and **JackProAi-claudecode** (a TypeScript CLI with 40+ tools and 95 commands). The result is a single ~3.0 MB executable built from 109 source files, with 42 tools, 66 commands, and 16 service modules.
 
 ### Why use it?
 
@@ -177,6 +177,9 @@ All commands start with `/`. Use `/help` to see the full list at runtime.
 | `/stash [args]` | | Git stash operations (push, pop, list, etc.) |
 | `/pr [args]` | | Create a pull request via `gh` CLI |
 | `/review [ref]` | `/cr` | Code review: git diff piped to LLM analysis |
+| `/pr_comments [N]` | | View comments on a pull request |
+| `/issue [cmd]` | | GitHub issues: list, view N, create |
+| `/autofix-pr [N]` | | Auto-fix issues in a PR (reads comments + checks, applies fixes) |
 
 ### Tools
 
@@ -190,6 +193,7 @@ All commands start with `/`. Use `/help` to see the full list at runtime.
 | `/agents` | | List running and completed sub-agents |
 | `/tasks` | | Show current task list |
 | `/audit` | | Show permission audit log |
+| `/usage` | | Detailed token usage stats (per-model, context size, API/tool time) |
 
 ### Advanced
 
@@ -208,6 +212,16 @@ All commands start with `/`. Use `/help` to see the full list at runtime.
 | `/add-dir <path>` | | Add a directory to the working context |
 | `/files [path]` | | List files in current or specified directory |
 | `/reload` | | Reload configuration (requires restart) |
+| `/rename <name>` | | Rename the current session |
+| `/tag <label>` | | Add a tag to the current session |
+| `/copy` | | Copy last assistant response to clipboard |
+| `/summary` | | Generate a conversation summary via LLM |
+| `/rewind [N]` | | Undo last N conversation turns (default 2) |
+| `/effort [level]` | | Set reasoning effort: low, medium, high |
+| `/output-style [fmt]` | `/style` | Switch output format: markdown, plain, json |
+| `/thinkback` | | Replay the AI's thinking process from last response |
+| `/bughunter [path]` | | Automated bug search mode (systematic codebase scan) |
+| `/passes N <task>` | | Run N automated passes on a task |
 
 ### Input shortcuts
 
@@ -514,7 +528,7 @@ src/
 │   ├── WebTools/         WebSearch, WebFetch (with 15-min cache)
 │   ├── CronTools/        Cron expression parsing and scheduling
 │   └── SystemTools/      Config, LSP, RemoteTrigger, ToolSearch, Brief
-├── commands/             50+ slash commands (5 categories)
+├── commands/             66 slash commands (5 categories)
 │   ├── CommandRegistry.* Registry with alias support and categorized help
 │   ├── SessionCommands.h Session, history, export, compact, context, env
 │   ├── GitCommands.h     Commit, diff, branch, log, push, pull, stash

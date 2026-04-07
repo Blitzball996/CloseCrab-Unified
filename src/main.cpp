@@ -52,9 +52,11 @@
 #include "mcp/MCPClient.h"
 #include "plugins/PluginManager.h"
 #include "core/CostTracker.h"
+#include "core/PolicyLimits.h"
 #include "git/GitManager.h"
 #include "voice/VoiceEngine.h"
 #include "hooks/HookManager.h"
+#include "memory/MemoryExtractor.h"
 #include "ui/TerminalUI.h"
 #include "ui/VimMode.h"
 
@@ -424,6 +426,22 @@ int main(int argc, char* argv[]) {
     cmdRegistry.registerCommand(std::make_unique<VimCommand>());
     cmdRegistry.registerCommand(std::make_unique<VoiceCommand>());
     cmdRegistry.registerCommand(std::make_unique<ThemeCommand>());
+    // Batch 3: high-value gap commands
+    cmdRegistry.registerCommand(std::make_unique<IssueCommand>());
+    cmdRegistry.registerCommand(std::make_unique<RenameCommand>());
+    cmdRegistry.registerCommand(std::make_unique<CopyCommand>());
+    cmdRegistry.registerCommand(std::make_unique<SummaryCommand>());
+    cmdRegistry.registerCommand(std::make_unique<UsageCommand>());
+    cmdRegistry.registerCommand(std::make_unique<EffortCommand>());
+    cmdRegistry.registerCommand(std::make_unique<TagCommand>());
+    cmdRegistry.registerCommand(std::make_unique<RewindCommand>());
+    cmdRegistry.registerCommand(std::make_unique<PrCommentsCommand>());
+    // Batch 4: medium-value gap commands
+    cmdRegistry.registerCommand(std::make_unique<ThinkbackCommand>());
+    cmdRegistry.registerCommand(std::make_unique<OutputStyleCommand>());
+    cmdRegistry.registerCommand(std::make_unique<AutofixPrCommand>());
+    cmdRegistry.registerCommand(std::make_unique<BughunterCommand>());
+    cmdRegistry.registerCommand(std::make_unique<PassesCommand>());
     spdlog::info("Registered {} commands", cmdRegistry.getCommandNames().size());
     toolRegistry.registerTool(std::make_unique<FileReadTool>());
     toolRegistry.registerTool(std::make_unique<FileWriteTool>());
@@ -671,6 +689,16 @@ When the user asks a question, answer directly.)";
     }
 
     // ---- Cleanup ----
+    // Auto-extract memories from conversation
+    if (g_queryEngine && g_queryEngine->getMessages().size() >= 6 && apiClient && !apiClient->isLocal()) {
+        spdlog::info("Extracting memories from conversation...");
+        int extracted = MemoryExtractor::extractAndSave(
+            g_queryEngine->getMessages(), apiClient.get(), cwd);
+        if (extracted > 0) {
+            std::cout << ansi::dim() << "Saved " << extracted << " memories." << ansi::reset() << "\n";
+        }
+    }
+
     // Save session messages for /resume
     if (g_queryEngine && !g_queryEngine->getMessages().empty()) {
         auto msgJson = g_queryEngine->serializeMessages();

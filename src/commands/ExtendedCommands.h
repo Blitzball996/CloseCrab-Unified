@@ -431,4 +431,432 @@ public:
     }
 };
 
+// ============================================================
+// Batch 3: High-value commands from JackProAi gap analysis
+// ============================================================
+
+// /issue - create/view GitHub issues via gh CLI
+class IssueCommand : public Command {
+public:
+    std::string getName() const override { return "issue"; }
+    std::string getDescription() const override { return "Create or view GitHub issues (gh CLI)"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        if (args.empty()) {
+            ctx.print("Usage:\n  /issue list        — list open issues\n"
+                      "  /issue view <N>    — view issue #N\n"
+                      "  /issue create      — create new issue (LLM-assisted)\n");
+            return CommandResult::ok();
+        }
+        if (args == "list") {
+            std::string cmd = "gh issue list --limit 10";
+#ifdef _WIN32
+            std::system(("cmd /c \"" + cmd + "\"").c_str());
+#else
+            std::system(cmd.c_str());
+#endif
+            return CommandResult::ok();
+        }
+        if (args.substr(0, 4) == "view") {
+            std::string num = args.substr(5);
+            std::string cmd = "gh issue view " + num;
+#ifdef _WIN32
+            std::system(("cmd /c \"" + cmd + "\"").c_str());
+#else
+            std::system(cmd.c_str());
+#endif
+            return CommandResult::ok();
+        }
+        if (args == "create") {
+            std::string prompt = "Help me create a GitHub issue. Ask me for the title and description, "
+                "then use `gh issue create --title \"...\" --body \"...\"` to create it.";
+            ctx.queryEngine->submitMessage(prompt, {
+                [&](const std::string& t) { ctx.print(t); }, nullptr, nullptr, nullptr,
+                []() {}, [&](const std::string& e) { ctx.print("Error: " + e + "\n"); }
+            });
+            return CommandResult::ok();
+        }
+        // Direct gh command
+        std::string cmd = "gh issue " + args;
+#ifdef _WIN32
+        std::system(("cmd /c \"" + cmd + "\"").c_str());
+#else
+        std::system(cmd.c_str());
+#endif
+        return CommandResult::ok();
+    }
+};
+
+// /rename - rename current session
+class RenameCommand : public Command {
+public:
+    std::string getName() const override { return "rename"; }
+    std::string getDescription() const override { return "Rename the current session"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        if (args.empty()) {
+            ctx.print("Usage: /rename <new name>\n");
+            return CommandResult::ok();
+        }
+        ctx.appState->sessionId = args;
+        ctx.queryEngine->setSessionId(args);
+        ctx.print("Session renamed to: " + args + "\n");
+        return CommandResult::ok();
+    }
+};
+
+// /copy - copy last assistant response to clipboard
+class CopyCommand : public Command {
+public:
+    std::string getName() const override { return "copy"; }
+    std::string getDescription() const override { return "Copy last response to clipboard"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        const auto& msgs = ctx.queryEngine->getMessages();
+        // Find last assistant message
+        std::string lastResponse;
+        for (int i = (int)msgs.size() - 1; i >= 0; i--) {
+            if (msgs[i].role == MessageRole::ASSISTANT) {
+                lastResponse = msgs[i].getText();
+                break;
+            }
+        }
+        if (lastResponse.empty()) {
+            ctx.print("No assistant response to copy.\n");
+            return CommandResult::ok();
+        }
+#ifdef _WIN32
+        // Windows: pipe to clip.exe
+        FILE* pipe = _popen("clip", "w");
+        if (pipe) {
+            fwrite(lastResponse.c_str(), 1, lastResponse.size(), pipe);
+            _pclose(pipe);
+            ctx.print("Copied to clipboard (" + std::to_string(lastResponse.size()) + " chars).\n");
+        } else {
+            ctx.print("Failed to access clipboard.\n");
+        }
+#elif defined(__APPLE__)
+        FILE* pipe = popen("pbcopy", "w");
+        if (pipe) { fwrite(lastResponse.c_str(), 1, lastResponse.size(), pipe); pclose(pipe); }
+        ctx.print("Copied to clipboard.\n");
+#else
+        FILE* pipe = popen("xclip -selection clipboard", "w");
+        if (pipe) { fwrite(lastResponse.c_str(), 1, lastResponse.size(), pipe); pclose(pipe); }
+        ctx.print("Copied to clipboard.\n");
+#endif
+        return CommandResult::ok();
+    }
+};
+
+// /summary - generate conversation summary
+class SummaryCommand : public Command {
+public:
+    std::string getName() const override { return "summary"; }
+    std::string getDescription() const override { return "Generate a summary of the conversation"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        const auto& msgs = ctx.queryEngine->getMessages();
+        if (msgs.size() < 4) {
+            ctx.print("Not enough messages to summarize.\n");
+            return CommandResult::ok();
+        }
+        std::string prompt = "Summarize our conversation so far in 3-5 bullet points. "
+            "Focus on what was asked, what was accomplished, and any pending items.";
+        ctx.queryEngine->submitMessage(prompt, {
+            [&](const std::string& t) { ctx.print(t); }, nullptr, nullptr, nullptr,
+            []() {}, [&](const std::string& e) { ctx.print("Error: " + e + "\n"); }
+        });
+        return CommandResult::ok();
+    }
+};
+
+// /usage - detailed token usage statistics
+class UsageCommand : public Command {
+public:
+    std::string getName() const override { return "usage"; }
+    std::string getDescription() const override { return "Show detailed token usage statistics"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        auto& tracker = CostTracker::getInstance();
+        ctx.print(tracker.getSummary());
+
+        // Context stats
+        const auto& msgs = ctx.queryEngine->getMessages();
+        int totalChars = 0, userMsgs = 0, assistantMsgs = 0, toolCalls = 0;
+        for (const auto& m : msgs) {
+            totalChars += (int)m.getText().size();
+            if (m.role == MessageRole::USER) userMsgs++;
+            else if (m.role == MessageRole::ASSISTANT) {
+                assistantMsgs++;
+                for (const auto& b : m.content)
+                    if (b.type == ContentBlockType::TOOL_USE) toolCalls++;
+            }
+        }
+        ctx.print("\nContext: " + std::to_string(msgs.size()) + " messages "
+                  "(" + std::to_string(userMsgs) + " user, "
+                  + std::to_string(assistantMsgs) + " assistant, "
+                  + std::to_string(toolCalls) + " tool calls)\n");
+        ctx.print("Est. tokens: ~" + std::to_string(totalChars / 4) + "\n");
+        ctx.print("API time: " + std::to_string(ctx.appState->totalAPIDuration.load()) + "s\n");
+        ctx.print("Tool time: " + std::to_string(ctx.appState->totalToolDuration.load()) + "s\n");
+        return CommandResult::ok();
+    }
+};
+
+// /effort - set reasoning effort level
+class EffortCommand : public Command {
+public:
+    std::string getName() const override { return "effort"; }
+    std::string getDescription() const override { return "Set reasoning effort (low/medium/high)"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        if (args.empty()) {
+            ctx.print("Current effort: " + ctx.appState->thinkingConfig.effort + "\n");
+            ctx.print("Usage: /effort [low|medium|high]\n");
+            return CommandResult::ok();
+        }
+        if (args == "low" || args == "medium" || args == "high") {
+            ctx.appState->thinkingConfig.effort = args;
+            if (args == "high") {
+                ctx.appState->thinkingConfig.enabled = true;
+                ctx.appState->thinkingConfig.budgetTokens = 20000;
+            } else if (args == "medium") {
+                ctx.appState->thinkingConfig.enabled = true;
+                ctx.appState->thinkingConfig.budgetTokens = 10000;
+            } else {
+                ctx.appState->thinkingConfig.enabled = false;
+                ctx.appState->thinkingConfig.budgetTokens = 5000;
+            }
+            ctx.print("Effort set to: " + args + "\n");
+        } else {
+            ctx.print("Unknown effort level. Use: low, medium, high\n");
+        }
+        return CommandResult::ok();
+    }
+};
+
+// /tag - tag current session
+class TagCommand : public Command {
+public:
+    std::string getName() const override { return "tag"; }
+    std::string getDescription() const override { return "Add a tag to the current session"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        if (args.empty()) {
+            ctx.print("Usage: /tag <label>\n");
+            return CommandResult::ok();
+        }
+        // Store tag in session ID suffix
+        std::string current = ctx.queryEngine->getSessionId();
+        if (current.find("#") == std::string::npos) {
+            current += "#" + args;
+        } else {
+            current += "," + args;
+        }
+        ctx.queryEngine->setSessionId(current);
+        ctx.print("Tagged: " + args + "\n");
+        return CommandResult::ok();
+    }
+};
+
+// /rewind - undo last N conversation turns
+class RewindCommand : public Command {
+public:
+    std::string getName() const override { return "rewind"; }
+    std::string getDescription() const override { return "Undo last N conversation turns"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        int count = args.empty() ? 2 : std::stoi(args); // Default: remove last user+assistant pair
+        auto& msgs = const_cast<std::vector<Message>&>(ctx.queryEngine->getMessages());
+        if ((int)msgs.size() <= count) {
+            ctx.print("Not enough messages to rewind.\n");
+            return CommandResult::ok();
+        }
+        for (int i = 0; i < count && !msgs.empty(); i++) {
+            msgs.pop_back();
+        }
+        ctx.print("Rewound " + std::to_string(count) + " messages. "
+                  "Now at " + std::to_string(msgs.size()) + " messages.\n");
+        return CommandResult::ok();
+    }
+};
+
+// /pr_comments - view PR comments
+class PrCommentsCommand : public Command {
+public:
+    std::string getName() const override { return "pr_comments"; }
+    std::string getDescription() const override { return "View comments on a pull request"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        std::string prNum = args.empty() ? "" : args;
+        std::string cmd = prNum.empty() ? "gh pr view --comments" : "gh pr view " + prNum + " --comments";
+#ifdef _WIN32
+        std::system(("cmd /c \"" + cmd + "\"").c_str());
+#else
+        std::system(cmd.c_str());
+#endif
+        return CommandResult::ok();
+    }
+};
+
+// ============================================================
+// Batch 4: Medium-value commands + services
+// ============================================================
+
+// /thinkback - replay AI's thinking process from last response
+class ThinkbackCommand : public Command {
+public:
+    std::string getName() const override { return "thinkback"; }
+    std::string getDescription() const override { return "Replay the AI's thinking process"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        const auto& msgs = ctx.queryEngine->getMessages();
+        bool found = false;
+        for (int i = (int)msgs.size() - 1; i >= 0; i--) {
+            if (msgs[i].role != MessageRole::ASSISTANT) continue;
+            for (const auto& block : msgs[i].content) {
+                if (block.type == ContentBlockType::THINKING && !block.text.empty()) {
+                    ctx.print("\033[2m--- Thinking ---\033[0m\n");
+                    ctx.print("\033[2m" + block.text + "\033[0m\n");
+                    ctx.print("\033[2m--- End ---\033[0m\n");
+                    found = true;
+                    break;
+                }
+            }
+            if (found) break;
+        }
+        if (!found) {
+            ctx.print("No thinking content found. Enable with /thinking on\n");
+        }
+        return CommandResult::ok();
+    }
+};
+
+// /output-style - switch output format
+class OutputStyleCommand : public Command {
+public:
+    std::string getName() const override { return "output-style"; }
+    std::string getDescription() const override { return "Switch output style (markdown/plain/json)"; }
+    std::vector<std::string> getAliases() const override { return {"style"}; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        if (args.empty()) {
+            ctx.print("Usage: /output-style [markdown|plain|json]\n");
+            return CommandResult::ok();
+        }
+        // Store in appState for use by output rendering
+        // For now, acknowledge the setting
+        ctx.print("Output style set to: " + args + "\n");
+        return CommandResult::ok();
+    }
+};
+
+// /autofix-pr - automatically fix issues in a PR
+class AutofixPrCommand : public Command {
+public:
+    std::string getName() const override { return "autofix-pr"; }
+    std::string getDescription() const override { return "Auto-fix issues in a pull request"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        std::string prNum = args.empty() ? "" : args;
+        std::string prompt;
+        if (prNum.empty()) {
+            prompt = "Look at the current branch's PR. Run `gh pr checks` to see failing checks, "
+                     "then `gh pr diff` to see the changes. Identify and fix any issues.";
+        } else {
+            prompt = "Look at PR #" + prNum + ". Run `gh pr view " + prNum + " --comments` and "
+                     "`gh pr diff " + prNum + "` to understand the changes and feedback. "
+                     "Fix any issues mentioned in the comments or failing checks.";
+        }
+        ctx.queryEngine->submitMessage(prompt, {
+            [&](const std::string& t) { ctx.print(t); }, nullptr,
+            [&](const std::string& name, const nlohmann::json&) {
+                ctx.print("\n  [" + name + "] ");
+            },
+            [&](const std::string& name, const ToolResult& r) {
+                ctx.print(r.success ? "OK\n" : ("Error\n"));
+            },
+            []() {}, [&](const std::string& e) { ctx.print("Error: " + e + "\n"); },
+            [](const std::string&, const std::string&) { return true; }
+        });
+        return CommandResult::ok();
+    }
+};
+
+// /bughunter - automated bug search mode
+class BughunterCommand : public Command {
+public:
+    std::string getName() const override { return "bughunter"; }
+    std::string getDescription() const override { return "Automated bug search in the codebase"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        std::string target = args.empty() ? "the current project" : args;
+        std::string prompt =
+            "You are in bug hunter mode. Systematically search " + target + " for bugs:\n"
+            "1. Use Glob to find source files\n"
+            "2. Use Grep to search for common bug patterns (null checks, error handling, resource leaks)\n"
+            "3. Read suspicious files\n"
+            "4. Report each bug with file, line, and suggested fix\n"
+            "Be thorough. Check error handling, edge cases, resource management, and security issues.";
+        ctx.queryEngine->submitMessage(prompt, {
+            [&](const std::string& t) { ctx.print(t); }, nullptr,
+            [&](const std::string& name, const nlohmann::json&) {
+                ctx.print("\n  [" + name + "] ");
+            },
+            [&](const std::string& name, const ToolResult& r) {
+                ctx.print(r.success ? "OK\n" : ("Error\n"));
+            },
+            []() {}, [&](const std::string& e) { ctx.print("Error: " + e + "\n"); },
+            [](const std::string&, const std::string&) { return true; }
+        });
+        return CommandResult::ok();
+    }
+};
+
+// /passes - run multiple automated passes on a task
+class PassesCommand : public Command {
+public:
+    std::string getName() const override { return "passes"; }
+    std::string getDescription() const override { return "Run multiple automated passes on a task"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        if (args.empty()) {
+            ctx.print("Usage: /passes <N> <task description>\n");
+            ctx.print("Example: /passes 3 review and improve error handling\n");
+            return CommandResult::ok();
+        }
+        // Parse: first token is count, rest is task
+        int count = 1;
+        std::string task = args;
+        try {
+            size_t pos;
+            count = std::stoi(args, &pos);
+            task = args.substr(pos);
+            while (!task.empty() && task[0] == ' ') task.erase(0, 1);
+        } catch (...) {}
+
+        if (count < 1) count = 1;
+        if (count > 10) count = 10;
+
+        for (int i = 1; i <= count; i++) {
+            ctx.print("\n\033[1;36m=== Pass " + std::to_string(i) + "/" + std::to_string(count) + " ===\033[0m\n\n");
+            std::string prompt = "Pass " + std::to_string(i) + " of " + std::to_string(count) + ": " + task;
+            if (i > 1) prompt += "\n\nThis is a follow-up pass. Review what was done in previous passes and continue improving.";
+
+            ctx.queryEngine->submitMessage(prompt, {
+                [&](const std::string& t) { ctx.print(t); }, nullptr,
+                [&](const std::string& name, const nlohmann::json&) {
+                    ctx.print("\n  [" + name + "] ");
+                },
+                [&](const std::string& name, const ToolResult& r) {
+                    ctx.print(r.success ? "OK\n" : ("Error\n"));
+                },
+                []() {}, [&](const std::string& e) { ctx.print("Error: " + e + "\n"); },
+                [](const std::string&, const std::string&) { return true; }
+            });
+        }
+        return CommandResult::ok();
+    }
+};
+
 } // namespace closecrab

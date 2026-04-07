@@ -1,6 +1,6 @@
 # CloseCrab-Unified — 本地 AI 编程助手
 
-一个用 C++17 编写的本地优先 AI 编程助手。可以在你自己的 GPU 上运行大语言模型，也可以连接 Claude、OpenAI 等远程 API — 只需改一行配置。AI 拥有 42 个工具、50+ 个命令、多智能体协作、记忆系统、语音输出，全部受权限系统保护。单文件可执行程序，约 2.9MB。
+一个用 C++17 编写的本地优先 AI 编程助手。可以在你自己的 GPU 上运行大语言模型，也可以连接 Claude、OpenAI 等远程 API — 只需改一行配置。AI 拥有 42 个工具、66 个命令、多智能体协作、记忆系统、语音输出，全部受权限系统保护。单文件可执行程序，约 3.0MB。
 
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
 [![CUDA](https://img.shields.io/badge/CUDA-12.x-green.svg)](https://developer.nvidia.com/cuda-toolkit)
@@ -13,7 +13,7 @@
 
 大多数 AI 编程工具需要联网。CloseCrab-Unified 给你选择权：在本地 GPU 上运行模型（零网络依赖），或者连接 Claude/OpenAI/任何兼容 API。无论哪种方式，AI 都能使用同一套 42 个工具。
 
-它融合了两个项目：**CloseCrab**（C++ 本地推理引擎，带 RAG 和 MoE 流式加载）和 **JackProAi-claudecode**（TypeScript CLI，40+ 工具和 100+ 命令）。最终产出一个 C++ 单文件可执行程序，109 个源文件编译为 ~2.9MB。
+它融合了两个项目：**CloseCrab**（C++ 本地推理引擎，带 RAG 和 MoE 流式加载）和 **JackProAi-claudecode**（TypeScript CLI，40+ 工具和 95 个命令）。最终产出一个 C++ 单文件可执行程序，109 个源文件编译为 ~3.0MB，包含 42 个工具、66 个命令、16 个服务模块。
 
 ### 为什么用它？
 
@@ -99,7 +99,7 @@ closecrab-unified.exe --provider anthropic --api-key sk-xxx --api-url https://ap
 
 ---
 
-## 命令参考 (50+)
+## 命令参考 (66 个)
 
 ### 会话
 
@@ -110,10 +110,15 @@ closecrab-unified.exe --provider anthropic --api-key sk-xxx --api-url https://ap
 | `/clear` | 清空对话历史 |
 | `/new` | 开始新会话 |
 | `/resume` | 恢复上次保存的会话 |
+| `/rename <名称>` | 重命名当前会话 |
+| `/tag <标签>` | 给会话打标签 |
 | `/history [N]` | 显示最近 N 条对话 |
 | `/export [文件]` | 导出对话到文件 |
 | `/share` | 导出对话为可分享的 Markdown |
+| `/copy` | 复制最后回复到剪贴板 |
 | `/compact` | 压缩对话历史（节省上下文） |
+| `/rewind [N]` | 撤销最后 N 轮对话（默认 2） |
+| `/summary` | LLM 生成对话摘要 |
 | `/context` | 显示上下文信息 |
 | `/status` | 会话状态（表格显示） |
 | `/env` | 环境变量信息 |
@@ -127,9 +132,11 @@ closecrab-unified.exe --provider anthropic --api-key sk-xxx --api-url https://ap
 | `/provider` | 查看当前提供商 |
 | `/api` | API 配置帮助 |
 | `/cost` | 费用统计（按模型分列，含 token 估算） |
+| `/usage` | 详细 token 使用统计（按模型 + 上下文 + 耗时） |
 | `/fast` | 切换快速模式 |
 | `/brief` | 切换简洁输出模式 |
 | `/thinking [on/off/N]` | 切换扩展思考模式 |
+| `/effort [low/medium/high]` | 设置推理努力程度 |
 | `/permissions [模式]` | 权限模式：default/auto/bypass |
 
 ### Git
@@ -145,6 +152,9 @@ closecrab-unified.exe --provider anthropic --api-key sk-xxx --api-url https://ap
 | `/stash` | Git 暂存 |
 | `/review` | 代码审查（git diff + LLM 分析） |
 | `/pr [参数]` | 创建 Pull Request（通过 gh CLI） |
+| `/pr_comments [N]` | 查看 PR 评论 |
+| `/issue [命令]` | GitHub Issue 管理（list/view/create） |
+| `/autofix-pr [N]` | 自动修复 PR 问题（读评论+检查→修复） |
 
 ### 工具管理
 
@@ -159,6 +169,7 @@ closecrab-unified.exe --provider anthropic --api-key sk-xxx --api-url https://ap
 | `/agents` | 查看运行中的 Agent |
 | `/mcp` | MCP 服务器状态 |
 | `/audit` | 权限审计日志 |
+| `/usage` | 详细 token 使用统计 |
 
 ### 高级
 
@@ -173,6 +184,16 @@ closecrab-unified.exe --provider anthropic --api-key sk-xxx --api-url https://ap
 | `/vim` | 切换 Vim 键绑定模式 |
 | `/voice [on/off]` | 切换语音输出（TTS） |
 | `/theme [dark/light]` | 切换颜色主题 |
+| `/effort [low/medium/high]` | 设置推理努力程度 |
+| `/output-style [格式]` | 切换输出风格（markdown/plain/json） |
+| `/thinkback` | 回放 AI 的思考过程 |
+| `/bughunter [路径]` | 自动 bug 搜索模式 |
+| `/passes N <任务>` | 多轮自动执行任务 |
+| `/rename <名称>` | 重命名会话 |
+| `/tag <标签>` | 给会话打标签 |
+| `/copy` | 复制最后回复到剪贴板 |
+| `/rewind [N]` | 撤销最后 N 轮对话 |
+| `/summary` | 生成对话摘要 |
 | `/add-dir [路径]` | 添加目录到上下文 |
 | `/files [路径]` | 列出目录文件 |
 | `/reload` | 重新加载配置 |
@@ -315,7 +336,7 @@ src/
 ├── core/                 # QueryEngine, Message, AppState, HistoryCompactor, FileStateCache, CostTracker
 ├── api/                  # LocalLLM, Anthropic, OpenAI API 客户端, APIError, StreamParser
 ├── tools/                # 42 个工具实现（每个工具一个目录）
-├── commands/             # 50+ 斜杠命令（Git/Session/Advanced/Extended）
+├── commands/             # 66 个斜杠命令（Git/Session/Advanced/Extended）
 ├── agents/               # 多 Agent 系统（AgentManager, 5 种类型）
 ├── coordinator/          # 多 Agent 协调器（任务分解 + 并行执行）
 ├── mcp/                  # MCP 协议客户端（JSON-RPC 2.0 stdio）
@@ -333,8 +354,21 @@ src/
 ├── lsp/                  # LSP 客户端
 ├── bridge/               # 远程执行（HTTP + 重连）
 ├── voice/                # 语音引擎（系统 TTS）
-└── utils/                # 日志, 字符串, UUID, ProcessRunner
+└── utils/                # 日志, 字符串(UTF-8), UUID, ProcessRunner
 ```
+
+### 新增服务模块
+
+| 模块 | 文件 | 功能 |
+|------|------|------|
+| MemoryExtractor | memory/MemoryExtractor.h | 退出时自动从对话提取记忆 |
+| PolicyLimits | core/PolicyLimits.h | 策略限制引擎（turn/cost/token 上限） |
+| FileStateCache | core/FileStateCache.h | 基于 mtime 的文件读取缓存 |
+| HistoryCompactor | core/HistoryCompactor.h | 自动历史压缩（75% 阈值） |
+| HookManager | hooks/HookManager.h | PreToolUse/PostToolUse 事件钩子 |
+| ProcessSandbox | security/ProcessSandbox.h | OS 级进程资源限制 |
+| WebCache | tools/WebTools/WebTools.h | 15 分钟 TTL URL 缓存 |
+| CronScheduler | tools/CronTools/CronTools.h | 5 字段 cron 表达式解析 + 调度 |
 
 ---
 
