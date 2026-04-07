@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../Tool.h"
+#include "../../core/FileStateCache.h"
 #include <fstream>
 #include <filesystem>
 
@@ -49,6 +50,7 @@ public:
             return ToolResult::fail("Failed to write file: " + path);
         }
 
+        FileStateCache::getInstance().invalidate(path);
         return ToolResult::ok("File written: " + path + " (" + std::to_string(content.size()) + " bytes)");
     }
 

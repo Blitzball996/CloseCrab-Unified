@@ -7,6 +7,7 @@
 #include <mutex>
 #include <cstdint>
 #include "../permissions/PermissionEngine.h"
+#include "CostTracker.h"
 
 namespace closecrab {
 
@@ -59,6 +60,7 @@ struct AppState {
     PermissionMode permissionMode = PermissionMode::DEFAULT;
     bool planMode = false;
     bool fastMode = false;
+    bool vimMode = false;
     bool voiceEnabled = false;
     ThinkingConfig thinkingConfig;
 
@@ -83,6 +85,10 @@ struct AppState {
         u.outputTokens += outputTokens;
         u.cacheReadTokens += cacheRead;
         u.cacheWriteTokens += cacheWrite;
+
+        // Also track in CostTracker for pricing calculation
+        CostTracker::getInstance().track(model, inputTokens, outputTokens, cacheRead, cacheWrite);
+        totalCostUSD.store(CostTracker::getInstance().getTotalCost());
     }
 
     double getTotalCost() const {

@@ -20,11 +20,14 @@ public:
     std::vector<std::string> getToolNames() const;
     bool hasTool(const std::string& name) const;
 
-    // Generate tool definitions for API (Anthropic format)
+    // Generate tool definitions for API (Anthropic format) — cached
     nlohmann::json toApiToolDefinitions() const;
 
     // Generate tool list for system prompt
     std::string toSystemPromptDescription() const;
+
+    // Invalidate cached tool definitions (call after registering new tools)
+    void invalidateCache() { cacheValid_ = false; }
 
 private:
     ToolRegistry() = default;
@@ -34,6 +37,10 @@ private:
     mutable std::mutex mutex_;
     std::map<std::string, std::unique_ptr<Tool>> tools_;
     std::map<std::string, std::string> aliases_;  // alias -> canonical name
+
+    // Cache for API tool definitions
+    mutable nlohmann::json cachedDefs_;
+    mutable bool cacheValid_ = false;
 };
 
 } // namespace closecrab

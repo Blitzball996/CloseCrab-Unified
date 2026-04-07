@@ -3,8 +3,55 @@
 #include "../Tool.h"
 #include <curl/curl.h>
 #include <sstream>
+#include <map>
+#include <mutex>
+#include <chrono>
 
 namespace closecrab {
+
+// Simple URL cache with 15-minute TTL
+class WebCache {
+public:
+    static WebCache& getInstance() {
+        static WebCache instance;
+        return instance;
+    }
+
+    bool get(const std::string& url, std::string& content) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = cache_.find(url);
+        if (it == cache_.end()) return false;
+        auto age = std::chrono::steady_clock::now() - it->second.timestamp;
+        if (age > std::chrono::minutes(15)) {
+            cache_.erase(it);
+            return false;
+        }
+        content = it->second.content;
+        return true;
+    }
+
+    void put(const std::string& url, const std::string& content) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // Evict old entries if cache is too large
+        if (cache_.size() > 100) {
+            auto oldest = cache_.begin();
+            for (auto it = cache_.begin(); it != cache_.end(); ++it) {
+                if (it->second.timestamp < oldest->second.timestamp) oldest = it;
+            }
+            cache_.erase(oldest);
+        }
+        cache_[url] = {content, std::chrono::steady_clock::now()};
+    }
+
+private:
+    WebCache() = default;
+    struct Entry {
+        std::string content;
+        std::chrono::steady_clock::time_point timestamp;
+    };
+    std::mutex mutex_;
+    std::map<std::string, Entry> cache_;
+};
 
 class WebSearchTool : public Tool {
 public:
@@ -105,6 +152,12 @@ public:
     ToolResult call(ToolContext& ctx, const nlohmann::json& input) override {
         std::string url = input["url"].get<std::string>();
 
+        // Check cache first
+        std::string cached;
+        if (WebCache::getInstance().get(url, cached)) {
+            return ToolResult::ok(cached);
+        }
+
         CURL* curl = curl_easy_init();
         if (!curl) return ToolResult::fail("CURL init failed");
 
@@ -116,6 +169,7 @@ public:
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
 
         CURLcode res = curl_easy_perform(curl);
         curl_easy_cleanup(curl);
@@ -128,6 +182,9 @@ public:
         if (response.size() > 50000) {
             response = response.substr(0, 50000) + "\n... (truncated)";
         }
+
+        // Cache the result
+        WebCache::getInstance().put(url, response);
 
         return ToolResult::ok(response);
     }

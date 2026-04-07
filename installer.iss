@@ -1,6 +1,6 @@
 ; CloseCrab-Unified Installer
 #define MyAppName "CloseCrab-Unified"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.2.0"
 #define MyAppPublisher "CloseCrab"
 #define MyAppExeName "closecrab-unified.exe"
 
@@ -22,12 +22,14 @@ SetupIconFile=icons\closecrab.ico
 WizardSizePercent=130,120
 
 [Files]
-Source: "build\Release\closecrab-unified.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "build\Release\*.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "out\build\x64-release\closecrab-unified.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "out\build\x64-release\*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "config\config.yaml"; DestDir: "{app}\config"; Flags: ignoreversion
 Source: "download_model.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "run.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "icons\closecrab.ico"; DestDir: "{app}\icons"; Flags: ignoreversion
+Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\run.bat"; IconFilename: "{app}\icons\closecrab.ico"; IconIndex: 0
@@ -98,13 +100,15 @@ begin
     '' + #13#10 +
     'ANTHROPIC API' + #13#10 +
     'Connects to Claude API or a compatible proxy/relay.' + #13#10 +
-    'Uses /v1/messages endpoint with SSE streaming.' + #13#10 +
+    'Full tool_use support, auto-retry on errors.' + #13#10 +
     'Requires: API key and internet connection.' + #13#10 +
     '' + #13#10 +
     'OPENAI COMPATIBLE' + #13#10 +
     'Works with any OpenAI-format API: OpenAI, LM Studio,' + #13#10 +
     'SiliconFlow, Ollama, vLLM, and other providers.' + #13#10 +
-    'Uses /v1/chat/completions endpoint.';
+    '' + #13#10 +
+    'All modes include: 42 tools, 50+ commands, multi-agent,' + #13#10 +
+    'memory system, hooks, vim mode, voice output, and more.';
 
   // ==========================================
   // PAGE 2: Local Model Selection
@@ -129,7 +133,7 @@ begin
   ModelCombo.Items.Add('Qwen2.5-7B   (Recommended, 4.5GB, needs 8GB VRAM)');
   ModelCombo.Items.Add('Qwen2.5-14B  (Stronger, 8.5GB, needs 12GB VRAM)');
   ModelCombo.Items.Add('Qwen2.5-3B   (Light, 2GB, needs 6GB VRAM)');
-  ModelCombo.Items.Add('Qwen2.5-1.5B (Fast, 1.2GB, needs 4GB VRAM)');
+  ModelCombo.Items.Add('DeepSeek-Coder-V2-Lite  (Code-focused, 9GB, needs 12GB VRAM)');
   ModelCombo.Items.Add('Skip  (I already have a model)');
   ModelCombo.ItemIndex := 0;
 
@@ -256,7 +260,7 @@ begin
     0: Result := 'qwen2.5-7b-instruct-q4_k_m.gguf';
     1: Result := 'qwen2.5-14b-instruct-q4_k_m.gguf';
     2: Result := 'qwen2.5-3b-instruct-q4_k_m.gguf';
-    3: Result := 'qwen2.5-1.5b-instruct-q4_k_m.gguf';
+    3: Result := 'deepseek-coder-v2-lite-instruct-q4_k_m.gguf';
   else
     Result := '';
   end;
@@ -278,7 +282,7 @@ begin
     0: Result := 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf';
     1: Result := 'https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-GGUF/resolve/main/qwen2.5-14b-instruct-q4_k_m.gguf';
     2: Result := 'https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf';
-    3: Result := 'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf';
+    3: Result := 'https://huggingface.co/TheBloke/deepseek-coder-v2-lite-instruct-GGUF/resolve/main/deepseek-coder-v2-lite-instruct-q4_k_m.gguf';
   else
     Result := '';
   end;
@@ -353,7 +357,7 @@ begin
     ConfigPath := ExpandConstant('{app}\config\config.yaml');
     UpdateConfigFile(ConfigPath);
 
-    // Download model if local mode and a model was selected
+    // Download model if local mode and a model was selected (not "Skip")
     if (ModeCombo.ItemIndex = 0) and (ModelCombo.ItemIndex < 4) then
     begin
       ModelDir := ExpandConstant('{app}\models');
@@ -377,3 +381,8 @@ Type: dirifempty; Name: "{app}\models"
 Type: dirifempty; Name: "{app}\data"
 Type: dirifempty; Name: "{app}\config"
 Type: dirifempty; Name: "{app}\icons"
+Type: dirifempty; Name: "{app}\docs"
+Type: dirifempty; Name: "{app}\.claude\memory"
+Type: dirifempty; Name: "{app}\.claude\skills"
+Type: dirifempty; Name: "{app}\.claude\plugins"
+Type: dirifempty; Name: "{app}\.claude"

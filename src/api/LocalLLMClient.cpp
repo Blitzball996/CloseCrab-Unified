@@ -52,65 +52,116 @@ std::string LocalLLMClient::buildPrompt(const std::vector<Message>& messages,
 
 bool LocalLLMClient::parseToolCall(const std::string& text, std::string& toolName,
                                     std::string& toolUseId, nlohmann::json& toolInput) const {
-    // Try JSON tool_use format first
+    // Strategy 1: Try JSON tool_use format (common in fine-tuned models)
+    // Look for {"tool_use": {"name": "...", "input": {...}}}
     try {
-        auto j = nlohmann::json::parse(text);
-        if (j.contains("tool_use") && j["tool_use"].contains("name")) {
-            toolName = j["tool_use"]["name"].get<std::string>();
-            toolUseId = generateUUID();
-            toolInput = j["tool_use"].value("input", nlohmann::json::object());
-            return true;
+        // Find JSON object in text
+        auto start = text.find('{');
+        auto end = text.rfind('}');
+        if (start != std::string::npos && end != std::string::npos && end > start) {
+            std::string jsonStr = text.substr(start, end - start + 1);
+            auto j = nlohmann::json::parse(jsonStr);
+
+            if (j.contains("tool_use") && j["tool_use"].contains("name")) {
+                toolName = j["tool_use"]["name"].get<std::string>();
+                toolUseId = generateUUID();
+                toolInput = j["tool_use"].value("input", nlohmann::json::object());
+                return true;
+            }
+            // Alternative format: {"name": "...", "input": {...}}
+            if (j.contains("name") && j.contains("input")) {
+                toolName = j["name"].get<std::string>();
+                toolUseId = generateUUID();
+                toolInput = j["input"];
+                return true;
+            }
+            // Alternative: {"tool": "...", "arguments": {...}}
+            if (j.contains("tool") && j.contains("arguments")) {
+                toolName = j["tool"].get<std::string>();
+                toolUseId = generateUUID();
+                toolInput = j["arguments"];
+                return true;
+            }
         }
     } catch (...) {}
 
-    // Try SKILL: format (CloseCrab original)
-    // Match across multiple lines with [\s\S]
-    std::regex skillRegex(R"(SKILL:\s*(\w+)\s*\nPARAMS:\s*([\s\S]*))");
+    // Strategy 2: SKILL: format (CloseCrab native)
+    std::regex skillRegex(R"(SKILL:\s*(\w+)\s*\n)");
     std::smatch match;
     if (std::regex_search(text, match, skillRegex)) {
         toolName = match[1].str();
         toolUseId = generateUUID();
 
-        // Parse PARAMS: key=value, key=value
-        // Strategy: split on ", key=" boundaries (not just commas)
-        // to handle values that contain commas
-        std::string paramsStr = match[2].str();
-        // Trim trailing whitespace/newlines
-        while (!paramsStr.empty() && (paramsStr.back() == '\n' || paramsStr.back() == '\r' || paramsStr.back() == ' '))
-            paramsStr.pop_back();
+        // Find PARAMS: section
+        std::string afterSkill = text.substr(match.position() + match.length());
 
-        toolInput = nlohmann::json::object();
+        // Try to parse PARAMS as JSON first
+        auto paramsPos = afterSkill.find("PARAMS:");
+        if (paramsPos != std::string::npos) {
+            std::string paramsStr = afterSkill.substr(paramsPos + 7);
+            // Trim leading whitespace
+            while (!paramsStr.empty() && (paramsStr.front() == ' ' || paramsStr.front() == '\n'))
+                paramsStr.erase(paramsStr.begin());
 
-        // Find all "key=" positions
-        std::regex keyRegex(R"((\w+)\s*=)");
-        std::vector<std::pair<std::string, size_t>> keys; // key name, position after '='
-        auto kbegin = std::sregex_iterator(paramsStr.begin(), paramsStr.end(), keyRegex);
-        auto kend = std::sregex_iterator();
-        for (auto it = kbegin; it != kend; ++it) {
-            size_t valStart = it->position() + it->length();
-            keys.push_back({(*it)[1].str(), valStart});
-        }
+            // Try JSON parse
+            try {
+                auto jsonStart = paramsStr.find('{');
+                if (jsonStart != std::string::npos) {
+                    auto jsonEnd = paramsStr.rfind('}');
+                    if (jsonEnd != std::string::npos) {
+                        toolInput = nlohmann::json::parse(paramsStr.substr(jsonStart, jsonEnd - jsonStart + 1));
+                        return true;
+                    }
+                }
+            } catch (...) {}
 
-        // Extract values: each value runs from after '=' to the start of next ", key="
-        for (size_t i = 0; i < keys.size(); i++) {
-            std::string key = keys[i].first;
-            size_t valStart = keys[i].second;
-            size_t valEnd;
-            if (i + 1 < keys.size()) {
-                // Find the ", " before next key
-                valEnd = paramsStr.rfind(',', keys[i + 1].second);
-                if (valEnd == std::string::npos || valEnd < valStart) valEnd = keys[i + 1].second;
-            } else {
-                valEnd = paramsStr.size();
+            // Fallback: key=value parsing
+            toolInput = nlohmann::json::object();
+            std::regex kvRegex(R"((\w+)\s*=\s*(.+))");
+            std::istringstream iss(paramsStr);
+            std::string line;
+            while (std::getline(iss, line)) {
+                std::smatch kvMatch;
+                if (std::regex_search(line, kvMatch, kvRegex)) {
+                    std::string key = kvMatch[1].str();
+                    std::string val = kvMatch[2].str();
+                    while (!val.empty() && (val.back() == '\n' || val.back() == '\r' || val.back() == ','))
+                        val.pop_back();
+                    // Try to parse value as JSON (for nested objects)
+                    try {
+                        toolInput[key] = nlohmann::json::parse(val);
+                    } catch (...) {
+                        toolInput[key] = val;
+                    }
+                }
             }
-            std::string val = paramsStr.substr(valStart, valEnd - valStart);
-            // Trim
-            while (!val.empty() && (val.front() == ' ' || val.front() == ',')) val.erase(val.begin());
-            while (!val.empty() && (val.back() == ' ' || val.back() == ',' || val.back() == '\n' || val.back() == '\r')) val.pop_back();
-            toolInput[key] = val;
+            return true;
         }
 
+        // No PARAMS section — tool with no arguments
+        toolInput = nlohmann::json::object();
         return true;
+    }
+
+    // Strategy 3: Function call format (some models use this)
+    // e.g., Read(file_path="/path/to/file")
+    std::regex funcRegex(R"((\w+)\(([^)]*)\))");
+    if (std::regex_search(text, match, funcRegex)) {
+        std::string funcName = match[1].str();
+        // Only match known tool-like names (capitalized)
+        if (!funcName.empty() && std::isupper(funcName[0])) {
+            toolName = funcName;
+            toolUseId = generateUUID();
+            toolInput = nlohmann::json::object();
+
+            std::string argsStr = match[2].str();
+            std::regex argRegex(R"xx((\w+)\s*=\s*"([^"]*)")xx");            auto abegin = std::sregex_iterator(argsStr.begin(), argsStr.end(), argRegex);
+            auto aend = std::sregex_iterator();
+            for (auto it = abegin; it != aend; ++it) {
+                toolInput[(*it)[1].str()] = (*it)[2].str();
+            }
+            if (!toolInput.empty()) return true;
+        }
     }
 
     return false;

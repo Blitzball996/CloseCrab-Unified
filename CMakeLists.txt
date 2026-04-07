@@ -295,3 +295,30 @@ message(STATUS "========================================")
 message(STATUS "CloseCrab-Unified v${PROJECT_VERSION}")
 message(STATUS "MSVC Runtime: ${CMAKE_MSVC_RUNTIME_LIBRARY}")
 message(STATUS "========================================")
+
+# ============================================
+# Tests (optional, requires GTest)
+# ============================================
+
+option(BUILD_TESTS "Build unit tests" OFF)
+
+if(BUILD_TESTS)
+    find_package(GTest CONFIG QUIET)
+    if(GTest_FOUND)
+        enable_testing()
+        add_executable(closecrab-tests
+            tests/test_core.cpp
+            src/api/StreamParser.cpp
+        )
+        target_include_directories(closecrab-tests PRIVATE
+            ${CMAKE_SOURCE_DIR}/src
+            ${json_SOURCE_DIR}/include
+            ${spdlog_SOURCE_DIR}/include
+        )
+        target_link_libraries(closecrab-tests PRIVATE GTest::gtest GTest::gtest_main spdlog::spdlog)
+        add_test(NAME CoreTests COMMAND closecrab-tests)
+        message(STATUS "Tests: ENABLED")
+    else()
+        message(STATUS "Tests: GTest not found, skipping")
+    endif()
+endif()

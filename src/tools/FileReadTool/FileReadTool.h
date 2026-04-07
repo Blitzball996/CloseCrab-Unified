@@ -1,6 +1,8 @@
 #pragma once
 
 #include "../Tool.h"
+#include "../../core/FileStateCache.h"
+#include "../../utils/StringUtils.h"
 #include <fstream>
 #include <sstream>
 #include <filesystem>
@@ -81,7 +83,7 @@ public:
             {"totalLines", totalLines}
         };
 
-        return ToolResult::ok(result, data);
+        return ToolResult::ok(ensureUtf8(result), data);
     }
 
     std::string getActivityDescription(const nlohmann::json& input) const override {

@@ -3,6 +3,8 @@
 #include <memory>
 #include <filesystem>
 #include <csignal>
+#include <sstream>
+#include <iomanip>
 #include <spdlog/spdlog.h>
 #include <CLI/CLI.hpp>
 
@@ -52,11 +54,15 @@
 #include "core/CostTracker.h"
 #include "git/GitManager.h"
 #include "voice/VoiceEngine.h"
+#include "hooks/HookManager.h"
+#include "ui/TerminalUI.h"
+#include "ui/VimMode.h"
 
 // Commands
 #include "commands/GitCommands.h"
 #include "commands/SessionCommands.h"
 #include "commands/AdvancedCommands.h"
+#include "commands/ExtendedCommands.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -116,13 +122,19 @@ static void registerBuiltinCommands(CommandRegistry& reg) {
     reg.registerCommand(std::make_unique<SimpleCommand>(
         "status", "Show session status",
         [](const std::string&, CommandContext& ctx) {
-            std::string out;
-            out += "Session: " + ctx.queryEngine->getSessionId() + "\n";
-            out += "Model: " + ctx.appState->currentModel + "\n";
-            out += "Cost: $" + std::to_string(ctx.appState->getTotalCost()) + "\n";
-            out += "Permission mode: " + PermissionEngine::getInstance().getModeName() + "\n";
-            out += "Plan mode: " + std::string(ctx.appState->planMode ? "ON" : "OFF") + "\n";
-            ctx.print(out);
+            TableFormatter table;
+            table.addRow({"Property", "Value"});
+            table.addRow({"Session", ctx.queryEngine->getSessionId()});
+            table.addRow({"Model", ctx.appState->currentModel});
+            table.addRow({"Messages", std::to_string(ctx.queryEngine->getMessages().size())});
+
+            std::ostringstream cost;
+            cost << std::fixed << std::setprecision(4) << "$" << ctx.appState->getTotalCost();
+            table.addRow({"Cost", cost.str()});
+            table.addRow({"Permissions", PermissionEngine::getInstance().getModeName()});
+            table.addRow({"Plan mode", ctx.appState->planMode ? "ON" : "OFF"});
+            table.addRow({"Thinking", ctx.appState->thinkingConfig.enabled ? "ON" : "OFF"});
+            ctx.print(table.render());
             return CommandResult::ok();
         }
     ));
@@ -161,15 +173,37 @@ static void registerBuiltinCommands(CommandRegistry& reg) {
     reg.registerCommand(std::make_unique<SimpleCommand>(
         "cost", "Show API cost summary",
         [](const std::string&, CommandContext& ctx) {
+            auto& tracker = CostTracker::getInstance();
+
+            TableFormatter table;
+            table.addRow({"Model", "Input", "Output", "Cost"});
+
             std::lock_guard<std::mutex> lock(ctx.appState->usageMutex);
-            std::string out = "API Cost Summary:\n";
             for (const auto& [model, usage] : ctx.appState->modelUsage) {
-                out += "  " + model + ": " +
-                    std::to_string(usage.inputTokens) + " in / " +
-                    std::to_string(usage.outputTokens) + " out\n";
+                std::ostringstream cost;
+                cost << std::fixed << std::setprecision(4) << "$" << usage.costUSD;
+                table.addRow({
+                    model,
+                    std::to_string(usage.inputTokens) + " tok",
+                    std::to_string(usage.outputTokens) + " tok",
+                    cost.str()
+                });
             }
-            out += "Total: $" + std::to_string(ctx.appState->getTotalCost()) + "\n";
-            ctx.print(out);
+
+            std::ostringstream total;
+            total << std::fixed << std::setprecision(4) << "$" << tracker.getTotalCost();
+            table.addRow({"TOTAL", "", "", total.str()});
+
+            ctx.print(table.render());
+
+            // Show context usage estimate
+            int msgTokens = 0;
+            for (const auto& m : ctx.queryEngine->getMessages()) {
+                msgTokens += (int)m.getText().size() / 4;
+            }
+            ctx.print("\nContext: ~" + std::to_string(msgTokens) + " tokens in " +
+                      std::to_string(ctx.queryEngine->getMessages().size()) + " messages\n");
+
             return CommandResult::ok();
         }
     ));
@@ -353,6 +387,7 @@ int main(int argc, char* argv[]) {
     // Session
     cmdRegistry.registerCommand(std::make_unique<SessionCommand>());
     cmdRegistry.registerCommand(std::make_unique<NewSessionCommand>());
+    cmdRegistry.registerCommand(std::make_unique<ResumeCommand>());
     cmdRegistry.registerCommand(std::make_unique<HistoryCommand>());
     cmdRegistry.registerCommand(std::make_unique<ExportCommand>());
     cmdRegistry.registerCommand(std::make_unique<CompactCommand>());
@@ -372,6 +407,23 @@ int main(int argc, char* argv[]) {
     cmdRegistry.registerCommand(std::make_unique<ProviderCommand>());
     cmdRegistry.registerCommand(std::make_unique<ApiConfigCommand>());
     cmdRegistry.registerCommand(std::make_unique<ReloadCommand>());
+    // Extended commands (P2.5)
+    cmdRegistry.registerCommand(std::make_unique<ReviewCommand>());
+    cmdRegistry.registerCommand(std::make_unique<HooksCommand>());
+    cmdRegistry.registerCommand(std::make_unique<MemoryCommand>());
+    cmdRegistry.registerCommand(std::make_unique<TasksCommand>());
+    cmdRegistry.registerCommand(std::make_unique<AgentsCommand>());
+    cmdRegistry.registerCommand(std::make_unique<McpCommand>());
+    // Extended commands batch 2
+    cmdRegistry.registerCommand(std::make_unique<BriefCommand>());
+    cmdRegistry.registerCommand(std::make_unique<PluginCommand>());
+    cmdRegistry.registerCommand(std::make_unique<PrCommand>());
+    cmdRegistry.registerCommand(std::make_unique<ShareCommand>());
+    cmdRegistry.registerCommand(std::make_unique<SkillsCommand>());
+    cmdRegistry.registerCommand(std::make_unique<CoordinatorCommand>());
+    cmdRegistry.registerCommand(std::make_unique<VimCommand>());
+    cmdRegistry.registerCommand(std::make_unique<VoiceCommand>());
+    cmdRegistry.registerCommand(std::make_unique<ThemeCommand>());
     spdlog::info("Registered {} commands", cmdRegistry.getCommandNames().size());
     toolRegistry.registerTool(std::make_unique<FileReadTool>());
     toolRegistry.registerTool(std::make_unique<FileWriteTool>());
@@ -423,6 +475,12 @@ int main(int argc, char* argv[]) {
         MCPServerManager::getInstance().loadFromSettings(mcpConfig);
     }
 
+    // Load hooks from settings
+    auto hooksConfig = settings.getHooks();
+    if (!hooksConfig.empty() && hooksConfig.is_array()) {
+        HookManager::getInstance().loadFromSettings(hooksConfig);
+    }
+
     // Load skills and plugins
     SkillDirectory::getInstance().loadFromDirectory(cwd);
     PluginManager::getInstance().loadFromDirectory(cwd);
@@ -455,9 +513,16 @@ When the user asks a question, answer directly.)";
     std::signal(SIGINT, signalHandler);
 
     // ---- Print banner ----
-    std::cout << "\n  CloseCrab-Unified v0.1.0\n";
-    std::cout << "  Model: " << appState.currentModel << "\n";
-    std::cout << "  Type /help for commands, /quit to exit.\n\n";
+    std::cout << "\n" << ansi::cyan() << "  CloseCrab-Unified" << ansi::reset()
+              << " v0.1.0\n";
+    std::cout << "  Model: " << ansi::bold() << appState.currentModel << ansi::reset() << "\n";
+    std::cout << "  Type " << ansi::yellow() << "/help" << ansi::reset()
+              << " for commands, " << ansi::yellow() << "/quit" << ansi::reset() << " to exit.\n\n";
+
+    // ---- UI components ----
+    Spinner spinner;
+    InputHistory inputHistory;
+    VimInput vimInput;
 
     // ---- Main loop ----
     CommandContext cmdCtx;
@@ -468,26 +533,67 @@ When the user asks a question, answer directly.)";
     cmdCtx.print = [](const std::string& s) { std::cout << s; };
 
     QueryCallbacks callbacks;
-    callbacks.onText = [](const std::string& text) { std::cout << text << std::flush; };
-    callbacks.onThinking = [](const std::string& text) {
-        std::cout << "\033[2m" << text << "\033[0m" << std::flush;
-    };
-    callbacks.onToolUse = [](const std::string& name, const nlohmann::json& input) {
-        std::cout << "\n\033[33m[Tool: " << name << "]\033[0m\n" << std::flush;
-    };
-    callbacks.onToolResult = [](const std::string& name, const ToolResult& result) {
-        if (result.success) {
-            std::cout << "\033[32m[" << name << " OK]\033[0m\n" << std::flush;
-        } else {
-            std::cout << "\033[31m[" << name << " Error: " << result.error << "]\033[0m\n";
+    // State tracking for status display
+    enum class StreamState { WAITING, THINKING, RESPONDING, TOOL };
+    StreamState streamState = StreamState::WAITING;
+    bool firstToken = true;
+
+    std::string voiceAccumulator; // Accumulate text for TTS
+    callbacks.onText = [&voiceAccumulator, &spinner, &streamState, &firstToken](const std::string& text) {
+        if (firstToken || streamState != StreamState::RESPONDING) {
+            spinner.stop();
+            streamState = StreamState::RESPONDING;
+            firstToken = false;
         }
+        std::cout << text << std::flush;
+        voiceAccumulator += text;
     };
-    callbacks.onComplete = []() { std::cout << "\n" << std::flush; };
-    callbacks.onError = [](const std::string& err) {
-        std::cerr << "\033[31mError: " << err << "\033[0m\n";
+    callbacks.onThinking = [&spinner, &streamState](const std::string& text) {
+        if (streamState != StreamState::THINKING) {
+            spinner.stop();
+            spinner.start("Thinking...");
+            streamState = StreamState::THINKING;
+        }
+        // Don't print thinking text by default (spinner shows the state)
+        // Uncomment below to show thinking content:
+        // std::cout << ansi::dim() << text << ansi::reset() << std::flush;
+    };
+    callbacks.onToolUse = [&spinner, &streamState](const std::string& name, const nlohmann::json& input) {
+        spinner.stop();
+        streamState = StreamState::TOOL;
+        std::cout << "\n" << ansi::yellow() << "  [" << name << "]" << ansi::reset() << " " << std::flush;
+        spinner.start(name);
+    };
+    callbacks.onToolResult = [&spinner, &streamState](const std::string& name, const ToolResult& result) {
+        spinner.stop();
+        streamState = StreamState::WAITING;
+        if (result.success) {
+            std::cout << ansi::green() << "OK" << ansi::reset() << "\n" << std::flush;
+        } else {
+            std::cout << ansi::red() << "Error: " << result.error << ansi::reset() << "\n";
+        }
+        // After tool result, API will be called again — show waiting
+        spinner.start("Waiting for response...");
+    };
+    callbacks.onComplete = [&spinner, &voiceAccumulator, &streamState, &firstToken]() {
+        spinner.stop();
+        streamState = StreamState::WAITING;
+        firstToken = true;
+        std::cout << "\n" << std::flush;
+        if (VoiceEngine::getInstance().isEnabled() && !voiceAccumulator.empty()) {
+            VoiceEngine::getInstance().speak(voiceAccumulator);
+        }
+        voiceAccumulator.clear();
+    };
+    callbacks.onError = [&spinner, &streamState, &firstToken](const std::string& err) {
+        spinner.stop();
+        streamState = StreamState::WAITING;
+        firstToken = true;
+        std::cerr << ansi::red() << "Error: " << err << ansi::reset() << "\n";
     };
     callbacks.onAskPermission = [](const std::string& toolName, const std::string& desc) -> bool {
-        std::cout << "\033[33mAllow " << toolName << " (" << desc << ")? [y/N]: \033[0m";
+        std::cout << ansi::yellow() << "  Allow " << toolName
+                  << ansi::reset() << " (" << desc << ")? [y/N]: ";
         std::string answer;
         std::getline(std::cin, answer);
         return !answer.empty() && (answer[0] == 'y' || answer[0] == 'Y');
@@ -495,11 +601,54 @@ When the user asks a question, answer directly.)";
 
     bool running = true;
     while (running) {
-        std::cout << "\033[36m> \033[0m" << std::flush;
+        // Sync vim mode with appState (toggled by /vim command)
+        vimInput.setEnabled(appState.vimMode);
+
+        // Show context token estimate when conversation is long
+        std::string tokenHint;
+        if (g_queryEngine->getMessages().size() > 20) {
+            int estTokens = 0;
+            for (const auto& m : g_queryEngine->getMessages())
+                estTokens += (int)m.getText().size() / 4;
+            tokenHint = ansi::gray() + "[~" + std::to_string(estTokens / 1000) + "k tok] " + ansi::reset();
+        }
+
+        std::cout << vimInput.getModeIndicator() << tokenHint
+                  << ansi::cyan() << "> " << ansi::reset() << std::flush;
         std::string input = getUserInput();
 
         if (input.empty()) continue;
         if (std::cin.eof()) break;
+
+        // Multi-line input: backslash continuation
+        while (!input.empty() && input.back() == '\\') {
+            input.pop_back(); // remove trailing backslash
+            input += '\n';
+            std::cout << ansi::cyan() << ". " << ansi::reset() << std::flush;
+            std::string cont = getUserInput();
+            if (std::cin.eof()) break;
+            input += cont;
+        }
+
+        // Vim mode processing
+        if (vimInput.isEnabled()) {
+            auto vr = vimInput.processLine(input);
+            if (vr.shouldQuit) { running = false; break; }
+            if (vr.handled && vr.text.empty()) continue;
+            if (!vr.text.empty()) input = vr.text;
+        }
+
+        inputHistory.add(input);
+
+        // Shell escape: ! prefix runs command directly
+        if (input.size() > 1 && input[0] == '!') {
+            std::string shellCmd = input.substr(1);
+            while (!shellCmd.empty() && shellCmd[0] == ' ') shellCmd.erase(0, 1);
+            if (!shellCmd.empty()) {
+                std::system(shellCmd.c_str());
+            }
+            continue;
+        }
 
         // Check if it's a command
         if (CommandRegistry::isCommand(input)) {
@@ -515,10 +664,20 @@ When the user asks a question, answer directly.)";
         }
 
         // Regular message — send to QueryEngine
+        streamState = StreamState::WAITING;
+        firstToken = true;
+        spinner.start("Waiting for response...");
         g_queryEngine->submitMessage(input, callbacks);
     }
 
     // ---- Cleanup ----
+    // Save session messages for /resume
+    if (g_queryEngine && !g_queryEngine->getMessages().empty()) {
+        auto msgJson = g_queryEngine->serializeMessages();
+        sessionMgr.updateContext(sessionId, msgJson.dump());
+        spdlog::info("Saved {} messages to session {}", g_queryEngine->getMessages().size(), sessionId);
+    }
+
     // Save permission rules
     permEngine.saveRules();
     settings.setPermissionRules(permEngine.saveRules());

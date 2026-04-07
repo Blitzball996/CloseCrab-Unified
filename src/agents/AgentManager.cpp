@@ -63,11 +63,12 @@ std::string AgentManager::spawnAgent(const AgentConfig& config, APIClient* apiCl
                 QueryEngineConfig qeConfig;
                 qeConfig.cwd = cwd;
                 qeConfig.apiClient = apiClient;
-                qeConfig.toolRegistry = parentToolRegistry; // TODO: filter by allowedTools
+                qeConfig.toolRegistry = parentToolRegistry;
                 qeConfig.permissionEngine = &PermissionEngine::getInstance();
                 qeConfig.appState = appState;
                 qeConfig.systemPrompt = systemPrompt;
                 qeConfig.maxTurns = config.maxTurns;
+                qeConfig.allowedTools = allowedTools; // Filter tools by agent type
 
                 QueryEngine subEngine(qeConfig);
 

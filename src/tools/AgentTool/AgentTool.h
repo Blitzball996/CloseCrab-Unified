@@ -35,13 +35,10 @@ public:
 
         auto& mgr = AgentManager::getInstance();
 
-        // We need the APIClient from the parent context — stored in appState
-        // For now, use a simplified approach
         if (!ctx.appState) return ToolResult::fail("No app state available");
+        if (!ctx.apiClient) return ToolResult::fail("No API client available for sub-agent");
 
-        // The actual API client is managed by main.cpp; agents reuse it
-        // This is a simplified version — full implementation would pass APIClient through ToolContext
-        std::string agentId = mgr.spawnAgent(config, nullptr, nullptr, ctx.appState, ctx.cwd);
+        std::string agentId = mgr.spawnAgent(config, ctx.apiClient, ctx.toolRegistry, ctx.appState, ctx.cwd);
 
         if (config.runInBackground) {
             return ToolResult::ok("Agent " + agentId + " launched in background (" +

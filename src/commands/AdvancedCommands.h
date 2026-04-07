@@ -5,6 +5,8 @@
 #include "../security/Sandbox.h"
 #include "../permissions/PermissionEngine.h"
 #include <sstream>
+#include <iomanip>
+#include <filesystem>
 
 namespace closecrab {
 
@@ -117,25 +119,73 @@ public:
 class DoctorCommand : public Command {
 public:
     std::string getName() const override { return "doctor"; }
-    std::string getDescription() const override { return "Run diagnostics"; }
+    std::string getDescription() const override { return "Run environment diagnostics"; }
 
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
         std::ostringstream out;
-        out << "=== CloseCrab-Unified Diagnostics ===\n";
-        out << "Model: " << ctx.appState->currentModel << "\n";
-        out << "Session: " << ctx.queryEngine->getSessionId() << "\n";
-        out << "Messages: " << ctx.queryEngine->getMessages().size() << "\n";
-        out << "Tools: " << ctx.toolRegistry->getToolNames().size() << "\n";
-        out << "Permission mode: " << PermissionEngine::getInstance().getModeName() << "\n";
-        out << "Plan mode: " << (ctx.appState->planMode ? "ON" : "OFF") << "\n";
-        out << "Fast mode: " << (ctx.appState->fastMode ? "ON" : "OFF") << "\n";
-        out << "Thinking: " << (ctx.appState->thinkingConfig.enabled ? "ON" : "OFF") << "\n";
-        out << "RAG: " << (RAGManager::getInstance().isEnabled() ? "enabled" : "disabled") << "\n";
-        out << "RAG docs: " << RAGManager::getInstance().getDocumentCount() << "\n";
-        out << "Total cost: $" << ctx.appState->getTotalCost() << "\n";
-        out << "=== OK ===\n";
+        out << "\033[1m=== CloseCrab-Unified Diagnostics ===\033[0m\n\n";
+
+        // Core status
+        out << "\033[1;36mCore\033[0m\n";
+        out << "  Model: " << ctx.appState->currentModel << "\n";
+        out << "  Session: " << ctx.queryEngine->getSessionId() << "\n";
+        out << "  Messages: " << ctx.queryEngine->getMessages().size() << "\n";
+        out << "  Tools: " << ctx.toolRegistry->getToolNames().size() << "\n";
+        out << "  Permissions: " << PermissionEngine::getInstance().getModeName() << "\n";
+        out << "  Plan mode: " << (ctx.appState->planMode ? "ON" : "OFF") << "\n";
+        out << "  Thinking: " << (ctx.appState->thinkingConfig.enabled ? "ON" : "OFF") << "\n";
+        out << "  RAG: " << (RAGManager::getInstance().isEnabled() ? "enabled" : "disabled")
+            << " (" << RAGManager::getInstance().getDocumentCount() << " docs)\n";
+        out << "  Cost: $" << std::fixed << std::setprecision(4) << ctx.appState->getTotalCost() << "\n\n";
+
+        // External tools
+        out << "\033[1;36mExternal Tools\033[0m\n";
+        out << "  git:    " << checkTool("git --version") << "\n";
+        out << "  rg:     " << checkTool("rg --version") << "\n";
+        out << "  node:   " << checkTool("node --version") << "\n";
+        out << "  python: " << checkTool("python --version") << "\n";
+        out << "  gh:     " << checkTool("gh --version") << "\n\n";
+
+        // Config files
+        out << "\033[1;36mConfig Files\033[0m\n";
+        namespace fs = std::filesystem;
+        out << "  CLAUDE.md:      " << (ctx.appState->claudeMdContent.empty() ? "\033[33mnot found\033[0m" : "\033[32mloaded\033[0m") << "\n";
+        out << "  settings.json:  " << (fs::exists(fs::path(ctx.cwd) / ".claude" / "settings.json") ? "\033[32mfound\033[0m" : "\033[90mnot found\033[0m") << "\n";
+        out << "  config.yaml:    " << (fs::exists("config/config.yaml") ? "\033[32mfound\033[0m" : "\033[90mnot found\033[0m") << "\n";
+        out << "  .claude/memory/: " << (fs::exists(fs::path(ctx.cwd) / ".claude" / "memory") ? "\033[32mexists\033[0m" : "\033[90mnot created\033[0m") << "\n";
+        out << "  .claude/skills/: " << (fs::exists(fs::path(ctx.cwd) / ".claude" / "skills") ? "\033[32mexists\033[0m" : "\033[90mnot created\033[0m") << "\n\n";
+
+        out << "\033[1;32m=== All checks passed ===\033[0m\n";
         ctx.print(out.str());
         return CommandResult::ok();
+    }
+
+private:
+    static std::string checkTool(const std::string& cmd) {
+        std::string fullCmd;
+#ifdef _WIN32
+        fullCmd = "cmd /c \"" + cmd + " 2>nul\" 2>nul";
+        FILE* pipe = _popen(fullCmd.c_str(), "r");
+#else
+        fullCmd = cmd + " 2>/dev/null";
+        FILE* pipe = popen(fullCmd.c_str(), "r");
+#endif
+        if (!pipe) return "\033[31mnot found\033[0m";
+
+        char buf[256];
+        std::string result;
+        if (fgets(buf, sizeof(buf), pipe)) {
+            result = buf;
+            while (!result.empty() && (result.back() == '\n' || result.back() == '\r'))
+                result.pop_back();
+        }
+#ifdef _WIN32
+        int rc = _pclose(pipe);
+#else
+        int rc = pclose(pipe);
+#endif
+        if (rc != 0 || result.empty()) return "\033[31mnot found\033[0m";
+        return "\033[32m" + result + "\033[0m";
     }
 };
 

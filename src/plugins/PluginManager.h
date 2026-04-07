@@ -46,14 +46,17 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         skills_.clear();
 
-        fs::path skillsDir = fs::path(projectRoot) / ".claude" / "skills";
-        if (!fs::exists(skillsDir)) return;
+        // Load from project .claude/skills/
+        loadSkillsFrom(fs::path(projectRoot) / ".claude" / "skills");
 
-        for (auto& entry : fs::directory_iterator(skillsDir)) {
-            if (!entry.is_directory()) continue;
-            loadSkill(entry.path());
+        // Load from user home ~/.claude/skills/
+        const char* home = std::getenv("HOME");
+        if (!home) home = std::getenv("USERPROFILE");
+        if (home) {
+            loadSkillsFrom(fs::path(home) / ".claude" / "skills");
         }
-        spdlog::info("Loaded {} skills from {}", skills_.size(), skillsDir.string());
+
+        spdlog::info("Loaded {} skills total", skills_.size());
     }
 
     std::vector<SkillDef> getAllSkills() const {
@@ -78,6 +81,58 @@ public:
 
 private:
     SkillDirectory() = default;
+
+    void loadSkillsFrom(const std::filesystem::path& skillsDir) {
+        namespace fs = std::filesystem;
+        if (!fs::exists(skillsDir)) return;
+
+        for (auto& entry : fs::directory_iterator(skillsDir)) {
+            if (entry.is_directory()) {
+                loadSkill(entry.path());
+            } else if (entry.is_regular_file() && entry.path().extension() == ".md") {
+                // Single-file skill: .md with frontmatter
+                loadSingleFileSkill(entry.path());
+            }
+        }
+    }
+
+    void loadSingleFileSkill(const std::filesystem::path& path) {
+        std::ifstream f(path);
+        if (!f.is_open()) return;
+
+        std::string content((std::istreambuf_iterator<char>(f)), {});
+        SkillDef skill;
+        skill.name = path.stem().string();
+        skill.dirPath = path.parent_path().string();
+
+        // Parse frontmatter
+        if (content.size() > 3 && content.substr(0, 3) == "---") {
+            auto end = content.find("---", 3);
+            if (end != std::string::npos) {
+                std::string meta = content.substr(3, end - 3);
+                std::istringstream iss(meta);
+                std::string line;
+                while (std::getline(iss, line)) {
+                    auto colon = line.find(':');
+                    if (colon == std::string::npos) continue;
+                    std::string key = line.substr(0, colon);
+                    std::string val = line.substr(colon + 1);
+                    while (!key.empty() && key.back() == ' ') key.pop_back();
+                    while (!val.empty() && val.front() == ' ') val.erase(0, 1);
+                    if (key == "name") skill.name = val;
+                    else if (key == "description") skill.description = val;
+                    else if (key == "trigger") skill.trigger = val;
+                }
+                skill.prompt = content.substr(end + 3);
+                while (!skill.prompt.empty() && skill.prompt.front() == '\n') skill.prompt.erase(0, 1);
+            }
+        } else {
+            skill.prompt = content;
+        }
+
+        if (skill.description.empty()) skill.description = skill.prompt.substr(0, 80);
+        skills_[skill.name] = std::move(skill);
+    }
 
     void loadSkill(const std::filesystem::path& dir) {
         namespace fs = std::filesystem;
@@ -186,9 +241,35 @@ private:
                 auto j = nlohmann::json::parse(f);
                 plugin.version = j.value("version", "0.0.0");
                 plugin.description = j.value("description", "");
-            } catch (...) {}
+                plugin.enabled = j.value("enabled", true);
+
+                // Parse command names
+                if (j.contains("commands") && j["commands"].is_array()) {
+                    for (const auto& cmd : j["commands"]) {
+                        plugin.commandNames.push_back(cmd.value("name", ""));
+                    }
+                }
+
+                // Parse skill names
+                if (j.contains("skills") && j["skills"].is_array()) {
+                    for (const auto& sk : j["skills"]) {
+                        plugin.skillNames.push_back(sk.value("name", ""));
+                    }
+                }
+            } catch (const std::exception& e) {
+                spdlog::warn("Failed to parse plugin manifest {}: {}", manifest.string(), e.what());
+            }
         }
 
+        // Also load any skills bundled in the plugin
+        fs::path pluginSkills = dir / "skills";
+        if (fs::exists(pluginSkills)) {
+            SkillDirectory::getInstance().loadFromDirectory(dir.string());
+        }
+
+        spdlog::info("Loaded plugin: {} v{} ({} commands, {} skills)",
+                     plugin.name, plugin.version,
+                     plugin.commandNames.size(), plugin.skillNames.size());
         plugins_[plugin.name] = std::move(plugin);
     }
 

@@ -38,6 +38,41 @@ public:
     }
 };
 
+// /resume - restore last saved session
+class ResumeCommand : public Command {
+public:
+    std::string getName() const override { return "resume"; }
+    std::string getDescription() const override { return "Resume the last saved conversation session"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        std::string sessionId = ctx.queryEngine->getSessionId();
+        if (sessionId.empty()) {
+            ctx.print("No session ID available.\n");
+            return CommandResult::ok();
+        }
+
+        // Load from SessionManager via database
+        // The context is stored as JSON in the sessions table
+        std::string dbPath = "data/closecrab.db";
+        SessionManager mgr(dbPath);
+        auto session = mgr.getSession(sessionId);
+        if (!session || session->context.empty() || session->context == "{}") {
+            ctx.print("No saved session data found.\n");
+            return CommandResult::ok();
+        }
+
+        try {
+            auto data = nlohmann::json::parse(session->context);
+            ctx.queryEngine->deserializeMessages(data);
+            ctx.print("Restored " + std::to_string(ctx.queryEngine->getMessages().size()) +
+                      " messages from session.\n");
+        } catch (const std::exception& e) {
+            ctx.print("Failed to restore session: " + std::string(e.what()) + "\n");
+        }
+        return CommandResult::ok();
+    }
+};
+
 // /history - show conversation history
 class HistoryCommand : public Command {
 public:
@@ -104,28 +139,19 @@ public:
 
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
         const auto& msgs = ctx.queryEngine->getMessages();
-        if (msgs.size() < 10) {
+        if (msgs.size() < 6) {
             ctx.print("History too short to compact (" + std::to_string(msgs.size()) + " messages).\n");
             return CommandResult::ok();
         }
 
-        // Simple compaction: keep last N messages, summarize the rest
-        int keepCount = 10;
-        int removeCount = (int)msgs.size() - keepCount;
-        ctx.print("Compacting " + std::to_string(removeCount) + " old messages...\n");
-
-        // For now, just truncate. Full implementation would use LLM to summarize.
-        auto& mutableMsgs = const_cast<std::vector<Message>&>(ctx.queryEngine->getMessages());
-        std::string summary = "Previous conversation had " + std::to_string(removeCount) + " messages (compacted).";
-
-        std::vector<Message> newMsgs;
-        newMsgs.push_back(Message::makeSystem(SystemSubtype::COMPACT_BOUNDARY, summary));
-        for (int i = removeCount; i < (int)mutableMsgs.size(); i++) {
-            newMsgs.push_back(std::move(mutableMsgs[i]));
+        size_t before = msgs.size();
+        bool compacted = ctx.queryEngine->compactHistory();
+        if (compacted) {
+            size_t after = ctx.queryEngine->getMessages().size();
+            ctx.print("Compacted: " + std::to_string(before) + " -> " + std::to_string(after) + " messages.\n");
+        } else {
+            ctx.print("Nothing to compact.\n");
         }
-        mutableMsgs = std::move(newMsgs);
-
-        ctx.print("Compacted. Kept " + std::to_string(keepCount) + " recent messages.\n");
         return CommandResult::ok();
     }
 };

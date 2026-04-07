@@ -13,6 +13,8 @@ namespace closecrab {
 struct Message;
 struct AppState;
 class PermissionEngine;
+class APIClient;
+class ToolRegistry;
 
 // ============================================================
 // Validation & Permission results
@@ -60,6 +62,10 @@ struct ToolContext {
     AppState* appState = nullptr;
     PermissionEngine* permissionEngine = nullptr;
     std::atomic<bool>* abortFlag = nullptr;
+
+    // API client and tool registry — needed by AgentTool to spawn sub-agents
+    APIClient* apiClient = nullptr;
+    ToolRegistry* toolRegistry = nullptr;
 
     // Progress callback: tool can report intermediate progress
     std::function<void(const std::string&)> onProgress;

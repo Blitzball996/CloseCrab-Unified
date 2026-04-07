@@ -1,4 +1,5 @@
 #include "RemoteAPIClient.h"
+#include "APIError.h"
 #include <curl/curl.h>
 #include <spdlog/spdlog.h>
 
@@ -19,7 +20,7 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
     body["max_tokens"] = config.maxTokens;
     body["stream"] = config.stream;
 
-    if (config.temperature >= 0) body["temperature"] = config.temperature;
+    if (config.temperature >= 0 && config.tools.empty()) body["temperature"] = config.temperature;
 
     // System prompt
     if (!systemPrompt.empty()) {
@@ -145,17 +146,16 @@ void RemoteAPIClient::handleSSEEvent(
 } // namespace closecrab (close before CURL calls)
 
 // Free function: perform CURL SSE request (outside namespace to avoid macro issues)
+// Throws closecrab::APIError on retryable failures
 static void performCurlSSE(
     const std::string& url,
     const std::string& bodyStr,
     const std::string& apiKey,
-    CurlStreamCtx& curlCtx,
-    std::function<void(const closecrab::StreamEvent&)>& callback
+    CurlStreamCtx& curlCtx
 ) {
     CURL* curl = curl_easy_init();
     if (!curl) {
-        callback(closecrab::StreamEvent::error("Failed to initialize CURL"));
-        return;
+        throw closecrab::APIError(closecrab::APIErrorType::NETWORK_ERROR, 0, "Failed to initialize CURL");
     }
 
     struct curl_slist* headers = nullptr;
@@ -173,44 +173,38 @@ static void performCurlSSE(
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curlStreamCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &curlCtx);
 
-    // SSL: use Windows native SSL (Schannel) to avoid CA cert issues
+    // SSL
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
 
-    // Timeouts: no overall timeout, but set connect timeout
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
+    // Timeouts
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);       // 5 min overall timeout
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
 
-    // Follow redirects
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
-
-    // HTTP/1.1 (some proxies don't support HTTP/2 well)
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
 
-    // Enable verbose for debugging (remove later)
-    // curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
-    // spdlog::info("CURL POST to: {}", url);
-    // spdlog::info("Body size: {} bytes", bodyStr.size());
-
     CURLcode res = curl_easy_perform(curl);
-    if (res != CURLE_OK) {
-        long httpCode = 0;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
-        std::string errMsg = "CURL error (" + std::to_string(res) + "): " +
-                             curl_easy_strerror(res) +
-                             " [HTTP " + std::to_string(httpCode) + "]";
-        spdlog::error("{}", errMsg);
-        callback(closecrab::StreamEvent::error(errMsg));
-    } else {
-        long httpCode = 0;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
-        // spdlog::info("CURL completed, HTTP {}", httpCode);
-    }
+    long httpCode = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
 
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        std::string errMsg = std::string(curl_easy_strerror(res));
+        // Network errors are retryable
+        throw closecrab::APIError(closecrab::APIErrorType::NETWORK_ERROR,
+                                   static_cast<int>(httpCode), errMsg);
+    }
+
+    if (httpCode >= 400) {
+        auto errType = closecrab::classifyHttpStatus(httpCode);
+        throw closecrab::APIError(errType, static_cast<int>(httpCode),
+                                   "HTTP " + std::to_string(httpCode));
+    }
 }
 
 namespace closecrab { // reopen
@@ -225,15 +219,46 @@ void RemoteAPIClient::streamChat(
     std::string url = baseUrl_ + "/v1/messages";
     std::string bodyStr = body.dump();
 
-    std::string currentToolName, currentToolId, currentToolJson;
+    spdlog::info("API request: {} bytes, {} tools, system_prompt={} chars, url={}",
+                 bodyStr.size(),
+                 config.tools.is_array() ? config.tools.size() : 0,
+                 systemPrompt.size(), url);
 
-    StreamParser parser([&](const StreamParser::SSEEvent& event) {
-        handleSSEEvent(event, callback, currentToolName, currentToolId, currentToolJson);
-    });
+    // Debug: dump first 500 chars of body
+    spdlog::debug("Request body (first 500): {}", bodyStr.substr(0, 500));
 
-    CurlStreamCtx curlCtx{&parser};
-    performCurlSSE(url, bodyStr, apiKey_, curlCtx, callback);
-    parser.finish();
+    withRetry([&]() {
+        std::string currentToolName, currentToolId, currentToolJson;
+
+        StreamParser parser([&](const StreamParser::SSEEvent& event) {
+            handleSSEEvent(event, callback, currentToolName, currentToolId, currentToolJson);
+        });
+
+        CurlStreamCtx curlCtx{&parser};
+        try {
+            performCurlSSE(url, bodyStr, apiKey_, curlCtx);
+        } catch (const APIError& e) {
+            // If 503 with tools, retry without tools (proxy may not support model+tools combo)
+            if (e.httpStatus == 503 && body.contains("tools") && body["tools"].is_array()
+                && !body["tools"].empty()) {
+                spdlog::warn("503 with tools — retrying without tools (proxy limitation)");
+                nlohmann::json bodyNoTools = body;
+                bodyNoTools.erase("tools");
+                std::string bodyNoToolsStr = bodyNoTools.dump();
+
+                // Reset parser state
+                StreamParser parser2([&](const StreamParser::SSEEvent& event) {
+                    handleSSEEvent(event, callback, currentToolName, currentToolId, currentToolJson);
+                });
+                CurlStreamCtx curlCtx2{&parser2};
+                performCurlSSE(url, bodyNoToolsStr, apiKey_, curlCtx2);
+                parser2.finish();
+                return; // Success without tools
+            }
+            throw; // Re-throw for normal retry
+        }
+        parser.finish();
+    }, 3);
 }
 
 int RemoteAPIClient::countTokens(const std::string& text) const {

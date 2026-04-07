@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../Tool.h"
+#include "../../core/FileStateCache.h"
 #include <fstream>
 #include <sstream>
 #include <filesystem>
@@ -102,6 +103,7 @@ public:
             ? "Replaced " + std::to_string(count) + " occurrences in " + path
             : "Replaced 1 occurrence in " + path;
 
+        FileStateCache::getInstance().invalidate(path);
         return ToolResult::ok(msg);
     }
 

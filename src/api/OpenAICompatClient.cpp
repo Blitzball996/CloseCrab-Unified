@@ -1,4 +1,5 @@
 #include "OpenAICompatClient.h"
+#include "APIError.h"
 #include <curl/curl.h>
 #include <spdlog/spdlog.h>
 
@@ -113,13 +114,11 @@ static void performOAICurl(
     const std::string& url,
     const std::string& bodyStr,
     const std::string& apiKey,
-    OAIStreamCtx& curlCtx,
-    std::function<void(const closecrab::StreamEvent&)>& callback
+    OAIStreamCtx& curlCtx
 ) {
     CURL* curl = curl_easy_init();
     if (!curl) {
-        callback(closecrab::StreamEvent::error("Failed to initialize CURL"));
-        return;
+        throw closecrab::APIError(closecrab::APIErrorType::NETWORK_ERROR, 0, "Failed to initialize CURL");
     }
 
     struct curl_slist* headers = nullptr;
@@ -133,14 +132,26 @@ static void performOAICurl(
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, oaiCurlCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &curlCtx);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
 
     CURLcode res = curl_easy_perform(curl);
-    if (res != CURLE_OK) {
-        callback(closecrab::StreamEvent::error(std::string("CURL error: ") + curl_easy_strerror(res)));
-    }
+    long httpCode = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
 
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        throw closecrab::APIError(closecrab::APIErrorType::NETWORK_ERROR,
+                                   static_cast<int>(httpCode),
+                                   std::string(curl_easy_strerror(res)));
+    }
+
+    if (httpCode >= 400) {
+        auto errType = closecrab::classifyHttpStatus(httpCode);
+        throw closecrab::APIError(errType, static_cast<int>(httpCode),
+                                   "HTTP " + std::to_string(httpCode));
+    }
 }
 
 namespace closecrab { // reopen
@@ -232,7 +243,11 @@ void OpenAICompatClient::streamChat(
     });
 
     OAIStreamCtx curlCtx{&parser};
-    performOAICurl(url, bodyStr, apiKey_, curlCtx, callback);
+
+    withRetry([&]() {
+        performOAICurl(url, bodyStr, apiKey_, curlCtx);
+    }, 3);
+
     parser.finish();
 }
 

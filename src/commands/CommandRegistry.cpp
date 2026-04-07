@@ -2,6 +2,7 @@
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <sstream>
+#include <set>
 
 namespace closecrab {
 
@@ -102,24 +103,64 @@ std::pair<std::string, std::string> CommandRegistry::parseCommand(const std::str
 
 std::string CommandRegistry::getHelpText() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    std::ostringstream oss;
-    oss << "Available commands:\n";
 
-    // Group by category (first letter for now)
-    for (const auto& [name, cmd] : commands_) {
-        if (!cmd->isEnabled() || cmd->isHidden()) continue;
-        oss << "  /" << name;
-        auto aliases = cmd->getAliases();
-        if (!aliases.empty()) {
-            oss << " (";
-            for (size_t i = 0; i < aliases.size(); ++i) {
-                if (i > 0) oss << ", ";
-                oss << "/" << aliases[i];
+    // Categorize commands
+    struct Category {
+        std::string name;
+        std::vector<std::string> keywords;
+    };
+    std::vector<Category> categories = {
+        {"Session",  {"help", "quit", "exit", "clear", "new", "session", "history", "export",
+                      "compact", "context", "status", "version", "env"}},
+        {"Model",    {"model", "cost", "fast", "thinking", "brief", "permissions", "provider", "api"}},
+        {"Git",      {"commit", "diff", "branch", "log", "push", "pull", "stash", "pr", "review"}},
+        {"Tools",    {"tools", "skills", "plugin", "mcp", "hooks", "agents", "tasks", "audit"}},
+        {"Advanced", {"rag", "ssd", "sandbox", "plan", "doctor", "coordinator", "vim",
+                      "add-dir", "files", "reload", "memory", "share"}}
+    };
+
+    std::ostringstream oss;
+    oss << "\033[1mAvailable commands:\033[0m\n\n";
+
+    std::set<std::string> shown;
+    for (const auto& cat : categories) {
+        std::ostringstream catOss;
+        for (const auto& kw : cat.keywords) {
+            auto it = commands_.find(kw);
+            if (it == commands_.end() || !it->second->isEnabled() || it->second->isHidden()) continue;
+            if (shown.count(kw)) continue;
+            shown.insert(kw);
+
+            catOss << "  \033[33m/" << kw << "\033[0m";
+            auto aliases = it->second->getAliases();
+            if (!aliases.empty()) {
+                catOss << " \033[90m(";
+                for (size_t i = 0; i < aliases.size(); i++) {
+                    if (i > 0) catOss << ",";
+                    catOss << "/" << aliases[i];
+                }
+                catOss << ")\033[0m";
             }
-            oss << ")";
+            catOss << "  " << it->second->getDescription() << "\n";
         }
-        oss << " - " << cmd->getDescription() << "\n";
+        std::string catStr = catOss.str();
+        if (!catStr.empty()) {
+            oss << "  \033[1;36m" << cat.name << "\033[0m\n" << catStr << "\n";
+        }
     }
+
+    // Show uncategorized commands
+    std::ostringstream otherOss;
+    for (const auto& [name, cmd] : commands_) {
+        if (!cmd->isEnabled() || cmd->isHidden() || shown.count(name)) continue;
+        otherOss << "  \033[33m/" << name << "\033[0m  " << cmd->getDescription() << "\n";
+    }
+    std::string otherStr = otherOss.str();
+    if (!otherStr.empty()) {
+        oss << "  \033[1;36mOther\033[0m\n" << otherStr << "\n";
+    }
+
+    oss << "  \033[90mTip: ! prefix runs shell commands (e.g. !git status)\033[0m\n";
     return oss.str();
 }
 

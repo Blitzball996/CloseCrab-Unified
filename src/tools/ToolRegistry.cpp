@@ -19,6 +19,7 @@ void ToolRegistry::registerTool(std::unique_ptr<Tool> tool) {
     for (const auto& alias : aliases) {
         aliases_[alias] = name;
     }
+    cacheValid_ = false; // Invalidate cache on registration
 }
 
 Tool* ToolRegistry::getTool(const std::string& name) const {
@@ -79,17 +80,21 @@ bool ToolRegistry::hasTool(const std::string& name) const {
 
 nlohmann::json ToolRegistry::toApiToolDefinitions() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    nlohmann::json defs = nlohmann::json::array();
 
+    if (cacheValid_) return cachedDefs_;
+
+    nlohmann::json defs = nlohmann::json::array();
     for (const auto& [name, tool] : tools_) {
         if (!tool->isEnabled() || tool->isHidden()) continue;
-
         nlohmann::json def;
         def["name"] = tool->getName();
         def["description"] = tool->getDescription();
         def["input_schema"] = tool->getInputSchema();
         defs.push_back(std::move(def));
     }
+
+    cachedDefs_ = defs;
+    cacheValid_ = true;
     return defs;
 }
 

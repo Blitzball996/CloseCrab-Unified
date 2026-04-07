@@ -3,11 +3,15 @@
 #include <string>
 #include <functional>
 #include <atomic>
+#include <thread>
+#include <cstdlib>
+#include <spdlog/spdlog.h>
 
 namespace closecrab {
 
 // Voice engine — audio capture + STT + TTS
-// Windows: WASAPI for capture, SAPI for TTS, Whisper.cpp for STT
+// Windows: SAPI for TTS, macOS: say, Linux: espeak
+// STT: Whisper.cpp (optional, requires model file)
 class VoiceEngine {
 public:
     static VoiceEngine& getInstance() {
@@ -15,58 +19,106 @@ public:
         return instance;
     }
 
-    bool isAvailable() const;
+    bool isAvailable() const {
+#ifdef _WIN32
+        return true;
+#elif defined(__APPLE__)
+        return true;
+#else
+        // Check if espeak is available
+        return std::system("which espeak >/dev/null 2>&1") == 0;
+#endif
+    }
+
     bool isEnabled() const { return enabled_; }
-    void setEnabled(bool v) { enabled_ = v; }
+    void setEnabled(bool v) {
+        enabled_ = v;
+        spdlog::info("Voice engine: {}", v ? "enabled" : "disabled");
+    }
 
-    // Start listening for voice input
-    bool startListening(std::function<void(const std::string& text)> onTranscript);
-    void stopListening();
+    bool init(const std::string& whisperModelPath = "") {
+        whisperModelPath_ = whisperModelPath;
+        if (!whisperModelPath.empty()) {
+            spdlog::info("Voice STT model: {}", whisperModelPath);
+        }
+        return isAvailable();
+    }
 
-    // Speak text aloud
-    void speak(const std::string& text);
-    void stopSpeaking();
+    // Start listening for voice input (requires Whisper.cpp model)
+    bool startListening(std::function<void(const std::string& text)> onTranscript) {
+        if (!isAvailable() || whisperModelPath_.empty()) {
+            spdlog::warn("Voice STT not available (no Whisper model configured)");
+            return false;
+        }
+        listening_ = true;
+        onTranscript_ = std::move(onTranscript);
+        // Full implementation: WASAPI/PulseAudio capture -> Whisper.cpp -> callback
+        spdlog::info("Voice listening started (STT requires Whisper.cpp integration)");
+        return true;
+    }
 
-    // Initialize with model paths
-    bool init(const std::string& whisperModelPath = "");
+    void stopListening() {
+        listening_ = false;
+        spdlog::info("Voice listening stopped");
+    }
+
+    // Speak text aloud using system TTS
+    void speak(const std::string& text) {
+        if (!enabled_ || text.empty()) return;
+
+        // Run TTS in background thread to not block
+        std::thread([text]() {
+            std::string escaped = escapeForShell(text);
+#ifdef _WIN32
+            // Windows: PowerShell SAPI
+            std::string cmd = "powershell -NoProfile -Command \"Add-Type -AssemblyName System.Speech; "
+                "(New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('" + escaped + "')\" >nul 2>&1";
+            std::system(cmd.c_str());
+#elif defined(__APPLE__)
+            // macOS: say command
+            std::string cmd = "say \"" + escaped + "\" 2>/dev/null";
+            std::system(cmd.c_str());
+#else
+            // Linux: espeak
+            std::string cmd = "espeak \"" + escaped + "\" 2>/dev/null";
+            std::system(cmd.c_str());
+#endif
+        }).detach();
+    }
+
+    void stopSpeaking() {
+#ifdef _WIN32
+        std::system("taskkill /f /im powershell.exe >nul 2>&1");
+#elif defined(__APPLE__)
+        std::system("killall say 2>/dev/null");
+#else
+        std::system("killall espeak 2>/dev/null");
+#endif
+    }
 
 private:
     VoiceEngine() = default;
+
+    static std::string escapeForShell(const std::string& s) {
+        std::string result;
+        for (char c : s) {
+            if (c == '\'' || c == '"' || c == '\\' || c == '`' || c == '$') {
+                result += ' '; // Replace problematic chars with space
+            } else if (c == '\n') {
+                result += ". ";
+            } else {
+                result += c;
+            }
+        }
+        // Truncate for TTS (don't read entire code blocks aloud)
+        if (result.size() > 500) result = result.substr(0, 500) + "...";
+        return result;
+    }
+
     std::atomic<bool> enabled_{false};
     std::atomic<bool> listening_{false};
     std::string whisperModelPath_;
+    std::function<void(const std::string&)> onTranscript_;
 };
-
-// Stub implementations (full implementation requires platform-specific audio APIs)
-inline bool VoiceEngine::isAvailable() const {
-#ifdef _WIN32
-    return true; // SAPI available on Windows
-#else
-    return false;
-#endif
-}
-
-inline bool VoiceEngine::init(const std::string& whisperModelPath) {
-    whisperModelPath_ = whisperModelPath;
-    return isAvailable();
-}
-
-inline bool VoiceEngine::startListening(std::function<void(const std::string&)> onTranscript) {
-    if (!isAvailable()) return false;
-    listening_ = true;
-    // Full implementation: WASAPI capture → Whisper.cpp STT → callback
-    return true;
-}
-
-inline void VoiceEngine::stopListening() { listening_ = false; }
-
-inline void VoiceEngine::speak(const std::string& text) {
-#ifdef _WIN32
-    // Full implementation would use Windows SAPI
-    // For now, just log
-#endif
-}
-
-inline void VoiceEngine::stopSpeaking() {}
 
 } // namespace closecrab
