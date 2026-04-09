@@ -3,6 +3,8 @@
 #include "Message.h"
 #include "AppState.h"
 #include "HistoryCompactor.h"
+#include "BudgetTracker.h"
+#include "ErrorRecovery.h"
 #include "../api/APIClient.h"
 #include "../tools/ToolRegistry.h"
 #include "../commands/CommandRegistry.h"
@@ -32,6 +34,8 @@ struct QueryEngineConfig {
     std::string appendSystemPrompt;
     int maxTurns = 50;
     bool verbose = false;
+
+    TokenBudget tokenBudget;  // Budget configuration
 
     // Tool filter: if non-empty, only these tools are available (for sub-agents)
     std::vector<std::string> allowedTools;
@@ -72,6 +76,10 @@ public:
 
     // Manual compaction
     bool compactHistory() { return compactor_.forceCompact(messages_, config_.apiClient); }
+    CompactMetadata getLastCompactMetadata() const;
+
+    // Budget management
+    void setBudget(const TokenBudget& budget);
 
     // Serialize/deserialize messages for session persistence
     nlohmann::json serializeMessages() const;
@@ -87,6 +95,7 @@ private:
     std::string sessionId_;
     std::atomic<bool> interrupted_{false};
     HistoryCompactor compactor_;
+    BudgetTracker budgetTracker_;
 
     // Cached system prompt (rebuilt only when needed)
     mutable std::string cachedSystemPrompt_;

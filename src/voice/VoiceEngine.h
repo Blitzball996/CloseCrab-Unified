@@ -52,8 +52,18 @@ public:
         }
         listening_ = true;
         onTranscript_ = std::move(onTranscript);
-        // Full implementation: WASAPI/PulseAudio capture -> Whisper.cpp -> callback
-        spdlog::info("Voice listening started (STT requires Whisper.cpp integration)");
+
+        captureThread_ = std::thread([this]() {
+            spdlog::info("Voice listening started");
+            while (listening_) {
+                std::string transcript = captureAndTranscribe();
+                if (!transcript.empty() && onTranscript_) {
+                    onTranscript_(transcript);
+                }
+            }
+            spdlog::info("Voice listening stopped");
+        });
+        captureThread_.detach();
         return true;
     }
 
@@ -119,6 +129,71 @@ private:
     std::atomic<bool> listening_{false};
     std::string whisperModelPath_;
     std::function<void(const std::string&)> onTranscript_;
+    std::thread captureThread_;
+
+    // Capture audio and transcribe using whisper.cpp CLI or platform STT
+    std::string captureAndTranscribe() {
+        // Record a short audio clip, then run whisper.cpp on it
+        std::string tempWav;
+#ifdef _WIN32
+        tempWav = std::string(std::getenv("TEMP") ? std::getenv("TEMP") : ".") + "\\closecrab_stt.wav";
+        // Use PowerShell to record 5 seconds of audio via WASAPI
+        std::string recordCmd =
+            "powershell -NoProfile -Command \""
+            "Add-Type -AssemblyName System.Speech;"
+            "$r = New-Object System.Speech.Recognition.SpeechRecognitionEngine;"
+            "$r.SetInputToDefaultAudioDevice();"
+            "$r.LoadGrammar((New-Object System.Speech.Recognition.DictationGrammar));"
+            "$result = $r.Recognize((New-Object TimeSpan(0,0,5)));"
+            "if($result){$result.Text}\"";
+        // PowerShell Speech Recognition returns text directly
+        FILE* pipe = _popen(recordCmd.c_str(), "r");
+        if (!pipe) return "";
+        char buf[4096];
+        std::string result;
+        while (fgets(buf, sizeof(buf), pipe)) result += buf;
+        _pclose(pipe);
+        // Trim whitespace
+        while (!result.empty() && (result.back() == '\n' || result.back() == '\r'))
+            result.pop_back();
+        return result;
+#else
+        tempWav = "/tmp/closecrab_stt.wav";
+        // Record 5 seconds using arecord (Linux) or sox
+        std::string recordCmd;
+#ifdef __APPLE__
+        recordCmd = "rec -q -r 16000 -c 1 -b 16 " + tempWav + " trim 0 5 2>/dev/null";
+#else
+        recordCmd = "arecord -q -f S16_LE -r 16000 -c 1 -d 5 " + tempWav + " 2>/dev/null";
+#endif
+        int ret = std::system(recordCmd.c_str());
+        if (ret != 0) {
+            spdlog::warn("Audio recording failed (exit code {})", ret);
+            return "";
+        }
+
+        // Run whisper.cpp CLI on the recorded audio
+        std::string whisperCmd = "whisper-cpp -m " + whisperModelPath_
+                               + " -f " + tempWav + " --no-timestamps -nt 2>/dev/null";
+        FILE* pipe = popen(whisperCmd.c_str(), "r");
+        if (!pipe) {
+            spdlog::warn("Failed to run whisper-cpp");
+            return "";
+        }
+        char buf[4096];
+        std::string result;
+        while (fgets(buf, sizeof(buf), pipe)) result += buf;
+        pclose(pipe);
+
+        // Clean up temp file
+        std::remove(tempWav.c_str());
+
+        // Trim whitespace
+        while (!result.empty() && (result.back() == '\n' || result.back() == '\r'))
+            result.pop_back();
+        return result;
+#endif
+    }
 };
 
 } // namespace closecrab

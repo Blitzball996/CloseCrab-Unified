@@ -6,11 +6,11 @@
 #include <functional>
 #include <atomic>
 #include <nlohmann/json.hpp>
+#include "../core/Message.h"
 
 namespace closecrab {
 
 // Forward declarations
-struct Message;
 struct AppState;
 class PermissionEngine;
 class APIClient;
@@ -44,6 +44,12 @@ struct ToolResult {
     nlohmann::json data;        // Structured data (optional)
     std::string error;          // Error message if !success
 
+    std::vector<Message> newMessages;    // Messages to inject into history after this result
+    nlohmann::json mcpMeta;              // MCP-specific metadata
+
+    bool hasContextModification = false;
+    nlohmann::json contextModification;  // JSON describing context changes
+
     static ToolResult ok(const std::string& content, const nlohmann::json& data = nullptr) {
         return {true, content, data, ""};
     }
@@ -72,6 +78,11 @@ struct ToolContext {
 
     // File read cache (mtime-based dedup, like JackProAi readFileState)
     std::map<std::string, int64_t>* fileReadCache = nullptr;
+
+    // v2 extended context
+    std::map<std::string, std::vector<std::string>> fileHistory;  // file -> list of operations
+    std::string attribution;                                       // Who initiated this tool call
+    std::vector<std::string> queryChain;                           // Chain of queries leading here
 };
 
 // ============================================================
@@ -111,6 +122,15 @@ public:
 
     // For auto-mode classifier: is this a search/read command?
     virtual bool isSearchOrRead(const nlohmann::json& input) const { return isReadOnly(); }
+
+    // Interrupt behavior: "cancel" (abort immediately) or "block" (wait for completion)
+    virtual std::string interruptBehavior() const { return "cancel"; }
+
+    // Whether this tool should be deferred (lazy loaded)
+    virtual bool shouldDefer() const { return false; }
+
+    // Whether this tool must always be loaded (not deferrable)
+    virtual bool alwaysLoad() const { return true; }
 };
 
 // Default implementations

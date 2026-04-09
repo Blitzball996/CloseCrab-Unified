@@ -11,6 +11,7 @@ namespace closecrab {
 struct AppState;
 class QueryEngine;
 class ToolRegistry;
+class APIClient;
 
 // ============================================================
 // Command result
@@ -34,6 +35,7 @@ struct CommandContext {
     QueryEngine* queryEngine = nullptr;
     AppState* appState = nullptr;
     ToolRegistry* toolRegistry = nullptr;
+    APIClient* apiClient = nullptr;
     std::string cwd;
 
     // Output function (print to terminal)

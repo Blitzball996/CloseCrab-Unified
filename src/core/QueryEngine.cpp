@@ -4,6 +4,7 @@
 #include "../api/APIError.h"
 #include "../hooks/HookManager.h"
 #include "../memory/FileMemoryManager.h"
+#include "ErrorRecovery.h"
 #include <spdlog/spdlog.h>
 #include <fstream>
 #include <filesystem>
@@ -15,7 +16,8 @@
 
 namespace closecrab {
 
-QueryEngine::QueryEngine(const QueryEngineConfig& config) : config_(config) {}
+QueryEngine::QueryEngine(const QueryEngineConfig& config)
+    : config_(config), budgetTracker_(config.tokenBudget) {}
 
 std::string QueryEngine::buildSystemPrompt() const {
     if (!systemPromptDirty_ && !cachedSystemPrompt_.empty()) {
@@ -299,6 +301,7 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
 
     // Add tool result to messages (ensure valid UTF-8 for JSON serialization)
     std::string safeContent = ensureUtf8(result.success ? result.content : result.error);
+    safeContent = budgetTracker_.applyToolResultBudget(safeContent);
     nlohmann::json resultJson = nlohmann::json(safeContent);
     messages_.push_back(Message::makeToolResult(event.toolUseId, resultJson, !result.success));
 }
@@ -322,8 +325,14 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
     while (turnCount < config_.maxTurns && !interrupted_) {
         turnCount++;
 
-        // Auto-compact history if approaching context limit (check every 5 turns)
-        if (turnCount % 5 == 0) {
+        // Budget check: stop if query token budget exceeded
+        if (budgetTracker_.isQueryBudgetExceeded()) {
+            spdlog::warn("Query token budget exceeded, stopping");
+            break;
+        }
+
+        // Strategy-based compaction (check every 3 turns instead of 5 for better responsiveness)
+        if (turnCount % 3 == 0) {
             compactor_.compactIfNeeded(messages_, config_.apiClient);
         }
 
@@ -365,6 +374,11 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                                 event.usage.inputTokens,
                                 event.usage.outputTokens);
                         }
+                        // Budget tracking
+                        if (event.usage.outputTokens > 0) {
+                            budgetTracker_.consumeQueryTokens(event.usage.inputTokens + event.usage.outputTokens);
+                            budgetTracker_.consumeTaskTokens(event.usage.inputTokens + event.usage.outputTokens);
+                        }
                         break;
 
                     case StreamEvent::EVT_USAGE_UPDATE:
@@ -383,6 +397,13 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
             }
         );
         } catch (const APIError& e) {
+            if (ErrorRecovery::isPromptTooLong(e)) {
+                auto recovery = ErrorRecovery::handlePromptTooLong(messages_, config_.apiClient, compactor_);
+                if (recovery.success) {
+                    spdlog::info("Recovered from prompt too long: {}", recovery.reason);
+                    continue; // Retry the turn
+                }
+            }
             spdlog::error("API call failed: {}", e.what());
             if (callbacks.onError) callbacks.onError(e.what());
             apiCallFailed = true;
@@ -399,6 +420,19 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
         }
 
         if (apiCallFailed) break; // Don't continue the turn loop on API failure
+
+        // Error recovery: handle max_tokens stop reason
+        if (stopReason == "max_tokens" && !pendingToolCalls.empty()) {
+            static int maxTokensRecoveryAttempt = 0;
+            auto recovery = ErrorRecovery::handleMaxOutputTokens(
+                messages_, config_.apiClient, compactor_, ++maxTokensRecoveryAttempt);
+            if (recovery.success) {
+                spdlog::info("Recovered from max_tokens: {}", recovery.reason);
+                // Don't add the incomplete assistant message, retry
+                continue;
+            }
+            maxTokensRecoveryAttempt = 0; // Reset on non-recovery
+        }
 
         // Add assistant message to history
         if (!accumulatedText.empty() || !pendingToolCalls.empty()) {
@@ -555,11 +589,21 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
         break;
     }
 
+    budgetTracker_.resetQueryBudget();
     if (callbacks.onComplete) callbacks.onComplete();
 }
 
 void QueryEngine::interrupt() {
     interrupted_ = true;
+}
+
+CompactMetadata QueryEngine::getLastCompactMetadata() const {
+    return compactor_.getLastMetadata();
+}
+
+void QueryEngine::setBudget(const TokenBudget& budget) {
+    budgetTracker_.setBudget(budget);
+    budgetTracker_.resetQueryBudget();
 }
 
 nlohmann::json QueryEngine::serializeMessages() const {

@@ -8,6 +8,9 @@
 #include "../mcp/MCPClient.h"
 #include "../coordinator/Coordinator.h"
 #include "../voice/VoiceEngine.h"
+#include "../utils/ProcessRunner.h"
+#include "../security/Sandbox.h"
+#include "../permissions/PermissionEngine.h"
 
 namespace closecrab {
 
@@ -354,31 +357,35 @@ public:
         }
 
         Coordinator::CoordinatorConfig cc;
-        // Get apiClient from the queryEngine's context — we need to access it
-        // For now, use a workaround: submit via queryEngine with coordinator prompt
         cc.appState = ctx.appState;
         cc.toolRegistry = ctx.toolRegistry;
         cc.cwd = ctx.cwd;
+        cc.apiClient = ctx.apiClient;
 
-        // We need the APIClient — it's stored in ToolContext but not CommandContext
-        // Use the queryEngine to run the coordinator task
-        std::string prompt = "[COORDINATOR MODE] Decompose and execute this task using multiple "
-            "sub-agents (Agent tool). Spawn explore agents for research, plan agents for design, "
-            "and general-purpose agents for implementation. Coordinate their results.\n\nTask: " + args;
+        if (!cc.apiClient) {
+            ctx.print("Error: No API client available for coordinator mode.\n");
+            return CommandResult::ok();
+        }
+
+        Coordinator coordinator(cc);
+        ctx.print("Decomposing task into subtasks...\n");
 
         QueryCallbacks cb;
         cb.onText = [&](const std::string& text) { ctx.print(text); };
         cb.onToolUse = [&](const std::string& name, const nlohmann::json&) {
             ctx.print("\n  [" + name + "] ");
         };
-        cb.onToolResult = [&](const std::string& name, const ToolResult& result) {
-            ctx.print(result.success ? "OK\n" : ("Error: " + result.error + "\n"));
+        cb.onToolResult = [&](const std::string&, const ToolResult& r) {
+            ctx.print(r.success ? "OK\n" : ("Error: " + r.error + "\n"));
         };
         cb.onComplete = []() {};
         cb.onError = [&](const std::string& err) { ctx.print("Error: " + err + "\n"); };
         cb.onAskPermission = [](const std::string&, const std::string&) { return true; };
 
-        ctx.queryEngine->submitMessage(prompt, cb);
+        std::string result = coordinator.execute(args, cb);
+        if (!result.empty()) {
+            ctx.print("\n--- Result ---\n" + result + "\n");
+        }
         return CommandResult::ok();
     }
 };
@@ -855,6 +862,487 @@ public:
                 [](const std::string&, const std::string&) { return true; }
             });
         }
+        return CommandResult::ok();
+    }
+};
+
+// ============================================================
+// Batch 5: Extended utility commands
+// ============================================================
+
+// /config - View/modify settings.json
+class ConfigCommand : public Command {
+public:
+    std::string getName() const override { return "config"; }
+    std::string getDescription() const override { return "View/modify settings.json"; }
+    std::vector<std::string> getAliases() const override { return {"settings"}; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        std::string path = ctx.cwd + "/.claude/settings.json";
+        if (args.empty()) {
+            std::ifstream f(path);
+            if (!f.is_open()) {
+                ctx.print("No settings.json found at: " + path + "\n");
+                return CommandResult::ok();
+            }
+            nlohmann::json j;
+            try { f >> j; } catch (...) { return CommandResult::fail("Invalid JSON in settings.json"); }
+            ctx.print(j.dump(2) + "\n");
+            return CommandResult::ok();
+        }
+        auto eq = args.find('=');
+        if (eq == std::string::npos) {
+            ctx.print("Usage: /config key=value\n");
+            return CommandResult::ok();
+        }
+        std::string key = args.substr(0, eq);
+        std::string val = args.substr(eq + 1);
+        nlohmann::json j;
+        { std::ifstream f(path); if (f.is_open()) { try { f >> j; } catch (...) {} } }
+        j[key] = val;
+        std::ofstream out(path);
+        if (!out.is_open()) return CommandResult::fail("Cannot write: " + path);
+        out << j.dump(2);
+        ctx.print("Set " + key + " = " + val + "\n");
+        return CommandResult::ok();
+    }
+};
+
+// /model - Switch model at runtime
+class ModelCommand : public Command {
+public:
+    std::string getName() const override { return "model"; }
+    std::string getDescription() const override { return "Switch model at runtime"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        if (args.empty()) {
+            ctx.print("Current model: " + ctx.appState->currentModel + "\n");
+            return CommandResult::ok();
+        }
+        ctx.appState->currentModel = args;
+        ctx.print("Model switched to: " + args + "\n");
+        return CommandResult::ok();
+    }
+};
+
+// /cost - Show cost tracking
+class CostCommand : public Command {
+public:
+    std::string getName() const override { return "cost"; }
+    std::string getDescription() const override { return "Show cost tracking"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        ctx.print("Total cost: $" + std::to_string(ctx.appState->totalCostUSD.load()) + "\n");
+        ctx.print("API duration: " + std::to_string(ctx.appState->totalAPIDuration.load()) + "s\n");
+        ctx.print("Tool duration: " + std::to_string(ctx.appState->totalToolDuration.load()) + "s\n");
+        ctx.print("\nPer-model breakdown:\n");
+        std::lock_guard<std::mutex> lock(ctx.appState->usageMutex);
+        for (const auto& [model, usage] : ctx.appState->modelUsage) {
+            ctx.print("  " + model + ": in=" + std::to_string(usage.inputTokens)
+                      + " out=" + std::to_string(usage.outputTokens)
+                      + " cache_r=" + std::to_string(usage.cacheReadTokens)
+                      + " cache_w=" + std::to_string(usage.cacheWriteTokens) + "\n");
+        }
+        return CommandResult::ok();
+    }
+};
+
+// /permissions - Manage permissions
+class PermissionsCommand : public Command {
+public:
+    std::string getName() const override { return "permissions"; }
+    std::string getDescription() const override { return "Manage permissions"; }
+    std::vector<std::string> getAliases() const override { return {"perms"}; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        auto& engine = PermissionEngine::getInstance();
+        if (args.empty()) {
+            ctx.print("Permission mode: " + engine.getModeName() + "\n");
+            auto rules = engine.saveRules();
+            if (!rules.empty()) {
+                ctx.print("Rules:\n" + rules.dump(2) + "\n");
+            } else {
+                ctx.print("No custom rules.\n");
+            }
+            return CommandResult::ok();
+        }
+        if (args.substr(0, 5) == "mode ") {
+            std::string mode = args.substr(5);
+            if (mode == "auto") engine.setMode(PermissionMode::AUTO);
+            else if (mode == "default") engine.setMode(PermissionMode::DEFAULT);
+            else if (mode == "bypass") engine.setMode(PermissionMode::BYPASS);
+            else { ctx.print("Unknown mode. Use: auto, default, bypass\n"); return CommandResult::ok(); }
+            ctx.appState->permissionMode = engine.getMode();
+            ctx.print("Permission mode set to: " + mode + "\n");
+            return CommandResult::ok();
+        }
+        ctx.print("Usage: /permissions [mode auto|default|bypass]\n");
+        return CommandResult::ok();
+    }
+};
+
+// /status - System status overview
+class StatusCommand : public Command {
+public:
+    std::string getName() const override { return "status"; }
+    std::string getDescription() const override { return "System status overview"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        auto& engine = PermissionEngine::getInstance();
+        ctx.print("Model: " + ctx.appState->currentModel + "\n");
+        ctx.print("Session: " + ctx.appState->sessionId + "\n");
+        ctx.print("Messages: " + std::to_string(ctx.queryEngine->getMessages().size()) + "\n");
+        ctx.print("Permission mode: " + engine.getModeName() + "\n");
+        ctx.print("Plan mode: " + std::string(ctx.appState->planMode ? "ON" : "OFF") + "\n");
+        ctx.print("Vim mode: " + std::string(ctx.appState->vimMode ? "ON" : "OFF") + "\n");
+        ctx.print("Voice: " + std::string(ctx.appState->voiceEnabled ? "ON" : "OFF") + "\n");
+        return CommandResult::ok();
+    }
+};
+
+// /clear - Clear conversation history
+class ClearCommand : public Command {
+public:
+    std::string getName() const override { return "clear"; }
+    std::string getDescription() const override { return "Clear conversation history"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        ctx.queryEngine->clearMessages();
+        ctx.print("Conversation history cleared.\n");
+        return CommandResult::ok();
+    }
+};
+
+// /fork - Fork current session
+class ForkCommand : public Command {
+public:
+    std::string getName() const override { return "fork"; }
+    std::string getDescription() const override { return "Fork current session"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        std::string newId = ctx.appState->sessionId + "_fork_" + std::to_string(std::time(nullptr));
+        // The messages are already in queryEngine; just assign a new session ID
+        ctx.queryEngine->setSessionId(newId);
+        ctx.appState->sessionId = newId;
+        ctx.print("Session forked. New session ID: " + newId + "\n");
+        return CommandResult::ok();
+    }
+};
+
+// /security-review - Security audit
+class SecurityReviewCommand : public Command {
+public:
+    std::string getName() const override { return "security-review"; }
+    std::string getDescription() const override { return "Security audit of recent code changes"; }
+    std::vector<std::string> getAliases() const override { return {"secreview"}; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        std::string prompt = "Review the recent code changes for security issues. "
+            "Run `git diff HEAD~5` to see recent changes, then analyze for: "
+            "injection vulnerabilities, auth issues, data exposure, insecure defaults, "
+            "and missing input validation. Report each finding with severity and fix.";
+        if (!args.empty()) prompt = "Security review: " + args;
+        ctx.print("Running security review...\n\n");
+        ctx.queryEngine->submitMessage(prompt, {
+            [&](const std::string& t) { ctx.print(t); }, nullptr, nullptr, nullptr,
+            []() {}, [&](const std::string& e) { ctx.print("Error: " + e + "\n"); }
+        });
+        return CommandResult::ok();
+    }
+};
+
+// /sandbox-toggle - Toggle sandbox mode
+class SandboxToggleCommand : public Command {
+public:
+    std::string getName() const override { return "sandbox-toggle"; }
+    std::string getDescription() const override { return "Toggle sandbox mode"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        auto& sb = Sandbox::getInstance();
+        if (sb.getMode() == Sandbox::Mode::DISABLED) {
+            sb.setMode(Sandbox::Mode::AUTO);
+            ctx.print("Sandbox: AUTO (dangerous operations will be blocked)\n");
+        } else {
+            sb.setMode(Sandbox::Mode::DISABLED);
+            ctx.print("Sandbox: DISABLED (all operations allowed)\n");
+        }
+        return CommandResult::ok();
+    }
+};
+
+// /keybindings - Show/set keybindings
+class KeybindingsCommand : public Command {
+public:
+    std::string getName() const override { return "keybindings"; }
+    std::string getDescription() const override { return "Show/set keybindings"; }
+    std::vector<std::string> getAliases() const override { return {"keys"}; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        ctx.print("Vim mode: " + std::string(ctx.appState->vimMode ? "ON" : "OFF") + "\n\n");
+        ctx.print("Available shortcuts:\n");
+        ctx.print("  Ctrl+C  — Cancel current operation\n");
+        ctx.print("  Ctrl+D  — Exit\n");
+        ctx.print("  Ctrl+L  — Clear screen\n");
+        ctx.print("  Tab     — Autocomplete\n");
+        ctx.print("  Up/Down — History navigation\n");
+        if (ctx.appState->vimMode) {
+            ctx.print("  Esc     — Normal mode\n");
+            ctx.print("  i/a     — Insert mode\n");
+            ctx.print("  :q      — Quit\n");
+        }
+        return CommandResult::ok();
+    }
+};
+
+// /privacy-settings - Privacy settings
+class PrivacySettingsCommand : public Command {
+public:
+    std::string getName() const override { return "privacy-settings"; }
+    std::string getDescription() const override { return "Privacy settings"; }
+    std::vector<std::string> getAliases() const override { return {"privacy"}; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        if (args.empty()) {
+            ctx.print("Verbose logging: " + std::string(ctx.appState->verbose ? "ON" : "OFF") + "\n");
+            ctx.print("Toggle with: /privacy-settings verbose\n");
+            return CommandResult::ok();
+        }
+        if (args == "verbose") {
+            ctx.appState->verbose = !ctx.appState->verbose;
+            ctx.print("Verbose logging: " + std::string(ctx.appState->verbose ? "ON" : "OFF") + "\n");
+        } else {
+            ctx.print("Usage: /privacy-settings [verbose]\n");
+        }
+        return CommandResult::ok();
+    }
+};
+
+// /rate-limit-options - Rate limit config
+class RateLimitOptionsCommand : public Command {
+public:
+    std::string getName() const override { return "rate-limit-options"; }
+    std::string getDescription() const override { return "Rate limit configuration"; }
+    std::vector<std::string> getAliases() const override { return {"ratelimit"}; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        // Static local for retry settings (could be moved to AppState)
+        static int maxRetries = 3;
+        static int retryDelayMs = 1000;
+        if (args.empty()) {
+            ctx.print("Rate limit settings:\n");
+            ctx.print("  Max retries: " + std::to_string(maxRetries) + "\n");
+            ctx.print("  Retry delay: " + std::to_string(retryDelayMs) + "ms\n");
+            ctx.print("Set with: /rate-limit-options retries <N>\n");
+            return CommandResult::ok();
+        }
+        if (args.substr(0, 8) == "retries ") {
+            try {
+                maxRetries = std::stoi(args.substr(8));
+                ctx.print("Max retries set to: " + std::to_string(maxRetries) + "\n");
+            } catch (...) { ctx.print("Invalid number.\n"); }
+        } else {
+            ctx.print("Usage: /rate-limit-options [retries <N>]\n");
+        }
+        return CommandResult::ok();
+    }
+};
+
+// /commit-push-pr - One-click git workflow
+class CommitPushPrCommand : public Command {
+public:
+    std::string getName() const override { return "commit-push-pr"; }
+    std::string getDescription() const override { return "One-click: git add, commit, push, create PR"; }
+    std::vector<std::string> getAliases() const override { return {"cpp", "shipit"}; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        std::string msg = args.empty() ? "Auto-commit via CloseCrab" : args;
+        std::string cmd = "git add -A && git commit -m \"" + msg + "\" && git push && gh pr create --fill";
+        ctx.print("Running: " + cmd + "\n");
+        auto result = ProcessRunner::run(cmd);
+        ctx.print(result.output);
+        if (result.exitCode != 0) {
+            ctx.print("Exit code: " + std::to_string(result.exitCode) + "\n");
+        }
+        return CommandResult::ok();
+    }
+};
+
+// /release-notes - Generate release notes
+class ReleaseNotesCommand : public Command {
+public:
+    std::string getName() const override { return "release-notes"; }
+    std::string getDescription() const override { return "Generate release notes from git log"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        std::string range = args.empty() ? "" : args;
+        std::string cmd = range.empty()
+            ? "git log --oneline --no-merges -30"
+            : "git log --oneline --no-merges " + range;
+        auto result = ProcessRunner::run(cmd);
+        if (result.output.empty()) {
+            ctx.print("No commits found.\n");
+            return CommandResult::ok();
+        }
+        std::string prompt = "Format the following git log as release notes with categories "
+            "(Features, Bug Fixes, Improvements, Other). Use markdown:\n\n" + result.output;
+        ctx.print("Generating release notes...\n\n");
+        ctx.queryEngine->submitMessage(prompt, {
+            [&](const std::string& t) { ctx.print(t); }, nullptr, nullptr, nullptr,
+            []() {}, [&](const std::string& e) { ctx.print("Error: " + e + "\n"); }
+        });
+        return CommandResult::ok();
+    }
+};
+
+// /stats - Detailed statistics
+class StatsCommand : public Command {
+public:
+    std::string getName() const override { return "stats"; }
+    std::string getDescription() const override { return "Detailed session statistics"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        const auto& msgs = ctx.queryEngine->getMessages();
+        int userMsgs = 0, assistantMsgs = 0, toolCalls = 0;
+        int64_t totalTokens = 0;
+        for (const auto& m : msgs) {
+            if (m.role == MessageRole::USER) userMsgs++;
+            else if (m.role == MessageRole::ASSISTANT) {
+                assistantMsgs++;
+                for (const auto& b : m.content)
+                    if (b.type == ContentBlockType::TOOL_USE) toolCalls++;
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(ctx.appState->usageMutex);
+            for (const auto& [model, u] : ctx.appState->modelUsage)
+                totalTokens += u.inputTokens + u.outputTokens;
+        }
+        ctx.print("Messages: " + std::to_string(msgs.size())
+                  + " (" + std::to_string(userMsgs) + " user, "
+                  + std::to_string(assistantMsgs) + " assistant)\n");
+        ctx.print("Tool calls: " + std::to_string(toolCalls) + "\n");
+        ctx.print("Total tokens: " + std::to_string(totalTokens) + "\n");
+        ctx.print("API duration: " + std::to_string(ctx.appState->totalAPIDuration.load()) + "s\n");
+        ctx.print("Tool duration: " + std::to_string(ctx.appState->totalToolDuration.load()) + "s\n");
+        ctx.print("Cost: $" + std::to_string(ctx.appState->totalCostUSD.load()) + "\n");
+        return CommandResult::ok();
+    }
+};
+
+// /bridge - Bridge remote control
+class BridgeCommand : public Command {
+public:
+    std::string getName() const override { return "bridge"; }
+    std::string getDescription() const override { return "Bridge remote control status"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        if (args.empty()) {
+            ctx.print("Bridge: not connected\n");
+            ctx.print("Usage: /bridge connect <url> | disconnect | status\n");
+            return CommandResult::ok();
+        }
+        if (args == "status") {
+            ctx.print("Bridge: not connected\n");
+        } else if (args.substr(0, 7) == "connect") {
+            std::string url = args.size() > 8 ? args.substr(8) : "";
+            ctx.print("Bridge connect to: " + url + " (not yet implemented)\n");
+        } else if (args == "disconnect") {
+            ctx.print("Bridge disconnected.\n");
+        } else {
+            ctx.print("Usage: /bridge connect <url> | disconnect | status\n");
+        }
+        return CommandResult::ok();
+    }
+};
+
+// /buddy - Buddy/pair mode
+class BuddyCommand : public Command {
+public:
+    std::string getName() const override { return "buddy"; }
+    std::string getDescription() const override { return "Toggle buddy/pair mode (confirm before each action)"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        // Use planMode as a proxy for buddy mode (confirm-before-act)
+        ctx.appState->planMode = !ctx.appState->planMode;
+        ctx.print("Buddy mode: " + std::string(ctx.appState->planMode ? "ON" : "OFF") + "\n");
+        if (ctx.appState->planMode) {
+            ctx.print("AI will ask for confirmation before each action.\n");
+        }
+        return CommandResult::ok();
+    }
+};
+
+// /peers - Peer session management
+class PeersCommand : public Command {
+public:
+    std::string getName() const override { return "peers"; }
+    std::string getDescription() const override { return "List active peer sessions"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        ctx.print("Active sessions:\n");
+        ctx.print("  * " + ctx.appState->sessionId + " (current)\n");
+        if (!ctx.appState->parentSessionId.empty()) {
+            ctx.print("  - " + ctx.appState->parentSessionId + " (parent)\n");
+        }
+        auto agents = AgentManager::getInstance().listAgents();
+        for (const auto& [id, status] : agents) {
+            if (status == AgentStatus::RUNNING) {
+                ctx.print("  - " + id + " (agent)\n");
+            }
+        }
+        return CommandResult::ok();
+    }
+};
+
+// /workflows - Run workflow scripts
+class WorkflowsCommand : public Command {
+public:
+    std::string getName() const override { return "workflows"; }
+    std::string getDescription() const override { return "List/run workflow scripts from .claude/workflows/"; }
+    std::vector<std::string> getAliases() const override { return {"wf"}; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        std::string dir = ctx.cwd + "/.claude/workflows";
+        if (args.empty() || args == "list") {
+            auto result = ProcessRunner::run("ls \"" + dir + "\"/*.md 2>/dev/null || echo '(none)'");
+            ctx.print("Workflows in .claude/workflows/:\n" + result.output + "\n");
+            return CommandResult::ok();
+        }
+        // Run a specific workflow
+        std::string path = dir + "/" + args;
+        if (path.find(".md") == std::string::npos) path += ".md";
+        std::ifstream f(path);
+        if (!f.is_open()) {
+            ctx.print("Workflow not found: " + path + "\n");
+            return CommandResult::ok();
+        }
+        std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        ctx.print("Running workflow: " + args + "\n\n");
+        ctx.queryEngine->submitMessage("Execute this workflow:\n\n" + content, {
+            [&](const std::string& t) { ctx.print(t); }, nullptr, nullptr, nullptr,
+            []() {}, [&](const std::string& e) { ctx.print("Error: " + e + "\n"); }
+        });
+        return CommandResult::ok();
+    }
+};
+
+// /oauth-refresh - Refresh OAuth token
+class OauthRefreshCommand : public Command {
+public:
+    std::string getName() const override { return "oauth-refresh"; }
+    std::string getDescription() const override { return "Refresh OAuth token"; }
+    std::vector<std::string> getAliases() const override { return {"oauth"}; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        ctx.print("OAuth token management:\n");
+        ctx.print("  CloseCrab uses API keys by default.\n");
+        ctx.print("  To set up OAuth, configure in .claude/settings.json:\n");
+        ctx.print("    \"oauth\": {\n");
+        ctx.print("      \"provider\": \"...\",\n");
+        ctx.print("      \"client_id\": \"...\",\n");
+        ctx.print("      \"token_url\": \"...\"\n");
+        ctx.print("    }\n");
+        ctx.print("  Then run /oauth-refresh to obtain a new token.\n");
         return CommandResult::ok();
     }
 };

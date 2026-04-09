@@ -73,6 +73,106 @@ Message Message::makeToolResult(const std::string& toolUseId, const nlohmann::js
     return m;
 }
 
+// ---- v2 Convenience constructors ----
+
+Message Message::makeInformational(InformationalLevel level, const std::string& text,
+                                   const std::string& id) {
+    Message m;
+    m.type = MessageType::SYSTEM;
+    m.role = MessageRole::SYSTEM;
+    m.systemSubtype = SystemSubtype::INFORMATIONAL;
+    m.infoLevel = level;
+    m.isMeta = true;
+    std::string prefix;
+    switch (level) {
+        case InformationalLevel::INFO:       prefix = "[info] "; break;
+        case InformationalLevel::WARNING:    prefix = "[warning] "; break;
+        case InformationalLevel::ERROR:      prefix = "[error] "; break;
+        case InformationalLevel::SUGGESTION: prefix = "[suggestion] "; break;
+    }
+    m.content.push_back({ContentBlockType::TEXT, prefix + text});
+    m.uuid = id.empty() ? generateUUID() : id;
+    m.timestamp = nowMs();
+    return m;
+}
+
+Message Message::makeCompactBoundary(const CompactMetadata& meta, const std::string& summary,
+                                     const std::string& id) {
+    Message m;
+    m.type = MessageType::SYSTEM;
+    m.role = MessageRole::SYSTEM;
+    m.systemSubtype = SystemSubtype::COMPACT_BOUNDARY;
+    m.isCompactSummary = true;
+    m.compactMeta = meta;
+    m.content.push_back({ContentBlockType::TEXT,
+        "[Conversation history was compressed. Summary of earlier messages:]\n\n" + summary});
+    m.uuid = id.empty() ? generateUUID() : id;
+    m.timestamp = nowMs();
+    return m;
+}
+
+Message Message::makeTurnDuration(double durationMs, int tokensUsed, int budgetRemaining,
+                                  const std::string& id) {
+    Message m;
+    m.type = MessageType::SYSTEM;
+    m.role = MessageRole::SYSTEM;
+    m.systemSubtype = SystemSubtype::TURN_DURATION;
+    m.isMeta = true;
+    std::string text = "[Turn completed in " + std::to_string(static_cast<int>(durationMs)) + "ms, "
+                     + std::to_string(tokensUsed) + " tokens used";
+    if (budgetRemaining >= 0) text += ", " + std::to_string(budgetRemaining) + " remaining";
+    text += "]";
+    m.content.push_back({ContentBlockType::TEXT, text});
+    m.uuid = id.empty() ? generateUUID() : id;
+    m.timestamp = nowMs();
+    return m;
+}
+
+Message Message::makeApiMetrics(double ttftMs, double outputTokensPerSec,
+                                const std::string& id) {
+    Message m;
+    m.type = MessageType::SYSTEM;
+    m.role = MessageRole::SYSTEM;
+    m.systemSubtype = SystemSubtype::API_METRICS;
+    m.isMeta = true;
+    std::string text = "[API metrics: TTFT=" + std::to_string(static_cast<int>(ttftMs)) + "ms"
+                     + ", output=" + std::to_string(static_cast<int>(outputTokensPerSec)) + " tok/s]";
+    m.content.push_back({ContentBlockType::TEXT, text});
+    m.uuid = id.empty() ? generateUUID() : id;
+    m.timestamp = nowMs();
+    return m;
+}
+
+Message Message::makeMemorySaved(const std::string& memoryName, const std::string& memoryType,
+                                 const std::string& id) {
+    Message m;
+    m.type = MessageType::SYSTEM;
+    m.role = MessageRole::SYSTEM;
+    m.systemSubtype = SystemSubtype::MEMORY_SAVED;
+    m.isMeta = true;
+    m.content.push_back({ContentBlockType::TEXT,
+        "[Memory saved: " + memoryName + " (type: " + memoryType + ")]"});
+    m.uuid = id.empty() ? generateUUID() : id;
+    m.timestamp = nowMs();
+    return m;
+}
+
+Message Message::makeAgentsKilled(const std::vector<std::string>& agentIds,
+                                  const std::string& reason, const std::string& id) {
+    Message m;
+    m.type = MessageType::SYSTEM;
+    m.role = MessageRole::SYSTEM;
+    m.systemSubtype = SystemSubtype::AGENTS_KILLED;
+    m.isMeta = true;
+    std::string text = "[Agents terminated (" + reason + "):";
+    for (const auto& aid : agentIds) text += " " + aid;
+    text += "]";
+    m.content.push_back({ContentBlockType::TEXT, text});
+    m.uuid = id.empty() ? generateUUID() : id;
+    m.timestamp = nowMs();
+    return m;
+}
+
 std::string Message::getText() const {
     std::string result;
     for (const auto& block : content) {

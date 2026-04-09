@@ -49,6 +49,10 @@
 #include "tools/TeamTools/TeamTools.h"
 #include "tools/ConfigTool/ConfigTool.h"
 #include "tools/SystemTools/SystemTools.h"
+#include "tools/DiscoverSkillsTool/DiscoverSkillsTool.h"
+#include "tools/SnipTool/SnipTool.h"
+#include "tools/VerifyPlanTool/VerifyPlanTool.h"
+#include "tools/WebBrowserTool/WebBrowserTool.h"
 #include "mcp/MCPClient.h"
 #include "plugins/PluginManager.h"
 #include "core/CostTracker.h"
@@ -442,6 +446,27 @@ int main(int argc, char* argv[]) {
     cmdRegistry.registerCommand(std::make_unique<AutofixPrCommand>());
     cmdRegistry.registerCommand(std::make_unique<BughunterCommand>());
     cmdRegistry.registerCommand(std::make_unique<PassesCommand>());
+    // v2 new commands
+    cmdRegistry.registerCommand(std::make_unique<ConfigCommand>());
+    cmdRegistry.registerCommand(std::make_unique<ModelCommand>());
+    cmdRegistry.registerCommand(std::make_unique<CostCommand>());
+    cmdRegistry.registerCommand(std::make_unique<PermissionsCommand>());
+    cmdRegistry.registerCommand(std::make_unique<StatusCommand>());
+    cmdRegistry.registerCommand(std::make_unique<ClearCommand>());
+    cmdRegistry.registerCommand(std::make_unique<ForkCommand>());
+    cmdRegistry.registerCommand(std::make_unique<SecurityReviewCommand>());
+    cmdRegistry.registerCommand(std::make_unique<SandboxToggleCommand>());
+    cmdRegistry.registerCommand(std::make_unique<KeybindingsCommand>());
+    cmdRegistry.registerCommand(std::make_unique<PrivacySettingsCommand>());
+    cmdRegistry.registerCommand(std::make_unique<RateLimitOptionsCommand>());
+    cmdRegistry.registerCommand(std::make_unique<CommitPushPrCommand>());
+    cmdRegistry.registerCommand(std::make_unique<ReleaseNotesCommand>());
+    cmdRegistry.registerCommand(std::make_unique<StatsCommand>());
+    cmdRegistry.registerCommand(std::make_unique<BridgeCommand>());
+    cmdRegistry.registerCommand(std::make_unique<BuddyCommand>());
+    cmdRegistry.registerCommand(std::make_unique<PeersCommand>());
+    cmdRegistry.registerCommand(std::make_unique<WorkflowsCommand>());
+    cmdRegistry.registerCommand(std::make_unique<OauthRefreshCommand>());
     spdlog::info("Registered {} commands", cmdRegistry.getCommandNames().size());
     toolRegistry.registerTool(std::make_unique<FileReadTool>());
     toolRegistry.registerTool(std::make_unique<FileWriteTool>());
@@ -485,6 +510,10 @@ int main(int argc, char* argv[]) {
     toolRegistry.registerTool(std::make_unique<McpAuthTool>());
     toolRegistry.registerTool(std::make_unique<BriefTool>());
     toolRegistry.registerTool(std::make_unique<SyntheticOutputTool>());
+    toolRegistry.registerTool(std::make_unique<DiscoverSkillsTool>());
+    toolRegistry.registerTool(std::make_unique<SnipTool>());
+    toolRegistry.registerTool(std::make_unique<VerifyPlanTool>());
+    toolRegistry.registerTool(std::make_unique<WebBrowserTool>());
     spdlog::info("Registered {} tools", toolRegistry.getToolNames().size());
 
     // Load MCP servers from settings
@@ -685,7 +714,17 @@ When the user asks a question, answer directly.)";
         streamState = StreamState::WAITING;
         firstToken = true;
         spinner.start("Waiting for response...");
-        g_queryEngine->submitMessage(input, callbacks);
+        try {
+            g_queryEngine->submitMessage(input, callbacks);
+        } catch (const std::exception& e) {
+            spinner.stop();
+            std::cerr << ansi::red() << "Fatal error: " << e.what() << ansi::reset() << "\n";
+            spdlog::error("submitMessage crashed: {}", e.what());
+        } catch (...) {
+            spinner.stop();
+            std::cerr << ansi::red() << "Fatal unknown error in submitMessage" << ansi::reset() << "\n";
+            spdlog::error("submitMessage crashed with unknown exception");
+        }
     }
 
     // ---- Cleanup ----

@@ -14,7 +14,9 @@ enum class HookEvent {
     PRE_TOOL_USE,       // Before a tool executes
     POST_TOOL_USE,      // After a tool executes
     NOTIFICATION,       // On notification events
-    STOP                // When generation stops
+    STOP,               // When generation stops
+    POST_SAMPLING,      // After API response received
+    STOP_FAILURE        // When stop hooks fail
 };
 
 inline std::string hookEventName(HookEvent e) {
@@ -23,6 +25,8 @@ inline std::string hookEventName(HookEvent e) {
         case HookEvent::POST_TOOL_USE: return "PostToolUse";
         case HookEvent::NOTIFICATION: return "Notification";
         case HookEvent::STOP: return "Stop";
+        case HookEvent::POST_SAMPLING: return "PostSampling";
+        case HookEvent::STOP_FAILURE: return "StopFailure";
     }
     return "Unknown";
 }
@@ -32,6 +36,8 @@ inline HookEvent parseHookEvent(const std::string& s) {
     if (s == "PostToolUse") return HookEvent::POST_TOOL_USE;
     if (s == "Notification") return HookEvent::NOTIFICATION;
     if (s == "Stop") return HookEvent::STOP;
+    if (s == "PostSampling") return HookEvent::POST_SAMPLING;
+    if (s == "StopFailure") return HookEvent::STOP_FAILURE;
     return HookEvent::POST_TOOL_USE; // default
 }
 
@@ -47,6 +53,7 @@ struct HookResult {
     bool blocked = false;   // Hook returned non-zero = block the action
     std::string output;
     std::string error;
+    double durationMs = 0.0;
 };
 
 class HookManager {
