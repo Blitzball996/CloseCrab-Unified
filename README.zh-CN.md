@@ -1,6 +1,6 @@
 # CloseCrab-Unified — 本地 AI 编程助手
 
-一个用 C++17 编写的本地优先 AI 编程助手。可以在你自己的 GPU 上运行大语言模型，也可以连接 Claude、OpenAI 等远程 API — 只需改一行配置。AI 拥有 42 个工具、66 个命令、多智能体协作、记忆系统、语音输出，全部受权限系统保护。单文件可执行程序，约 3.0MB。
+一个用 C++17 编写的本地优先 AI 编程助手。可以在你自己的 GPU 上运行大语言模型，也可以连接 Claude、OpenAI 等远程 API — 只需改一行配置。AI 拥有 46 个工具、81 个命令、多智能体协作、记忆系统、语音输出，全部受权限系统保护。单文件可执行程序，约 3.0MB。
 
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
 [![CUDA](https://img.shields.io/badge/CUDA-12.x-green.svg)](https://developer.nvidia.com/cuda-toolkit)
@@ -11,9 +11,9 @@
 
 ## 这是什么？
 
-大多数 AI 编程工具需要联网。CloseCrab-Unified 给你选择权：在本地 GPU 上运行模型（零网络依赖），或者连接 Claude/OpenAI/任何兼容 API。无论哪种方式，AI 都能使用同一套 42 个工具。
+大多数 AI 编程工具需要联网。CloseCrab-Unified 给你选择权：在本地 GPU 上运行模型（零网络依赖），或者连接 Claude/OpenAI/任何兼容 API。无论哪种方式，AI 都能使用同一套 46 个工具。
 
-它融合了两个项目：**CloseCrab**（C++ 本地推理引擎，带 RAG 和 MoE 流式加载）和 **JackProAi-claudecode**（TypeScript CLI，40+ 工具和 95 个命令）。最终产出一个 C++ 单文件可执行程序，109 个源文件编译为 ~3.0MB，包含 42 个工具、66 个命令、16 个服务模块。
+它融合了两个项目：**CloseCrab**（C++ 本地推理引擎，带 RAG 和 MoE 流式加载）和 **JackProAi-claudecode**（TypeScript CLI，40+ 工具和 95 个命令）。最终产出一个 C++ 单文件可执行程序，~160 个源文件编译为 ~3.2MB，包含 46 个工具、81 个命令、30 个服务模块。
 
 ### 为什么用它？
 
@@ -21,7 +21,7 @@
 - **灵活**：改一行配置就能在本地和远程模型之间切换
 - **真工具**：AI 不只是聊天 — 它能读文件、写代码、跑测试、搜索网络
 - **智能**：多 Agent 协调、历史压缩、记忆系统、Hooks 自动化
-- **可扩展**：42 个内置工具 + 插件系统 + MCP 协议 + 技能目录
+- **可扩展**：46 个内置工具 + 插件系统 + MCP 协议 + 技能目录
 - **快**：C++17，CUDA GPU 加速，无 Python 运行时
 
 ---
@@ -99,7 +99,7 @@ closecrab-unified.exe --provider anthropic --api-key sk-xxx --api-url https://ap
 
 ---
 
-## 命令参考 (66 个)
+## 命令参考 (81 个)
 
 ### 会话
 
@@ -198,9 +198,34 @@ closecrab-unified.exe --provider anthropic --api-key sk-xxx --api-url https://ap
 | `/files [路径]` | 列出目录文件 |
 | `/reload` | 重新加载配置 |
 
+### v0.2.0 新增命令
+
+| 命令 | 说明 |
+|------|------|
+| `/config` | 查看/修改 settings.json |
+| `/model [名称]` | 运行时切换模型 |
+| `/cost` | 费用追踪（按模型分列） |
+| `/permissions [模式]` | 权限管理（default/auto/bypass） |
+| `/status` | 系统状态总览 |
+| `/clear` | 清空对话历史 |
+| `/fork` | 分叉当前会话 |
+| `/security-review` | 安全审查（LLM 分析代码变更） |
+| `/sandbox-toggle` | 切换沙箱模式 |
+| `/keybindings` | 查看快捷键 |
+| `/privacy-settings` | 隐私设置 |
+| `/rate-limit-options` | 速率限制配置 |
+| `/commit-push-pr` | 一键 git add + commit + push + PR |
+| `/release-notes` | 从 git log 生成发布说明 |
+| `/stats` | 详细统计（消息数、工具调用、token、耗时） |
+| `/bridge` | Bridge 远程控制 |
+| `/buddy` | 伙伴模式（每步确认） |
+| `/peers` | 对等会话管理 |
+| `/workflows` | 运行 .claude/workflows/ 脚本 |
+| `/oauth-refresh` | OAuth token 刷新 |
+
 ---
 
-## 工具 (42 个)
+## 工具 (46 个)
 
 | 分类 | 工具 |
 |------|------|
@@ -214,22 +239,31 @@ closecrab-unified.exe --provider anthropic --api-key sk-xxx --api-url https://ap
 | 网络 | WebSearch（DuckDuckGo）, WebFetch（带 15 分钟缓存） |
 | 交互 | AskUserQuestion, SendMessage, TodoWrite |
 | 系统 | Config, LSP, RemoteTrigger, ToolSearch, Brief, SyntheticOutput |
+| 发现/工作流 | DiscoverSkills（技能发现）, Snip（片段管理/历史裁剪）, VerifyPlanExecution（计划验证）, WebBrowser（浏览器自动化） |
 
 ---
 
 ## 核心特性
 
-### 历史压缩 (SnipCompact)
+### 历史压缩（5 策略联动）
 
-长对话接近上下文窗口限制（默认 75%）时自动触发压缩。旧消息被摘要为一条系统消息，保留最近 10 条完整消息。远程 API 模式下使用 LLM 生成高质量摘要，本地模式使用统计摘要。也可用 `/compact` 手动触发。
+五种压缩策略协同工作：**AutoCompact**（75% 阈值，LLM 摘要）、**MicroCompact**（60% 阈值，截断大 tool result）、**ReactiveCompact**（95% 紧急压缩）、**ContextCollapse**（折叠连续 read/search 结果）、**EnhancedSnip**（相关性评分分组删除）。HistoryCompactor 按优先级编排策略。可用 `/compact` 手动触发。
 
 ### 并发 Tool 执行
 
-当 LLM 一次返回多个 tool_use 请求时，通过 `std::async` 并行执行，mutex 保护消息写入。单个 tool 调用仍然串行执行。
+LLM 一次返回多个 tool_use 时，StreamingToolExecutor 并行执行，支持并发度限制、预算裁剪和中断处理。
 
 ### API 重试与错误分类
 
 所有 API 调用自动分类错误类型（AUTH/RATE_LIMIT/OVERLOADED/SERVER/NETWORK/INVALID_REQUEST），可重试错误（429/500/502/503/529）自动指数退避重试（1s/2s/4s），最多 3 次。不可重试错误（401/400）立即报错。
+
+### 错误恢复
+
+自动从常见 API 故障恢复：MAX_OUTPUT_TOKENS 触发重新压缩并重试，prompt 过长触发激进压缩，主模型失败可回退到备用模型。最多 3 次恢复尝试。
+
+### Token 预算系统
+
+三层预算控制：每查询预算、每任务预算、每 tool result 预算。超出预算的 tool result 自动截断并附加大小说明。
 
 ### Hooks 系统
 
@@ -244,7 +278,7 @@ closecrab-unified.exe --provider anthropic --api-key sk-xxx --api-url https://ap
 }
 ```
 
-Hook 返回非零退出码会阻止 tool 执行。支持 `HOOK_TOOL` 和 `HOOK_EVENT` 环境变量。
+Hook 返回非零退出码会阻止 tool 执行。支持 `HOOK_TOOL` 和 `HOOK_EVENT` 环境变量。支持 4 种事件：`PreToolUse`、`PostToolUse`、`PostSampling`（API 响应后）、`StopFailure`（stop hook 失败时）。Hook 结果包含执行耗时。
 
 ### 文件记忆系统
 
@@ -273,6 +307,25 @@ type: user
 
 子 Agent 通过 `allowedTools` 过滤器限制可用工具，在独立线程中运行。
 
+### v0.2.0 新增服务
+
+| 服务 | 功能 |
+|------|------|
+| 5 策略压缩 | AutoCompact + MicroCompact + ReactiveCompact + ContextCollapse + EnhancedSnip |
+| Token 预算 | BudgetTracker 三层预算 + TokenEstimator 快速估算 |
+| 错误恢复 | ErrorRecovery（max_tokens/prompt_too_long/fallback） |
+| StreamingToolExecutor | 流式 tool 编排 + 预算裁剪 |
+| LSPServerManager | 多 LSP 服务器管理（按扩展名路由） |
+| SkillSearchService | 本地 + 远程技能搜索 + 预取 |
+| TeamMemorySync | 团队记忆同步 + secret scanning |
+| FeatureFlags | 本地特性门控 |
+| AnalyticsService | 本地文件日志分析 |
+| NotifierService | 跨平台系统通知 |
+| PreventSleepService | 长任务防休眠 |
+| AutoDreamService | 后台记忆整合 |
+| PromptSuggestionService | 提示词建议 |
+| SessionTranscriptService | 会话转录导出 |
+
 ### Vim 模式
 
 `/vim` 启用 Vim 键绑定。支持 Normal/Insert/Command 三种模式：
@@ -290,7 +343,7 @@ type: user
 - macOS：`say` 命令
 - Linux：`espeak`
 
-AI 回复完成后自动朗读，长文本自动截断到 500 字符。
+AI 回复完成后自动朗读，长文本自动截断到 500 字符。v0.2.0 新增 STT（语音转文字）：Windows 用 PowerShell Speech Recognition，Linux/macOS 用 whisper.cpp CLI。
 
 ### 会话持久化
 
@@ -335,8 +388,8 @@ src/
 ├── main.cpp              # 入口，组件初始化，主循环
 ├── core/                 # QueryEngine, Message, AppState, HistoryCompactor, FileStateCache, CostTracker
 ├── api/                  # LocalLLM, Anthropic, OpenAI API 客户端, APIError, StreamParser
-├── tools/                # 42 个工具实现（每个工具一个目录）
-├── commands/             # 66 个斜杠命令（Git/Session/Advanced/Extended）
+├── tools/                # 46 个工具实现（每个工具一个目录）
+├── commands/             # 81 个斜杠命令（Git/Session/Advanced/Extended）
 ├── agents/               # 多 Agent 系统（AgentManager, 5 种类型）
 ├── coordinator/          # 多 Agent 协调器（任务分解 + 并行执行）
 ├── mcp/                  # MCP 协议客户端（JSON-RPC 2.0 stdio）
@@ -354,6 +407,7 @@ src/
 ├── lsp/                  # LSP 客户端
 ├── bridge/               # 远程执行（HTTP + 重连）
 ├── voice/                # 语音引擎（系统 TTS）
+├── services/             # 14 个服务模块
 └── utils/                # 日志, 字符串(UTF-8), UUID, ProcessRunner
 ```
 
@@ -369,6 +423,20 @@ src/
 | ProcessSandbox | security/ProcessSandbox.h | OS 级进程资源限制 |
 | WebCache | tools/WebTools/WebTools.h | 15 分钟 TTL URL 缓存 |
 | CronScheduler | tools/CronTools/CronTools.h | 5 字段 cron 表达式解析 + 调度 |
+| 5 策略压缩 | core/CompactStrategies.h | AutoCompact + MicroCompact + ReactiveCompact + ContextCollapse + EnhancedSnip |
+| Token 预算 | core/BudgetTracker.h | BudgetTracker 三层预算 + TokenEstimator 快速估算 |
+| 错误恢复 | core/ErrorRecovery.h | ErrorRecovery（max_tokens/prompt_too_long/fallback） |
+| StreamingToolExecutor | core/StreamingToolExecutor.h | 流式 tool 编排 + 预算裁剪 |
+| LSPServerManager | lsp/LSPServerManager.h | 多 LSP 服务器管理（按扩展名路由） |
+| SkillSearchService | services/SkillSearchService.h | 本地 + 远程技能搜索 + 预取 |
+| TeamMemorySync | services/TeamMemorySync.h | 团队记忆同步 + secret scanning |
+| FeatureFlags | services/FeatureFlags.h | 本地特性门控 |
+| AnalyticsService | services/AnalyticsService.h | 本地文件日志分析 |
+| NotifierService | services/NotifierService.h | 跨平台系统通知 |
+| PreventSleepService | services/PreventSleepService.h | 长任务防休眠 |
+| AutoDreamService | services/AutoDreamService.h | 后台记忆整合 |
+| PromptSuggestionService | services/PromptSuggestionService.h | 提示词建议 |
+| SessionTranscriptService | services/SessionTranscriptService.h | 会话转录导出 |
 
 ---
 

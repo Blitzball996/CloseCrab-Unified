@@ -29,6 +29,7 @@ Source: "download_model.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "run.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "icons\closecrab.ico"; DestDir: "{app}\icons"; Flags: ignoreversion
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "README.zh-CN.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs
 
 [Icons]
@@ -107,8 +108,10 @@ begin
     'Works with any OpenAI-format API: OpenAI, LM Studio,' + #13#10 +
     'SiliconFlow, Ollama, vLLM, and other providers.' + #13#10 +
     '' + #13#10 +
-    'All modes include: 42 tools, 50+ commands, multi-agent,' + #13#10 +
-    'memory system, hooks, vim mode, voice output, and more.';
+    'All modes include: 46 tools, 81 commands, multi-agent,' + #13#10 +
+    'memory system, hooks, vim mode, voice output, and more.' + #13#10 +
+    'v0.2.0: 5-strategy compression, token budgets, error recovery,' + #13#10 +
+    '20 new commands, 4 new tools, 14 service modules.';
 
   // ==========================================
   // PAGE 2: Local Model Selection
@@ -385,4 +388,6 @@ Type: dirifempty; Name: "{app}\docs"
 Type: dirifempty; Name: "{app}\.claude\memory"
 Type: dirifempty; Name: "{app}\.claude\skills"
 Type: dirifempty; Name: "{app}\.claude\plugins"
+Type: dirifempty; Name: "{app}\.claude\snippets"
+Type: dirifempty; Name: "{app}\.claude\workflows"
 Type: dirifempty; Name: "{app}\.claude"

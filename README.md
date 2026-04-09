@@ -4,18 +4,18 @@
 [![CUDA](https://img.shields.io/badge/CUDA-12.x-green.svg)](https://developer.nvidia.com/cuda-toolkit)
 [![Windows](https://img.shields.io/badge/Platform-Windows%20|%20Linux%20|%20macOS-0078d7.svg)](#platforms)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tools](https://img.shields.io/badge/Tools-42-orange.svg)](#tools-42)
-[![Binary Size](https://img.shields.io/badge/Binary-~3.0MB-brightgreen.svg)](#)
+[![Tools](https://img.shields.io/badge/Tools-46-orange.svg)](#tools-46)
+[![Binary Size](https://img.shields.io/badge/Binary-~3.2MB-brightgreen.svg)](#)
 
-A local-first AI coding assistant. Single C++17 binary, 42 tools, 66 commands, runs LLMs on your GPU or connects to cloud APIs.
+A local-first AI coding assistant. Single C++17 binary, 46 tools, 81 commands, runs LLMs on your GPU or connects to cloud APIs.
 
 ---
 
 ## What is CloseCrab-Unified?
 
-CloseCrab-Unified is a terminal-based AI coding assistant written in C++17. It runs large language models locally on your hardware via llama.cpp, or connects to Anthropic (Claude), OpenAI, and compatible APIs through a single configuration change. The AI gets the same 42 tools either way: file operations, shell execution, code search, multi-agent collaboration, web access, and more.
+CloseCrab-Unified is a terminal-based AI coding assistant written in C++17. It runs large language models locally on your hardware via llama.cpp, or connects to Anthropic (Claude), OpenAI, and compatible APIs through a single configuration change. The AI gets the same 46 tools either way: file operations, shell execution, code search, multi-agent collaboration, web access, and more.
 
-The project merges two predecessors: **CloseCrab** (a C++ local inference engine with RAG and MoE streaming) and **JackProAi-claudecode** (a TypeScript CLI with 40+ tools and 95 commands). The result is a single ~3.0 MB executable built from 109 source files, with 42 tools, 66 commands, and 16 service modules.
+The project merges two predecessors: **CloseCrab** (a C++ local inference engine with RAG and MoE streaming) and **JackProAi-claudecode** (a TypeScript CLI with 40+ tools and 95 commands). The result is a single ~3.0 MB executable built from ~160 source files, with 46 tools, 81 commands, and 30 service modules.
 
 ### Why use it?
 
@@ -185,7 +185,7 @@ All commands start with `/`. Use `/help` to see the full list at runtime.
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
-| `/tools` | | List all 42 registered tools |
+| `/tools` | | List all 46 registered tools |
 | `/skills` | | List available skill files from `.claude/skills/` |
 | `/plugin` | `/plugins` | List loaded plugins from `.claude/plugins/` |
 | `/mcp` | | List MCP servers and their connection status |
@@ -232,7 +232,7 @@ All commands start with `/`. Use `/help` to see the full list at runtime.
 
 ---
 
-## Tools (42)
+## Tools (46)
 
 Tools are the capabilities exposed to the LLM. Each tool has a JSON Schema for input validation, a permission check, and a result renderer. The LLM calls tools via the API `tool_use` protocol (Anthropic/OpenAI) or via `SKILL:` / function-call format (local models).
 
@@ -328,25 +328,42 @@ Tools are the capabilities exposed to the LLM. Each tool has a JSON Schema for i
 | Brief | Generate a brief summary of content | Yes |
 | SyntheticOutput | Generate synthetic tool output for testing | No |
 
+### Discovery & Workflow
+
+| Tool | Description | Read-only |
+|------|-------------|-----------|
+| DiscoverSkills | Search local and remote skill registries | Yes |
+| Snip | Save code snippets or trim conversation history | No |
+| VerifyPlanExecution | Verify plan outcomes (file checks, command checks) | Yes |
+| WebBrowser | Browser automation via Chrome DevTools Protocol | No |
+
 ---
 
 ## Key Features
 
-### History Compression (SnipCompact)
+### History Compression (5-Strategy System)
 
-Automatically compresses old messages when the conversation approaches the context window limit. Older turns are summarized into a compact representation while preserving recent context. Trigger manually with `/compact` or let it run automatically.
+Five compaction strategies work together to manage context: **AutoCompact** (LLM-based summary at 75% usage), **MicroCompact** (truncates large tool results at 60%), **ReactiveCompact** (emergency compaction at 95%), **ContextCollapse** (collapses consecutive read/search results), and **EnhancedSnip** (relevance-scored group removal at 80%). Strategies are evaluated in priority order by the HistoryCompactor orchestrator. Trigger manually with `/compact` or let it run automatically.
 
 ### Concurrent Tool Execution
 
-When the LLM issues multiple `tool_use` calls in a single response, they run in parallel via `std::async`. This significantly speeds up workflows that involve multiple file reads, searches, or independent operations in one turn.
+When the LLM issues multiple `tool_use` calls in a single response, the StreamingToolExecutor runs them in parallel with configurable concurrency limits, budget trimming, and interrupt handling. Single tool calls execute directly without thread overhead.
 
 ### API Retry with Exponential Backoff
 
 HTTP 429 (rate limit), 500, 502, and 503 responses trigger automatic retry with exponential backoff, up to 3 attempts. This handles transient API failures and rate limiting without user intervention.
 
+### Error Recovery
+
+Automatic recovery from common API failures: MAX_OUTPUT_TOKENS triggers re-compaction and retry, prompt-too-long errors trigger aggressive reactive compaction, and primary model failures can fall back to a configured fallback model. Up to 3 recovery attempts before giving up.
+
+### Token Budget System
+
+Three-layer budget control: per-query budget, per-task budget, and per-tool-result budget. Tool results exceeding the budget are automatically truncated with a size note. Budget state is tracked atomically and reset between queries.
+
 ### Hooks System
 
-Configure `PreToolUse` and `PostToolUse` event hooks in `.claude/settings.json`. Hooks run shell commands before or after specific tools execute, enabling custom validation, logging, or side effects.
+Configure `PreToolUse` and `PostToolUse` event hooks in `.claude/settings.json`. Hooks run shell commands before or after specific tools execute, enabling custom validation, logging, or side effects. Supports 4 event types: `PreToolUse`, `PostToolUse`, `PostSampling` (after API response), and `StopFailure` (when stop hooks fail). Hook results include execution duration metrics.
 
 ```json
 {
@@ -380,9 +397,30 @@ Persistent memory stored as markdown files with YAML frontmatter in `.claude/mem
 
 Manage with `/memory list`, `/memory show <name>`, `/memory delete <name>`.
 
+### Service Modules (v0.2.0)
+
+| Module | Header | Description |
+|--------|--------|-------------|
+| CompactStrategy | core/*.h | 5-strategy compaction (auto/micro/reactive/collapse/snip) |
+| BudgetTracker | core/BudgetTracker.h | 3-layer token budget (query/task/tool-result) |
+| ErrorRecovery | core/ErrorRecovery.h | MAX_OUTPUT_TOKENS + prompt-too-long + fallback recovery |
+| TokenEstimator | core/TokenEstimator.h | Fast CJK-aware token estimation without API |
+| StreamingToolExecutor | tools/StreamingToolExecutor.h | Parallel tool execution with budget trimming |
+| LSPServerManager | lsp/LSPServerManager.h | Multi-LSP server management |
+| SkillSearchService | services/SkillSearchService.h | Local + remote skill discovery with prefetch |
+| TeamMemorySync | services/TeamMemorySync.h | Team memory sync with secret scanning |
+| FeatureFlags | services/FeatureFlags.h | Local feature flag system |
+| AnalyticsService | services/AnalyticsService.h | Local file-based event logging |
+| NotifierService | services/NotifierService.h | Cross-platform system notifications |
+| PreventSleepService | services/PreventSleepService.h | Prevent system sleep during long tasks |
+
 ### Coordinator Mode
 
 Multi-agent task decomposition via `/coordinator <task>`. The coordinator analyzes the task, spawns specialized sub-agents (explore for research, plan for design, general-purpose for implementation, verification for testing), and merges their results. Also available as `/coord` or `/ultraplan`.
+
+### New Commands (v0.2.0)
+
+20 new commands added: `/config`, `/model`, `/cost`, `/permissions`, `/status`, `/clear`, `/fork`, `/security-review`, `/sandbox-toggle`, `/keybindings`, `/privacy-settings`, `/rate-limit-options`, `/commit-push-pr`, `/release-notes`, `/stats`, `/bridge`, `/buddy`, `/peers`, `/workflows`, `/oauth-refresh`. Total: 81 commands.
 
 ### Vim Mode
 
@@ -506,14 +544,14 @@ The client tries each strategy in order and uses the first successful parse.
 
 ## Architecture
 
-109 source files (.h + .cpp) organized into focused modules:
+~160 source files (.h + .cpp) organized into focused modules:
 
 ```
 src/
 ├── main.cpp              Entry point, component initialization, main loop
 ├── core/                 QueryEngine, Message, AppState, CostTracker, SessionManager
 ├── api/                  API clients: LocalLLMClient, AnthropicClient, OpenAIClient
-├── tools/                42 tool implementations (see Tools section)
+├── tools/                46 tool implementations (see Tools section)
 │   ├── Tool.h            Base class with validation, permissions, schema
 │   ├── ToolRegistry.*    Registry with alias lookup and definition caching
 │   ├── FileReadTool/     Read, Write, Edit, Glob, Grep, NotebookEdit
@@ -528,7 +566,7 @@ src/
 │   ├── WebTools/         WebSearch, WebFetch (with 15-min cache)
 │   ├── CronTools/        Cron expression parsing and scheduling
 │   └── SystemTools/      Config, LSP, RemoteTrigger, ToolSearch, Brief
-├── commands/             66 slash commands (5 categories)
+├── commands/             81 slash commands (5 categories)
 │   ├── CommandRegistry.* Registry with alias support and categorized help
 │   ├── SessionCommands.h Session, history, export, compact, context, env
 │   ├── GitCommands.h     Commit, diff, branch, log, push, pull, stash
@@ -550,7 +588,10 @@ src/
 ├── security/             Process sandbox (Windows Job Objects / Linux rlimit)
 ├── git/                  Git CLI wrapper
 ├── lsp/                  LSP client
+│   └── LSPServerManager  Multi-server management with extension routing
 ├── bridge/               Remote execution bridge
+│   └── BridgeTransport   Abstract transport (HTTP/SSE)
+├── services/             14 service modules (analytics, feature flags, memory sync, etc.)
 ├── voice/                VoiceEngine (Windows SAPI, macOS say, Linux espeak)
 ├── ui/                   Terminal UI: spinner, markdown renderer, table formatter, input history
 └── utils/                Shared utilities
