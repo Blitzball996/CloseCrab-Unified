@@ -95,6 +95,7 @@ private:
     static std::string globToRegex(const std::string& glob) {
         std::string regex;
         size_t i = 0;
+        bool inBracket = false;
         while (i < glob.size()) {
             char c = glob[i];
             if (c == '*') {
@@ -108,14 +109,24 @@ private:
                 regex += "[^/]*"; // * matches within directory
             } else if (c == '?') {
                 regex += "[^/]";
+            } else if (c == '[') {
+                inBracket = true;
+                regex += c;
+            } else if (c == ']') {
+                inBracket = false;
+                regex += c;
             } else if (c == '.') {
                 regex += "\\.";
             } else if (c == '{') {
                 regex += "(";
             } else if (c == '}') {
                 regex += ")";
-            } else if (c == ',') {
+            } else if (c == ',' && !inBracket) {
                 regex += "|";
+            } else if (c == '+' || c == '(' || c == ')' || c == '^' || c == '$' || c == '|' || c == '\\') {
+                // Escape regex special characters that aren't glob special
+                regex += '\\';
+                regex += c;
             } else {
                 regex += c;
             }

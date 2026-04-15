@@ -2,6 +2,7 @@
 #include "APIError.h"
 #include <curl/curl.h>
 #include <spdlog/spdlog.h>
+#include <fstream>
 
 namespace closecrab {
 
@@ -22,9 +23,12 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
 
     if (config.temperature >= 0 && config.tools.empty()) body["temperature"] = config.temperature;
 
-    // System prompt
+    // System prompt — use array format with cache_control for prompt caching
     if (!systemPrompt.empty()) {
-        body["system"] = systemPrompt;
+        body["system"] = nlohmann::json::array({
+            {{"type", "text"}, {"text", systemPrompt},
+             {"cache_control", {{"type", "ephemeral"}}}}
+        });
     }
 
     // Messages
@@ -34,9 +38,14 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
     }
     body["messages"] = std::move(msgs);
 
-    // Tools
+    // Tools — add cache_control on last tool for prompt caching
     if (!config.tools.empty() && config.tools.is_array() && config.tools.size() > 0) {
-        body["tools"] = config.tools;
+        nlohmann::json tools = config.tools;
+        // Add cache_control to last tool to enable caching of entire tools block
+        if (!tools.empty()) {
+            tools.back()["cache_control"] = {{"type", "ephemeral"}};
+        }
+        body["tools"] = tools;
     }
 
     // Thinking
@@ -52,12 +61,16 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
 
 struct CurlStreamCtx {
     closecrab::StreamParser* parser;
+    std::string rawResponse;
 };
 
 static size_t curlStreamCallback(char* ptr, size_t size, size_t nmemb, void* userdata) {
     auto* ctx = static_cast<CurlStreamCtx*>(userdata);
     size_t totalSize = size * nmemb;
-    ctx->parser->feed(std::string(ptr, totalSize));
+    std::string chunk(ptr, totalSize);
+    ctx->parser->feed(chunk);
+    // Also accumulate raw response for error diagnostics
+    ctx->rawResponse += chunk;
     return totalSize;
 }
 
@@ -160,10 +173,10 @@ static void performCurlSSE(
 
     struct curl_slist* headers = nullptr;
     headers = curl_slist_append(headers, ("x-api-key: " + apiKey).c_str());
-    headers = curl_slist_append(headers, ("Authorization: Bearer " + apiKey).c_str());
     headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
     headers = curl_slist_append(headers, "content-type: application/json");
     headers = curl_slist_append(headers, "accept: text/event-stream");
+    headers = curl_slist_append(headers, "anthropic-beta: prompt-caching-2024-07-31,prompt-caching-scope-2026-01-05,token-efficient-tools-2026-03-28");
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -202,8 +215,10 @@ static void performCurlSSE(
 
     if (httpCode >= 400) {
         auto errType = closecrab::classifyHttpStatus(httpCode);
+        std::string errBody = curlCtx.rawResponse.substr(0, 500);
+        spdlog::error("HTTP {} response body: {}", httpCode, errBody);
         throw closecrab::APIError(errType, static_cast<int>(httpCode),
-                                   "HTTP " + std::to_string(httpCode));
+                                   "HTTP " + std::to_string(httpCode) + ": " + errBody);
     }
 }
 
@@ -215,6 +230,12 @@ void RemoteAPIClient::streamChat(
     const ModelConfig& config,
     StreamCallback callback
 ) {
+    // Fast-fail: no API key means no valid provider configured
+    if (apiKey_.empty()) {
+        throw APIError(APIErrorType::AUTH_ERROR, 0,
+            "No API key configured. Use --api-key or set ANTHROPIC_AUTH_TOKEN.");
+    }
+
     auto body = buildRequestBody(messages, systemPrompt, config);
     std::string url = baseUrl_ + "/v1/messages";
     std::string bodyStr = body.dump();
@@ -223,6 +244,12 @@ void RemoteAPIClient::streamChat(
                  bodyStr.size(),
                  config.tools.is_array() ? config.tools.size() : 0,
                  systemPrompt.size(), url);
+
+    // Dump full request body to file for debugging
+    {
+        std::ofstream dbg("G:/temp/last_request.json");
+        if (dbg.is_open()) { dbg << body.dump(2); dbg.close(); }
+    }
 
     // Debug: dump first 500 chars of body
     spdlog::debug("Request body (first 500): {}", bodyStr.substr(0, 500));
@@ -238,24 +265,8 @@ void RemoteAPIClient::streamChat(
         try {
             performCurlSSE(url, bodyStr, apiKey_, curlCtx);
         } catch (const APIError& e) {
-            // If 503 with tools, retry without tools (proxy may not support model+tools combo)
-            if (e.httpStatus == 503 && body.contains("tools") && body["tools"].is_array()
-                && !body["tools"].empty()) {
-                spdlog::warn("503 with tools — retrying without tools (proxy limitation)");
-                nlohmann::json bodyNoTools = body;
-                bodyNoTools.erase("tools");
-                std::string bodyNoToolsStr = bodyNoTools.dump();
-
-                // Reset parser state
-                StreamParser parser2([&](const StreamParser::SSEEvent& event) {
-                    handleSSEEvent(event, callback, currentToolName, currentToolId, currentToolJson);
-                });
-                CurlStreamCtx curlCtx2{&parser2};
-                performCurlSSE(url, bodyNoToolsStr, apiKey_, curlCtx2);
-                parser2.finish();
-                return; // Success without tools
-            }
-            throw; // Re-throw for normal retry
+            // Re-throw all errors — let withRetry handle retries with full tools
+            throw;
         }
         parser.finish();
     }, 3);

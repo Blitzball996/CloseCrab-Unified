@@ -37,7 +37,22 @@ std::string LocalLLMClient::buildPrompt(const std::vector<Message>& messages,
         for (const auto& block : msg.content) {
             if (block.type == ContentBlockType::TOOL_USE) {
                 text += "\nSKILL: " + block.toolName + "\n";
-                text += "PARAMS: " + block.toolInput.dump() + "\n";
+                // Format tool input as key-value text instead of JSON dump()
+                // dump() escapes backslashes (G:\path -> G:\\path) which confuses the LLM
+                text += "PARAMS:\n";
+                if (block.toolInput.is_object()) {
+                    for (auto& [key, val] : block.toolInput.items()) {
+                        text += "  " + key + ": ";
+                        if (val.is_string()) {
+                            text += val.get<std::string>();
+                        } else {
+                            text += val.dump();
+                        }
+                        text += "\n";
+                    }
+                } else {
+                    text += "  " + block.toolInput.dump() + "\n";
+                }
             }
         }
 

@@ -70,6 +70,8 @@
 #include "commands/AdvancedCommands.h"
 #include "commands/ExtendedCommands.h"
 
+#include <curl/curl.h>
+
 #ifdef _WIN32
 #include <windows.h>
 #pragma comment(lib, "ws2_32.lib")
@@ -264,6 +266,12 @@ int main(int argc, char* argv[]) {
     WSADATA wsaData;
     WSAStartup(MAKEWORD(2, 2), &wsaData);
 #endif
+
+    // Initialize CURL globally BEFORE any threads are created.
+    // curl_global_init() is NOT thread-safe — if called implicitly from
+    // curl_easy_init() while the Spinner thread is running, it causes a
+    // race condition (segfault on Windows).
+    curl_global_init(CURL_GLOBAL_ALL);
 
     // ---- CLI arguments ----
     CLI::App app{"CloseCrab-Unified - Local AI Assistant"};
@@ -758,6 +766,8 @@ When the user asks a question, answer directly.)";
 #ifdef _WIN32
     WSACleanup();
 #endif
+
+    curl_global_cleanup();
 
     std::cout << "Goodbye!\n";
     return 0;
