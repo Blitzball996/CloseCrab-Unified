@@ -15,11 +15,14 @@ public:
         int totalChars = 0;
         for (size_t i = 0; i < text.size(); ) {
             unsigned char c = text[i];
-            if (c >= 0xE0) { // CJK characters are 3-byte UTF-8
+            if (c >= 0xF0) {
                 cjkChars++;
-                if (c >= 0xF0) i += 4;
-                else if (c >= 0xE0) i += 3;
-                else i += 2;
+                i += 4;
+            } else if (c >= 0xE0) {
+                cjkChars++;
+                i += 3;
+            } else if (c >= 0xC0) {
+                i += 2; // 2-byte UTF-8 (Latin extended, Cyrillic, etc.)
             } else {
                 i++;
             }

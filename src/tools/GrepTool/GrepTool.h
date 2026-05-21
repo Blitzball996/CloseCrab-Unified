@@ -6,6 +6,8 @@
 #include <memory>
 #include <sstream>
 #include <filesystem>
+#include <algorithm>
+#include <cctype>
 
 namespace closecrab {
 
@@ -70,22 +72,35 @@ public:
             if (input.contains("-B")) cmd += " -B " + std::to_string(input["-B"].get<int>());
         }
 
-        // Glob filter
+        // Glob filter (sanitize to prevent injection)
         if (input.contains("glob")) {
-            cmd += " --glob \"" + input["glob"].get<std::string>() + "\"";
+            std::string glob = input["glob"].get<std::string>();
+            glob.erase(std::remove(glob.begin(), glob.end(), '"'), glob.end());
+            cmd += " --glob \"" + glob + "\"";
         }
 
-        // Type filter
+        // Type filter (alphanumeric only)
         if (input.contains("type")) {
-            cmd += " --type " + input["type"].get<std::string>();
+            std::string typeFilter = input["type"].get<std::string>();
+            typeFilter.erase(std::remove_if(typeFilter.begin(), typeFilter.end(),
+                [](char c) { return !std::isalnum(c) && c != '-'; }), typeFilter.end());
+            cmd += " --type " + typeFilter;
         }
 
-        // Pattern and path
-        cmd += " -- \"" + pattern + "\" \"" + searchPath + "\"";
+        // Pattern and path — use -- to separate and sanitize quotes
+        std::string safePattern = pattern;
+        std::replace(safePattern.begin(), safePattern.end(), '"', '\'');
+        std::string safePath = searchPath;
+        std::replace(safePath.begin(), safePath.end(), '"', '\'');
+        cmd += " -- \"" + safePattern + "\" \"" + safePath + "\"";
 
         // Head limit
         if (headLimit > 0) {
+#ifdef _WIN32
+            cmd += " | more +0 < nul";
+#else
             cmd += " | head -n " + std::to_string(headLimit);
+#endif
         }
 
         // Execute

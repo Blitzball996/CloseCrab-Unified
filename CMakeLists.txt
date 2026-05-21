@@ -306,6 +306,8 @@ if(BUILD_TESTS)
     find_package(GTest CONFIG QUIET)
     if(GTest_FOUND)
         enable_testing()
+
+        # Core tests (existing)
         add_executable(closecrab-tests
             tests/test_core.cpp
             src/api/StreamParser.cpp
@@ -317,7 +319,31 @@ if(BUILD_TESTS)
         )
         target_link_libraries(closecrab-tests PRIVATE GTest::gtest GTest::gtest_main spdlog::spdlog)
         add_test(NAME CoreTests COMMAND closecrab-tests)
-        message(STATUS "Tests: ENABLED")
+
+        # Extended tests (new)
+        add_executable(closecrab-tests-extended
+            tests/test_tools_extended.cpp
+            src/api/StreamParser.cpp
+            src/permissions/PermissionEngine.cpp
+            src/commands/CommandRegistry.cpp
+            src/core/SessionManager.cpp
+            src/config/Config.cpp
+        )
+        target_include_directories(closecrab-tests-extended PRIVATE
+            ${CMAKE_SOURCE_DIR}/src
+            ${json_SOURCE_DIR}/include
+            ${spdlog_SOURCE_DIR}/include
+        )
+        target_link_libraries(closecrab-tests-extended PRIVATE
+            GTest::gtest GTest::gtest_main
+            spdlog::spdlog
+            nlohmann_json::nlohmann_json
+            yaml-cpp
+            sqlite3
+        )
+        add_test(NAME ExtendedTests COMMAND closecrab-tests-extended)
+
+        message(STATUS "Tests: ENABLED (core + extended)")
     else()
         message(STATUS "Tests: GTest not found, skipping")
     endif()

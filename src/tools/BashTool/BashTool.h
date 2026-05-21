@@ -272,7 +272,10 @@ private:
             "git log", "git diff", "git branch", "npm test", "cmake"
         };
         for (const auto& safe : safeCommands) {
-            if (cmd.substr(0, safe.size()) == safe) return true;
+            if (cmd.size() >= safe.size() && cmd.substr(0, safe.size()) == safe) {
+                // Must be exact match or followed by space/end (not a prefix of a longer word)
+                if (cmd.size() == safe.size() || cmd[safe.size()] == ' ') return true;
+            }
         }
         return false;
     }

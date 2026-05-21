@@ -36,7 +36,7 @@ bool Config::load(const std::string& filename) {
         root = YAML::LoadFile(filename);
         spdlog::info("Config loaded from: {}", filename);
 
-        // ´òÓ¡¸ù¼ü
+        // ï¿½ï¿½Ó¡ï¿½ï¿½ï¿½ï¿½
         if (root.IsMap()) {
             spdlog::info("Root keys after load:");
             for (auto it = root.begin(); it != root.end(); ++it) {
@@ -44,7 +44,7 @@ bool Config::load(const std::string& filename) {
             }
         }
 
-        // Ô­ÓÐ´òÓ¡
+        // Ô­ï¿½Ð´ï¿½Ó¡
         if (root["llm"]) {
             spdlog::info("llm node exists");
             if (root["llm"]["model_path"]) {
@@ -78,7 +78,7 @@ int Config::getInt(const std::string& key, int defaultValue) const {
 
 bool Config::getBool(const std::string& key, bool defaultValue) const {
     YAML::Node node = getNode(key);
-    if (node) {
+    if (node && !node.IsNull() && node.IsScalar()) {
         return node.as<bool>();
     }
     return defaultValue;

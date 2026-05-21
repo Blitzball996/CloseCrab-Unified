@@ -3,6 +3,7 @@
 #include <curl/curl.h>
 #include <spdlog/spdlog.h>
 #include <fstream>
+#include <cstdlib>
 
 namespace closecrab {
 
@@ -187,8 +188,8 @@ static void performCurlSSE(
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &curlCtx);
 
     // SSL
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
     curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
 
     // Timeouts
@@ -245,9 +246,10 @@ void RemoteAPIClient::streamChat(
                  config.tools.is_array() ? config.tools.size() : 0,
                  systemPrompt.size(), url);
 
-    // Dump full request body to file for debugging
-    {
-        std::ofstream dbg("G:/temp/last_request.json");
+    // Debug: dump request body to file if CLOSECRAB_DEBUG is set
+    if (const char* debugDir = std::getenv("CLOSECRAB_DEBUG_DIR")) {
+        std::string debugPath = std::string(debugDir) + "/last_request.json";
+        std::ofstream dbg(debugPath);
         if (dbg.is_open()) { dbg << body.dump(2); dbg.close(); }
     }
 

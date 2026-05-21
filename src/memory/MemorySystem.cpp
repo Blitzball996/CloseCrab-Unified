@@ -88,9 +88,12 @@ std::vector<Memory> MemorySystem::getMemories(const std::string& sessionId, int 
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         Memory mem;
         mem.id = std::to_string(sqlite3_column_int64(stmt, 0));
-        mem.sessionId = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        mem.role = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        mem.content = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        auto col1 = sqlite3_column_text(stmt, 1);
+        auto col2 = sqlite3_column_text(stmt, 2);
+        auto col3 = sqlite3_column_text(stmt, 3);
+        mem.sessionId = col1 ? reinterpret_cast<const char*>(col1) : "";
+        mem.role = col2 ? reinterpret_cast<const char*>(col2) : "";
+        mem.content = col3 ? reinterpret_cast<const char*>(col3) : "";
         mem.timestamp = sqlite3_column_int64(stmt, 4);
         memories.push_back(mem);
     }

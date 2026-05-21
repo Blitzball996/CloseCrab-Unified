@@ -22,6 +22,7 @@ std::string PermissionEngine::getModeName() const {
 }
 
 bool PermissionEngine::matchPattern(const std::string& action, const std::string& pattern) const {
+    if (pattern.empty()) return false;
     if (pattern == "*") return true;
 
     // Simple wildcard matching: "git *" matches "git push", "git commit", etc.
