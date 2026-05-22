@@ -104,6 +104,15 @@ FetchContent_Declare(httplib
     GIT_TAG v0.18.1)
 FetchContent_MakeAvailable(httplib)
 
+# Capstone disassembly engine
+set(CAPSTONE_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(CAPSTONE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(CAPSTONE_BUILD_CSTOOL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(capstone
+    URL https://github.com/capstone-engine/capstone/archive/refs/tags/5.0.3.tar.gz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(capstone)
+
 # ============================================
 # ixwebsocket (local)
 # ============================================
@@ -243,6 +252,7 @@ target_link_libraries(closecrab-unified PRIVATE
     llama ggml ggml-base ggml-cpu
 
     ixwebsocket
+    capstone
 
     CURL::libcurl
     ZLIB::ZLIB
@@ -263,6 +273,7 @@ target_include_directories(closecrab-unified PRIVATE
     ${FAISS_DIR}/include
     ${IXWEBSOCKET_PATH}
     ${httplib_SOURCE_DIR}
+    ${capstone_SOURCE_DIR}/include
 )
 
 # ============================================

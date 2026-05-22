@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <filesystem>
 #include <vector>
+#include <capstone/capstone.h>
 
 namespace closecrab {
 
@@ -12,8 +13,8 @@ class ReverseTool : public Tool {
 public:
     std::string getName() const override { return "Reverse"; }
     std::string getDescription() const override {
-        return "Binary analysis: hex dump, string extraction, PE/ELF header parsing. "
-               "Use for reverse engineering and binary file inspection.";
+        return "Binary analysis: hex dump, string extraction, PE/ELF parsing, disassembly. "
+               "Use for reverse engineering, understanding how executables work.";
     }
     std::string getCategory() const override { return "analysis"; }
     bool isReadOnly() const override { return true; }
@@ -23,11 +24,12 @@ public:
             {"type", "object"},
             {"properties", {
                 {"file_path", {{"type", "string"}, {"description", "Path to binary file"}}},
-                {"action", {{"type", "string"}, {"enum", {"hexdump", "strings", "headers", "imports", "sections"}},
-                    {"description", "Analysis action"}}},
-                {"offset", {{"type", "integer"}, {"description", "Start offset for hexdump (default 0)"}}},
-                {"length", {{"type", "integer"}, {"description", "Bytes to read for hexdump (default 256)"}}},
-                {"min_length", {{"type", "integer"}, {"description", "Minimum string length for strings action (default 4)"}}}
+                {"action", {{"type", "string"},
+                    {"enum", {"hexdump", "strings", "headers", "imports", "sections", "disasm", "functions"}},
+                    {"description", "Analysis action: hexdump, strings, headers, imports, sections, disasm (disassemble), functions (find function entries)"}}},
+                {"offset", {{"type", "integer"}, {"description", "Start offset (default: entry point for disasm, 0 for hexdump)"}}},
+                {"length", {{"type", "integer"}, {"description", "Bytes to analyze (default 256 for hexdump, 512 for disasm)"}}},
+                {"min_length", {{"type", "integer"}, {"description", "Minimum string length (default 4)"}}}
             }},
             {"required", {"file_path", "action"}}
         };
@@ -54,6 +56,12 @@ public:
             return parseImports(path);
         } else if (action == "sections") {
             return parseSections(path);
+        } else if (action == "disasm") {
+            int offset = input.value("offset", -1); // -1 = auto-detect entry point
+            int length = input.value("length", 512);
+            return disassemble(path, offset, length);
+        } else if (action == "functions") {
+            return findFunctions(path);
         }
         return ToolResult::fail("Unknown action: " + action);
     }
@@ -260,6 +268,215 @@ private:
         }
 
         return ToolResult::ok(oss.str());
+    }
+
+    ToolResult disassemble(const std::string& path, int offset, int length) {
+        std::ifstream file(path, std::ios::binary);
+        if (!file) return ToolResult::fail("Cannot open file");
+
+        // Auto-detect entry point if offset == -1
+        uint64_t baseAddr = 0;
+        if (offset < 0) {
+            auto ep = getEntryPoint(path);
+            offset = ep.fileOffset;
+            baseAddr = ep.virtualAddr;
+        }
+
+        file.seekg(offset);
+        std::vector<uint8_t> code(length);
+        file.read(reinterpret_cast<char*>(code.data()), length);
+        int bytesRead = (int)file.gcount();
+        if (bytesRead == 0) return ToolResult::fail("No data at offset " + std::to_string(offset));
+
+        // Initialize Capstone
+        csh handle;
+        cs_insn* insn;
+        if (cs_open(CS_ARCH_X86, CS_MODE_64, &handle) != CS_ERR_OK) {
+            return ToolResult::fail("Failed to initialize disassembler");
+        }
+        cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON);
+
+        size_t count = cs_disasm(handle, code.data(), bytesRead, baseAddr, 0, &insn);
+
+        std::ostringstream oss;
+        oss << "Disassembly of " << path << " (offset 0x" << std::hex << offset
+            << ", " << std::dec << bytesRead << " bytes, " << count << " instructions):\n\n";
+
+        if (count > 0) {
+            for (size_t i = 0; i < count && i < 100; i++) {
+                // Address
+                oss << "  0x" << std::hex << std::setw(8) << std::setfill('0') << insn[i].address << "  ";
+                // Bytes
+                for (int j = 0; j < insn[i].size && j < 8; j++) {
+                    oss << std::hex << std::setw(2) << std::setfill('0') << (int)insn[i].bytes[j] << " ";
+                }
+                for (int j = insn[i].size; j < 8; j++) oss << "   ";
+                // Mnemonic + operands
+                oss << " " << insn[i].mnemonic << " " << insn[i].op_str << "\n";
+            }
+            if (count > 100) {
+                oss << "\n  ... (" << (count - 100) << " more instructions)\n";
+            }
+            cs_free(insn, count);
+        } else {
+            oss << "  (no valid instructions found)\n";
+        }
+
+        cs_close(&handle);
+        return ToolResult::ok(oss.str());
+    }
+
+    ToolResult findFunctions(const std::string& path) {
+        std::ifstream file(path, std::ios::binary);
+        if (!file) return ToolResult::fail("Cannot open file");
+
+        // Read .text section
+        auto textSection = getTextSection(path);
+        if (textSection.data.empty()) {
+            return ToolResult::fail("Cannot find .text section");
+        }
+
+        // Disassemble and find function prologues (push rbp; mov rbp, rsp)
+        csh handle;
+        cs_insn* insn;
+        if (cs_open(CS_ARCH_X86, CS_MODE_64, &handle) != CS_ERR_OK) {
+            return ToolResult::fail("Failed to initialize disassembler");
+        }
+        cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON);
+
+        size_t count = cs_disasm(handle, textSection.data.data(), textSection.data.size(),
+                                  textSection.virtualAddr, 0, &insn);
+
+        std::ostringstream oss;
+        oss << "Functions found in " << path << ":\n\n";
+
+        int funcCount = 0;
+        for (size_t i = 0; i < count && funcCount < 100; i++) {
+            // Common function prologues
+            bool isPrologue = false;
+            if (strcmp(insn[i].mnemonic, "push") == 0 &&
+                strstr(insn[i].op_str, "rbp")) {
+                isPrologue = true;
+            }
+            // Also detect: sub rsp, N (another common prologue)
+            if (strcmp(insn[i].mnemonic, "sub") == 0 &&
+                strstr(insn[i].op_str, "rsp")) {
+                if (i > 0 && strcmp(insn[i-1].mnemonic, "push") == 0) {
+                    // Already counted above
+                } else {
+                    isPrologue = true;
+                }
+            }
+
+            if (isPrologue) {
+                oss << "  func_" << std::hex << insn[i].address
+                    << " @ 0x" << insn[i].address << "\n";
+                funcCount++;
+            }
+        }
+
+        if (count > 0) cs_free(insn, count);
+        cs_close(&handle);
+
+        oss << "\n(" << funcCount << " functions detected by prologue pattern)";
+        return ToolResult::ok(oss.str());
+    }
+
+    struct EntryPointInfo {
+        int fileOffset = 0;
+        uint64_t virtualAddr = 0;
+    };
+
+    EntryPointInfo getEntryPoint(const std::string& path) {
+        EntryPointInfo ep;
+        std::ifstream file(path, std::ios::binary);
+        if (!file) return ep;
+
+        uint8_t magic[2];
+        file.read(reinterpret_cast<char*>(magic), 2);
+        if (magic[0] != 'M' || magic[1] != 'Z') return ep;
+
+        // PE entry point
+        file.seekg(0x3C);
+        uint32_t peOffset = 0;
+        file.read(reinterpret_cast<char*>(&peOffset), 4);
+        file.seekg(peOffset + 4 + 16); // Skip PE sig + COFF header (minus optional header size field)
+        uint16_t optHeaderSize;
+        file.read(reinterpret_cast<char*>(&optHeaderSize), 2);
+        file.seekg(2, std::ios::cur); // Skip characteristics
+
+        // Optional header: entry point at offset 16
+        uint16_t optMagic;
+        file.read(reinterpret_cast<char*>(&optMagic), 2);
+        file.seekg(14, std::ios::cur); // Skip to AddressOfEntryPoint
+        uint32_t entryRVA;
+        file.read(reinterpret_cast<char*>(&entryRVA), 4);
+
+        // Get ImageBase
+        file.seekg(peOffset + 4 + 20 + 24); // COFF + optional header offset to ImageBase
+        uint64_t imageBase = 0;
+        if (optMagic == 0x20b) { // PE32+
+            file.read(reinterpret_cast<char*>(&imageBase), 8);
+        } else {
+            uint32_t base32;
+            file.read(reinterpret_cast<char*>(&base32), 4);
+            imageBase = base32;
+        }
+
+        ep.virtualAddr = imageBase + entryRVA;
+        // Approximate file offset (assumes .text is first section at typical offset)
+        ep.fileOffset = entryRVA; // Simplified — real impl would map RVA to file offset
+        return ep;
+    }
+
+    struct SectionData {
+        std::vector<uint8_t> data;
+        uint64_t virtualAddr = 0;
+    };
+
+    SectionData getTextSection(const std::string& path) {
+        SectionData result;
+        std::ifstream file(path, std::ios::binary);
+        if (!file) return result;
+
+        uint8_t magic[2];
+        file.read(reinterpret_cast<char*>(magic), 2);
+        if (magic[0] != 'M' || magic[1] != 'Z') return result;
+
+        file.seekg(0x3C);
+        uint32_t peOffset = 0;
+        file.read(reinterpret_cast<char*>(&peOffset), 4);
+
+        file.seekg(peOffset + 4);
+        uint16_t machine, numSections;
+        file.read(reinterpret_cast<char*>(&machine), 2);
+        file.read(reinterpret_cast<char*>(&numSections), 2);
+        file.seekg(12, std::ios::cur); // Skip timestamp, symbol table, num symbols
+        uint16_t optHeaderSize;
+        file.read(reinterpret_cast<char*>(&optHeaderSize), 2);
+        file.seekg(2 + optHeaderSize, std::ios::cur); // Skip characteristics + optional header
+
+        // Find .text section
+        for (int i = 0; i < numSections; i++) {
+            char name[9] = {};
+            file.read(name, 8);
+            uint32_t virtSize, virtAddr, rawSize, rawAddr;
+            file.read(reinterpret_cast<char*>(&virtSize), 4);
+            file.read(reinterpret_cast<char*>(&virtAddr), 4);
+            file.read(reinterpret_cast<char*>(&rawSize), 4);
+            file.read(reinterpret_cast<char*>(&rawAddr), 4);
+            file.seekg(16, std::ios::cur);
+
+            if (std::string(name) == ".text") {
+                int readSize = std::min(rawSize, (uint32_t)(1024 * 1024)); // Cap at 1MB
+                result.data.resize(readSize);
+                file.seekg(rawAddr);
+                file.read(reinterpret_cast<char*>(result.data.data()), readSize);
+                result.virtualAddr = virtAddr;
+                return result;
+            }
+        }
+        return result;
     }
 };
 
