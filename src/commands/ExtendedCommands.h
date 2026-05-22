@@ -92,7 +92,7 @@ public:
         if (args.empty() || args == "list") {
             auto memories = mgr.loadAll();
             if (memories.empty()) {
-                ctx.print("No memories stored. Memories are saved in .claude/memory/\n");
+                ctx.print("No memories stored. Memories are saved in .crab/memory/\n");
                 return CommandResult::ok();
             }
             for (const auto& m : memories) {
@@ -191,7 +191,7 @@ public:
         auto& mgr = MCPServerManager::getInstance();
         auto servers = mgr.getServerNames();
         if (servers.empty()) {
-            ctx.print("No MCP servers configured. Add them in .claude/settings.json\n");
+            ctx.print("No MCP servers configured. Add them in .crab/settings.json\n");
             return CommandResult::ok();
         }
         for (const auto& name : servers) {
@@ -226,7 +226,7 @@ public:
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
         auto plugins = PluginManager::getInstance().getAllPlugins();
         if (plugins.empty()) {
-            ctx.print("No plugins loaded. Place plugins in .claude/plugins/\n");
+            ctx.print("No plugins loaded. Place plugins in .crab/plugins/\n");
             return CommandResult::ok();
         }
         for (const auto& p : plugins) {
@@ -315,7 +315,7 @@ public:
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
         auto skills = SkillDirectory::getInstance().getAllSkills();
         if (skills.empty()) {
-            ctx.print("No skills loaded. Place skills in .claude/skills/\n");
+            ctx.print("No skills loaded. Place skills in .crab/skills/\n");
             return CommandResult::ok();
         }
         for (const auto& s : skills) {
@@ -880,7 +880,7 @@ public:
     std::vector<std::string> getAliases() const override { return {"settings"}; }
 
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
-        std::string path = ctx.cwd + "/.claude/settings.json";
+        std::string path = ctx.cwd + "/.crab/settings.json";
         if (args.empty()) {
             std::ifstream f(path);
             if (!f.is_open()) {
@@ -1318,14 +1318,14 @@ public:
 class WorkflowsCommand : public Command {
 public:
     std::string getName() const override { return "workflows"; }
-    std::string getDescription() const override { return "List/run workflow scripts from .claude/workflows/"; }
+    std::string getDescription() const override { return "List/run workflow scripts from .crab/workflows/"; }
     std::vector<std::string> getAliases() const override { return {"wf"}; }
 
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
-        std::string dir = ctx.cwd + "/.claude/workflows";
+        std::string dir = ctx.cwd + "/.crab/workflows";
         if (args.empty() || args == "list") {
             auto result = ProcessRunner::run("ls \"" + dir + "\"/*.md 2>/dev/null || echo '(none)'");
-            ctx.print("Workflows in .claude/workflows/:\n" + result.output + "\n");
+            ctx.print("Workflows in .crab/workflows/:\n" + result.output + "\n");
             return CommandResult::ok();
         }
         // Run a specific workflow
@@ -1356,7 +1356,7 @@ public:
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
         ctx.print("OAuth token management:\n");
         ctx.print("  CloseCrab uses API keys by default.\n");
-        ctx.print("  To set up OAuth, configure in .claude/settings.json:\n");
+        ctx.print("  To set up OAuth, configure in .crab/settings.json:\n");
         ctx.print("    \"oauth\": {\n");
         ctx.print("      \"provider\": \"...\",\n");
         ctx.print("      \"client_id\": \"...\",\n");

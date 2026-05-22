@@ -28,7 +28,7 @@ public:
 
     ToolResult call(ToolContext& ctx, const nlohmann::json& input) override {
         std::string action = input["action"].get<std::string>();
-        fs::path snippetDir = fs::path(ctx.cwd) / ".claude" / "snippets";
+        fs::path snippetDir = fs::path(ctx.cwd) / ".crab" / "snippets";
 
         if (action == "save") {
             std::string content = input.value("content", "");

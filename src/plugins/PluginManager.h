@@ -12,7 +12,7 @@
 
 namespace closecrab {
 
-// Skill definition loaded from .claude/skills/ directory
+// Skill definition loaded from .crab/skills/ directory
 struct SkillDef {
     std::string name;
     std::string description;
@@ -33,7 +33,7 @@ struct PluginDef {
     bool enabled = true;
 };
 
-// SkillDirectory — loads skills from .claude/skills/
+// SkillDirectory — loads skills from .crab/skills/
 class SkillDirectory {
 public:
     static SkillDirectory& getInstance() {
@@ -46,14 +46,14 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         skills_.clear();
 
-        // Load from project .claude/skills/
-        loadSkillsFrom(fs::path(projectRoot) / ".claude" / "skills");
+        // Load from project .crab/skills/
+        loadSkillsFrom(fs::path(projectRoot) / ".crab" / "skills");
 
-        // Load from user home ~/.claude/skills/
+        // Load from user home ~/.crab/skills/
         const char* home = std::getenv("HOME");
         if (!home) home = std::getenv("USERPROFILE");
         if (home) {
-            loadSkillsFrom(fs::path(home) / ".claude" / "skills");
+            loadSkillsFrom(fs::path(home) / ".crab" / "skills");
         }
 
         spdlog::info("Loaded {} skills total", skills_.size());
@@ -201,7 +201,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         plugins_.clear();
 
-        fs::path pluginDir = fs::path(projectRoot) / ".claude" / "plugins";
+        fs::path pluginDir = fs::path(projectRoot) / ".crab" / "plugins";
         if (!fs::exists(pluginDir)) return;
 
         for (auto& entry : fs::directory_iterator(pluginDir)) {

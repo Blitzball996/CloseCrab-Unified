@@ -28,7 +28,7 @@ public:
     SyncResult sync(const std::string& projectRoot, const std::string& teamEndpoint) {
         std::lock_guard<std::mutex> lock(mutex_);
         SyncResult result;
-        fs::path memDir = fs::path(projectRoot) / ".claude" / "memory";
+        fs::path memDir = fs::path(projectRoot) / ".crab" / "memory";
         fs::path teamDir = memDir / "team";
 
         if (!fs::exists(memDir)) { spdlog::warn("No memory directory"); return result; }

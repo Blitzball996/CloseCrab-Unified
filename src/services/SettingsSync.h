@@ -25,7 +25,7 @@ public:
             std::chrono::system_clock::now().time_since_epoch()).count();
 
         // Settings.json
-        std::string settingsPath = ".claude/settings.json";
+        std::string settingsPath = ".crab/settings.json";
         if (fs::exists(settingsPath)) {
             std::ifstream f(settingsPath);
             try { bundle["settings"] = nlohmann::json::parse(f); } catch (...) {}
@@ -63,8 +63,8 @@ public:
 
             // Restore settings.json
             if (bundle.contains("settings")) {
-                fs::create_directories(".claude");
-                std::ofstream out(".claude/settings.json");
+                fs::create_directories(".crab");
+                std::ofstream out(".crab/settings.json");
                 out << bundle["settings"].dump(2);
             }
 

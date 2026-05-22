@@ -45,9 +45,9 @@ public:
         return flags_;
     }
 
-    // Load from .claude/feature-flags.json
+    // Load from .crab/feature-flags.json
     void loadFromFile(const std::string& projectRoot) {
-        fs::path path = fs::path(projectRoot) / ".claude" / "feature-flags.json";
+        fs::path path = fs::path(projectRoot) / ".crab" / "feature-flags.json";
         if (!fs::exists(path)) return;
         try {
             std::ifstream f(path);
@@ -64,7 +64,7 @@ public:
 
     // Save to file
     void saveToFile(const std::string& projectRoot) {
-        fs::path dir = fs::path(projectRoot) / ".claude";
+        fs::path dir = fs::path(projectRoot) / ".crab";
         if (!fs::exists(dir)) fs::create_directories(dir);
         fs::path path = dir / "feature-flags.json";
         std::lock_guard<std::mutex> lock(mutex_);

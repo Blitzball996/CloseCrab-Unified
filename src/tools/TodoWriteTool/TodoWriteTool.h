@@ -46,9 +46,9 @@ public:
             display += icon + " " + todo.value("content", "") + "\n";
         }
 
-        // Save to .claude/todos.json
+        // Save to .crab/todos.json
         namespace fs = std::filesystem;
-        fs::path todoPath = fs::path(ctx.cwd) / ".claude" / "todos.json";
+        fs::path todoPath = fs::path(ctx.cwd) / ".crab" / "todos.json";
         if (!fs::exists(todoPath.parent_path())) fs::create_directories(todoPath.parent_path());
 
         std::ofstream f(todoPath);

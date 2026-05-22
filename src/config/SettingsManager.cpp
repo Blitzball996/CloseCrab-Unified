@@ -14,7 +14,7 @@ SettingsManager& SettingsManager::getInstance() {
 
 bool SettingsManager::load(const std::string& projectRoot) {
     std::lock_guard<std::mutex> lock(mutex_);
-    filePath_ = (fs::path(projectRoot) / ".claude" / "settings.json").string();
+    filePath_ = (fs::path(projectRoot) / ".crab" / "settings.json").string();
 
     if (!fs::exists(filePath_)) {
         spdlog::info("No settings.json found at {}, using defaults", filePath_);

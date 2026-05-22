@@ -44,12 +44,12 @@ struct FileMemory {
     std::string content;
 };
 
-// Manages .claude/memory/ directory with MEMORY.md index
+// Manages .crab/memory/ directory with MEMORY.md index
 // Each memory is a separate .md file with YAML frontmatter
 class FileMemoryManager {
 public:
     explicit FileMemoryManager(const std::string& projectRoot)
-        : memoryDir_(std::filesystem::path(projectRoot) / ".claude" / "memory") {}
+        : memoryDir_(std::filesystem::path(projectRoot) / ".crab" / "memory") {}
 
     // Save a memory to file and update MEMORY.md index
     bool saveMemory(const std::string& filename, const std::string& name,

@@ -70,14 +70,14 @@ public:
             }
             if (source == "remote" && results.empty()) {
                 return ToolResult::ok("No remote skills found. "
-                                      "Add a skill-registry.json in .claude/ or place skills in .claude/skills/.");
+                                      "Add a skill-registry.json in .crab/ or place skills in .crab/skills/.");
             }
         }
 
         if (results.empty()) {
             std::string msg = "No skills found";
             if (!query.empty()) msg += " matching \"" + query + "\"";
-            msg += ". Place skill definitions in .claude/skills/ to make them discoverable.";
+            msg += ". Place skill definitions in .crab/skills/ to make them discoverable.";
             return ToolResult::ok(msg);
         }
 

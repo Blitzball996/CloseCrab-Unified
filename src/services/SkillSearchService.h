@@ -38,7 +38,7 @@ public:
 
     void prefetch(const std::string& projectRoot) {
         prefetchFuture_ = std::async(std::launch::async, [this, projectRoot]() {
-            fs::path regPath = fs::path(projectRoot) / ".claude" / "skill-registry.json";
+            fs::path regPath = fs::path(projectRoot) / ".crab" / "skill-registry.json";
             if (!fs::exists(regPath)) return;
             try {
                 std::ifstream f(regPath);

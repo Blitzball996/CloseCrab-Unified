@@ -151,10 +151,10 @@ public:
         out << "\033[1;36mConfig Files\033[0m\n";
         namespace fs = std::filesystem;
         out << "  CLAUDE.md:      " << (ctx.appState->claudeMdContent.empty() ? "\033[33mnot found\033[0m" : "\033[32mloaded\033[0m") << "\n";
-        out << "  settings.json:  " << (fs::exists(fs::path(ctx.cwd) / ".claude" / "settings.json") ? "\033[32mfound\033[0m" : "\033[90mnot found\033[0m") << "\n";
+        out << "  settings.json:  " << (fs::exists(fs::path(ctx.cwd) / ".crab" / "settings.json") ? "\033[32mfound\033[0m" : "\033[90mnot found\033[0m") << "\n";
         out << "  config.yaml:    " << (fs::exists("config/config.yaml") ? "\033[32mfound\033[0m" : "\033[90mnot found\033[0m") << "\n";
-        out << "  .claude/memory/: " << (fs::exists(fs::path(ctx.cwd) / ".claude" / "memory") ? "\033[32mexists\033[0m" : "\033[90mnot created\033[0m") << "\n";
-        out << "  .claude/skills/: " << (fs::exists(fs::path(ctx.cwd) / ".claude" / "skills") ? "\033[32mexists\033[0m" : "\033[90mnot created\033[0m") << "\n\n";
+        out << "  .crab/memory/: " << (fs::exists(fs::path(ctx.cwd) / ".crab" / "memory") ? "\033[32mexists\033[0m" : "\033[90mnot created\033[0m") << "\n";
+        out << "  .crab/skills/: " << (fs::exists(fs::path(ctx.cwd) / ".crab" / "skills") ? "\033[32mexists\033[0m" : "\033[90mnot created\033[0m") << "\n\n";
 
         out << "\033[1;32m=== All checks passed ===\033[0m\n";
         ctx.print(out.str());

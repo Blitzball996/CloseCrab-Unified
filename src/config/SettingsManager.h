@@ -6,7 +6,7 @@
 
 namespace closecrab {
 
-// Manages .claude/settings.json (user settings, permission rules, MCP config, hooks)
+// Manages .crab/settings.json (user settings, permission rules, MCP config, hooks)
 class SettingsManager {
 public:
     static SettingsManager& getInstance();

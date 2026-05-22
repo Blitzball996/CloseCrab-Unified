@@ -60,12 +60,12 @@ private:
         // Load from local registry file
         std::vector<std::string> paths = {
             registryPath_,
-            ".claude/mcp-registry.json",
+            ".crab/mcp-registry.json",
         };
         // Also check home directory
         const char* home = std::getenv("HOME");
         if (!home) home = std::getenv("USERPROFILE");
-        if (home) paths.push_back(std::string(home) + "/.claude/mcp-registry.json");
+        if (home) paths.push_back(std::string(home) + "/.crab/mcp-registry.json");
 
         for (const auto& path : paths) {
             if (path.empty() || !fs::exists(path)) continue;

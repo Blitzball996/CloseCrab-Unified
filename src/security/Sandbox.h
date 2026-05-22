@@ -4,7 +4,6 @@
 #include <functional>
 #include <memory>
 
-// PermissionLevel (originally in Skill.h, moved here for standalone use)
 enum class PermissionLevel {
     SAFE = 0,
     NORMAL = 1,
@@ -12,7 +11,6 @@ enum class PermissionLevel {
     UNSAFE = 3
 };
 
-// Ȩ������ص�
 using PermissionCallback = std::function<bool(const std::string& skill,
     const std::string& action,
     PermissionLevel level)>;

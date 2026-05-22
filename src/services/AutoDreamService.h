@@ -32,7 +32,7 @@ public:
     void fire(const std::string& projectRoot, ApiClient* apiClient) {
         std::lock_guard<std::mutex> lock(mutex_);
 
-        fs::path memDir = fs::path(projectRoot) / ".claude" / "memory";
+        fs::path memDir = fs::path(projectRoot) / ".crab" / "memory";
         if (!fs::exists(memDir) || !fs::is_directory(memDir)) {
             spdlog::info("AutoDream: no memory directory at {}", memDir.string());
             return;

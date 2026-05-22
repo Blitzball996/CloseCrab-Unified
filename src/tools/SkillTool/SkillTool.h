@@ -9,7 +9,7 @@ class SkillTool : public Tool {
 public:
     std::string getName() const override { return "Skill"; }
     std::string getDescription() const override {
-        return "Execute a user-defined skill from .claude/skills/ directory.";
+        return "Execute a user-defined skill from .crab/skills/ directory.";
     }
     std::string getCategory() const override { return "skill"; }
 

@@ -68,7 +68,7 @@ public:
         namespace fs = std::filesystem;
         std::string name = input.value("name", "wt-" + std::to_string(std::time(nullptr)));
 
-        fs::path wtDir = fs::path(ctx.cwd) / ".claude" / "worktrees" / name;
+        fs::path wtDir = fs::path(ctx.cwd) / ".crab" / "worktrees" / name;
         std::string branchName = "worktree/" + name;
 
         // Create worktree
