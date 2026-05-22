@@ -82,6 +82,9 @@ void withRetry(Fn fn, int maxRetries = 3) {
             if (e.type == APIErrorType::RATE_LIMIT) {
                 delayMs = std::max(delayMs, 2000); // Rate limit: at least 2s
             }
+            if (e.type == APIErrorType::OVERLOADED) {
+                delayMs = std::max(delayMs, 5000); // Overloaded: at least 5s
+            }
             spdlog::warn("{} (attempt {}/{}), retrying in {}ms...",
                          e.what(), attempt, maxRetries, delayMs);
             std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));

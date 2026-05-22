@@ -479,28 +479,37 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                     continue; // Retry the turn
                 }
             }
-            // Handle 503/overloaded by compacting and retrying once
+            // Handle 503/overloaded by compacting and retrying with backoff
             if (e.type == APIErrorType::OVERLOADED || e.type == APIErrorType::SERVER_ERROR) {
                 static int overloadRetries = 0;
                 if (overloadRetries < 2) {
                     overloadRetries++;
-                    spdlog::warn("503/overloaded (attempt {}), compacting and retrying...", overloadRetries);
+                    // Wait with exponential backoff: 5s, 15s
+                    int waitSec = overloadRetries == 1 ? 5 : 15;
+                    spdlog::warn("503/overloaded (attempt {}), waiting {}s then compacting...",
+                                 overloadRetries, waitSec);
+                    if (callbacks.onError) {
+                        callbacks.onError("API temporarily unavailable, retrying in " +
+                            std::to_string(waitSec) + "s...");
+                    }
+                    std::this_thread::sleep_for(std::chrono::seconds(waitSec));
                     compactor_.forceCompact(messages_, config_.apiClient);
-                    // Also truncate large tool results in history
-                    for (size_t i = 0; i < messages_.size(); i++) {
+                    // Truncate large tool results in history
+                    for (size_t i = 0; i + 6 < messages_.size(); i++) {
                         for (auto& block : messages_[i].content) {
                             if (block.type == ContentBlockType::TOOL_RESULT) {
                                 std::string text = block.toolResult.is_string() ?
                                     block.toolResult.get<std::string>() : block.toolResult.dump();
                                 if (text.size() > 5000) {
                                     block.toolResult = nlohmann::json(text.substr(0, 1000) +
-                                        "\n... [truncated to save context, was " + std::to_string(text.size()) + " chars]");
+                                        "\n... [truncated, was " + std::to_string(text.size()) + " chars]");
                                 }
                             }
                         }
                     }
-                    continue; // Retry
+                    continue; // Retry after wait
                 }
+                overloadRetries = 0;
                 overloadRetries = 0;
             }
             spdlog::error("API call failed: {}", e.what());
