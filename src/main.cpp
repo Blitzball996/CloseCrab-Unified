@@ -65,6 +65,7 @@
 #include "ui/TerminalUI.h"
 #include "ui/VimMode.h"
 #include "ui/KeyboardSelector.h"
+#include "ui/OutputCollapse.h"
 
 // Commands
 #include "commands/GitCommands.h"
@@ -641,19 +642,13 @@ When the user asks a question, answer directly.)";
         streamState = StreamState::WAITING;
         if (result.success) {
             std::cout << " " << ansi::green() << "OK" << ansi::reset();
-            // Show truncated output for execution tools so user can see progress
+            // Show collapsed output for execution tools so user can see progress
             if ((name == "Bash" || name == "PowerShell") && !result.content.empty()) {
-                std::string preview = result.content;
-                // Show last few lines (most relevant output)
-                size_t maxPreview = 500;
-                if (preview.size() > maxPreview) {
-                    size_t start = preview.size() - maxPreview;
-                    // Find next newline to avoid cutting mid-line
-                    size_t nl = preview.find('\n', start);
-                    if (nl != std::string::npos) start = nl + 1;
-                    preview = "...\n" + preview.substr(start);
+                auto collapsed = OutputCollapse::collapse(result.content);
+                std::cout << "\n" << ansi::dim() << collapsed.display << ansi::reset();
+                if (collapsed.collapsed) {
+                    std::cout << ansi::dim() << "  [" << collapsed.totalLines << " total lines]" << ansi::reset();
                 }
-                std::cout << "\n" << ansi::dim() << preview << ansi::reset();
             }
             std::cout << "\n" << std::flush;
         } else {

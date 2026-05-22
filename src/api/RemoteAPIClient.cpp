@@ -37,6 +37,20 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
     for (const auto& msg : messages) {
         msgs.push_back(msg.toApiJson());
     }
+
+    // Add cache_control to last user message for conversation prefix caching
+    if (!msgs.empty()) {
+        for (int i = (int)msgs.size() - 1; i >= 0; i--) {
+            if (msgs[i].value("role", "") == "user") {
+                // Add cache_control to the last content block of this message
+                if (msgs[i].contains("content") && msgs[i]["content"].is_array() && !msgs[i]["content"].empty()) {
+                    msgs[i]["content"].back()["cache_control"] = {{"type", "ephemeral"}};
+                }
+                break;
+            }
+        }
+    }
+
     body["messages"] = std::move(msgs);
 
     // Tools — add cache_control on last tool for prompt caching
