@@ -54,6 +54,7 @@
 #include "tools/VerifyPlanTool/VerifyPlanTool.h"
 #include "tools/WebBrowserTool/WebBrowserTool.h"
 #include "tools/MonitorTool/MonitorTool.h"
+#include "tools/ReverseTool/ReverseTool.h"
 #include "mcp/MCPClient.h"
 #include "plugins/PluginManager.h"
 #include "core/CostTracker.h"
@@ -424,6 +425,7 @@ int main(int argc, char* argv[]) {
     cmdRegistry.registerCommand(std::make_unique<ProviderCommand>());
     cmdRegistry.registerCommand(std::make_unique<ApiConfigCommand>());
     cmdRegistry.registerCommand(std::make_unique<ReloadCommand>());
+    cmdRegistry.registerCommand(std::make_unique<BtwCommand>());
     // Extended commands (P2.5)
     cmdRegistry.registerCommand(std::make_unique<ReviewCommand>());
     cmdRegistry.registerCommand(std::make_unique<HooksCommand>());
@@ -526,6 +528,7 @@ int main(int argc, char* argv[]) {
     toolRegistry.registerTool(std::make_unique<SnipTool>());
     toolRegistry.registerTool(std::make_unique<VerifyPlanTool>());
     toolRegistry.registerTool(std::make_unique<WebBrowserTool>());
+    toolRegistry.registerTool(std::make_unique<ReverseTool>());
     spdlog::info("Registered {} tools", toolRegistry.getToolNames().size());
 
     // Load MCP servers from settings
@@ -680,17 +683,23 @@ When the user asks a question, answer directly.)";
         if (autoApproveSession) return true;
 
         std::cout << ansi::yellow() << "  Allow " << toolName
-                  << ansi::reset() << " (" << desc << ")?\n  ";
+                  << ansi::reset() << " (" << desc << ")?\n";
 
         std::vector<std::string> options = {"Allow", "Deny", "Allow All"};
-        int choice = KeyboardSelector::select(options, 0);
+        SelectorResult sel = KeyboardSelector::select(options, 0, true);
 
-        if (choice == 2) { // Allow All
+        if (sel.index == -1) {
+            // User typed custom text — treat as feedback and deny for safety
+            std::cout << ansi::dim() << "  Feedback: " << sel.customText << ansi::reset() << "\n";
+            std::cout << ansi::red() << "  Denied (custom response)." << ansi::reset() << "\n";
+            return false;
+        }
+        if (sel.index == 2) { // Allow All
             autoApproveSession = true;
             std::cout << ansi::green() << "  Auto-approving all tools for this session." << ansi::reset() << "\n";
             return true;
         }
-        return (choice == 0); // Allow=true, Deny or Escape=false
+        return (sel.index == 0); // Allow=true, Deny or Escape=false
     };
 
     bool running = true;
