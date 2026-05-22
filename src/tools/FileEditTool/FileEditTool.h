@@ -73,9 +73,22 @@ public:
         }
 
         if (count > 1 && !replaceAll) {
+            // Show line numbers of each occurrence to help AI provide more context
+            std::string locations;
+            size_t searchPos = 0;
+            int lineNum = 1;
+            int occNum = 0;
+            for (size_t i = 0; i < content.size(); i++) {
+                if (content[i] == '\n') lineNum++;
+                if (i == content.find(oldStr, searchPos)) {
+                    occNum++;
+                    locations += " occurrence " + std::to_string(occNum) + " at line " + std::to_string(lineNum) + ";";
+                    searchPos = i + oldStr.size();
+                }
+            }
             return ToolResult::fail(
-                "old_string found " + std::to_string(count) + " times. "
-                "Provide more context to make it unique, or set replace_all=true.");
+                "old_string found " + std::to_string(count) + " times (" + locations +
+                "). Include more surrounding lines to make it unique, or set replace_all=true.");
         }
 
         // Perform replacement

@@ -313,7 +313,18 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
         safeContent = OutputPersistence::persistIfNeeded(safeContent, event.toolName, event.toolUseId);
     }
     safeContent = budgetTracker_.applyToolResultBudget(safeContent);
-    nlohmann::json resultJson = nlohmann::json(safeContent);
+    // Use dump-safe json construction to avoid UTF-8 exceptions
+    nlohmann::json resultJson;
+    try {
+        resultJson = nlohmann::json(safeContent);
+    } catch (...) {
+        // If json still rejects it, force-sanitize by replacing non-ASCII
+        std::string ascii;
+        for (char c : safeContent) {
+            ascii += (static_cast<unsigned char>(c) < 0x80) ? c : '?';
+        }
+        resultJson = nlohmann::json(ascii);
+    }
     messages_.push_back(Message::makeToolResult(event.toolUseId, resultJson, !result.success));
 }
 
@@ -541,7 +552,16 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                         }
 
                         std::string safeContent = ensureUtf8(result.success ? result.content : result.error);
-                        nlohmann::json resultJson = nlohmann::json(safeContent);
+                        nlohmann::json resultJson;
+                        try {
+                            resultJson = nlohmann::json(safeContent);
+                        } catch (...) {
+                            std::string ascii;
+                            for (char c : safeContent) {
+                                ascii += (static_cast<unsigned char>(c) < 0x80) ? c : '?';
+                            }
+                            resultJson = nlohmann::json(ascii);
+                        }
                         std::lock_guard<std::mutex> lock(messagesMutex);
                         messages_.push_back(Message::makeToolResult(
                             localEvent.toolUseId, resultJson, !result.success));
