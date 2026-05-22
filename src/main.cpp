@@ -616,16 +616,45 @@ When the user asks a question, answer directly.)";
     callbacks.onToolUse = [&spinner, &streamState](const std::string& name, const nlohmann::json& input) {
         spinner.stop();
         streamState = StreamState::TOOL;
-        std::cout << "\n" << ansi::yellow() << "  [" << name << "]" << ansi::reset() << " " << std::flush;
+        std::cout << "\n" << ansi::yellow() << "  [" << name << "]" << ansi::reset() << " ";
+        // Show what the tool is doing
+        if (name == "Bash" || name == "PowerShell") {
+            std::string cmd = input.value("command", "");
+            if (cmd.size() > 120) cmd = cmd.substr(0, 120) + "...";
+            std::cout << ansi::dim() << cmd << ansi::reset();
+        } else if (name == "Write" || name == "Edit" || name == "Read") {
+            std::string path = input.value("file_path", "");
+            std::cout << ansi::dim() << path << ansi::reset();
+        } else if (name == "Glob") {
+            std::cout << ansi::dim() << input.value("pattern", "") << ansi::reset();
+        } else if (name == "Grep") {
+            std::cout << ansi::dim() << input.value("pattern", "") << ansi::reset();
+        }
+        std::cout << std::flush;
         spinner.start(name);
     };
     callbacks.onToolResult = [&spinner, &streamState](const std::string& name, const ToolResult& result) {
         spinner.stop();
         streamState = StreamState::WAITING;
         if (result.success) {
-            std::cout << ansi::green() << "OK" << ansi::reset() << "\n" << std::flush;
+            std::cout << " " << ansi::green() << "OK" << ansi::reset();
+            // Show truncated output for execution tools so user can see progress
+            if ((name == "Bash" || name == "PowerShell") && !result.content.empty()) {
+                std::string preview = result.content;
+                // Show last few lines (most relevant output)
+                size_t maxPreview = 500;
+                if (preview.size() > maxPreview) {
+                    size_t start = preview.size() - maxPreview;
+                    // Find next newline to avoid cutting mid-line
+                    size_t nl = preview.find('\n', start);
+                    if (nl != std::string::npos) start = nl + 1;
+                    preview = "...\n" + preview.substr(start);
+                }
+                std::cout << "\n" << ansi::dim() << preview << ansi::reset();
+            }
+            std::cout << "\n" << std::flush;
         } else {
-            std::cout << ansi::red() << "Error: " << result.error << ansi::reset() << "\n";
+            std::cout << " " << ansi::red() << "Error: " << result.error << ansi::reset() << "\n";
         }
         // After tool result, API will be called again — show waiting
         spinner.start("Waiting for response...");

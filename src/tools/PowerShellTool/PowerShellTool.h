@@ -5,6 +5,13 @@
 #include <array>
 #include <memory>
 #include <set>
+#include <vector>
+#include <thread>
+#include <atomic>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace closecrab {
 
@@ -50,23 +57,75 @@ public:
 #else
         std::string cmd = input["command"].get<std::string>();
         if (cmd.empty()) return ToolResult::fail("Empty command");
+        int timeout = input.value("timeout", 120000);
+        if (timeout > 600000) timeout = 600000;
+        if (timeout < 1000) timeout = 1000;
 
-        // Use powershell.exe with -NoProfile for speed, -Command for inline execution
-        std::string fullCmd = "powershell.exe -NoProfile -NonInteractive -Command \""
-                              + escapeForPowerShell(cmd) + "\" 2>&1";
+        // Use pwsh (PowerShell 7) if available, fallback to powershell.exe
+        // Use -EncodedCommand to avoid quoting issues with complex commands
+        std::string encoded = encodeForPowerShell(cmd);
+        std::string fullCmd = "powershell.exe -NoProfile -NonInteractive -EncodedCommand " + encoded;
 
+        // Execute with timeout using CreateProcess (same pattern as BashTool)
+        SECURITY_ATTRIBUTES sa = {};
+        sa.nLength = sizeof(sa);
+        sa.bInheritHandle = TRUE;
+        HANDLE hReadPipe, hWritePipe;
+        if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) {
+            return ToolResult::fail("Failed to create pipe");
+        }
+        SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
+
+        std::vector<char> cmdBuf(fullCmd.begin(), fullCmd.end());
+        cmdBuf.push_back('\0');
+
+        STARTUPINFOA si = {};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdOutput = hWritePipe;
+        si.hStdError = hWritePipe;
+        PROCESS_INFORMATION pi = {};
+
+        if (!CreateProcessA(nullptr, cmdBuf.data(), nullptr, nullptr, TRUE,
+                            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+            CloseHandle(hReadPipe);
+            CloseHandle(hWritePipe);
+            return ToolResult::fail("Failed to start PowerShell process");
+        }
+        CloseHandle(hWritePipe);
+
+        // Read output with timeout
         std::string output;
-        std::unique_ptr<FILE, decltype(&_pclose)> pipe(_popen(fullCmd.c_str(), "r"), _pclose);
-        if (!pipe) return ToolResult::fail("Failed to start PowerShell");
-
-        std::array<char, 4096> buffer;
-        while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
-            output += buffer.data();
-            if (ctx.abortFlag && ctx.abortFlag->load()) break;
-            if (output.size() > 100 * 1024) {
-                output += "\n... (output truncated at 100KB)";
-                break;
+        std::atomic<bool> readDone{false};
+        std::thread reader([&]() {
+            char buf[4096];
+            DWORD bytesRead;
+            while (ReadFile(hReadPipe, buf, sizeof(buf) - 1, &bytesRead, nullptr) && bytesRead > 0) {
+                buf[bytesRead] = '\0';
+                output += buf;
+                if (output.size() > 100 * 1024) {
+                    output += "\n... (output truncated at 100KB)";
+                    break;
+                }
             }
+            readDone = true;
+        });
+
+        DWORD waitResult = WaitForSingleObject(pi.hProcess, static_cast<DWORD>(timeout));
+        bool timedOut = false;
+        if (waitResult == WAIT_TIMEOUT || (ctx.abortFlag && ctx.abortFlag->load())) {
+            TerminateProcess(pi.hProcess, 1);
+            timedOut = true;
+        }
+
+        if (reader.joinable()) reader.join();
+
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        CloseHandle(hReadPipe);
+
+        if (timedOut) {
+            output += "\n... (command timed out after " + std::to_string(timeout / 1000) + "s)";
         }
 
         return ToolResult::ok(output);
@@ -78,13 +137,27 @@ public:
     }
 
 private:
-    static std::string escapeForPowerShell(const std::string& cmd) {
-        std::string escaped;
-        for (char c : cmd) {
-            if (c == '"') escaped += "\\\"";
-            else escaped += c;
+    // Encode command as Base64 UTF-16LE for -EncodedCommand (avoids all quoting issues)
+    static std::string encodeForPowerShell(const std::string& cmd) {
+        // Convert UTF-8 to UTF-16LE
+        std::vector<uint8_t> utf16;
+        for (size_t i = 0; i < cmd.size(); i++) {
+            utf16.push_back(static_cast<uint8_t>(cmd[i]));
+            utf16.push_back(0); // UTF-16LE: ASCII char + 0x00
         }
-        return escaped;
+        // Base64 encode
+        static const char* b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        std::string encoded;
+        for (size_t i = 0; i < utf16.size(); i += 3) {
+            uint32_t n = (uint32_t)utf16[i] << 16;
+            if (i + 1 < utf16.size()) n |= (uint32_t)utf16[i + 1] << 8;
+            if (i + 2 < utf16.size()) n |= (uint32_t)utf16[i + 2];
+            encoded += b64[(n >> 18) & 0x3F];
+            encoded += b64[(n >> 12) & 0x3F];
+            encoded += (i + 1 < utf16.size()) ? b64[(n >> 6) & 0x3F] : '=';
+            encoded += (i + 2 < utf16.size()) ? b64[n & 0x3F] : '=';
+        }
+        return encoded;
     }
 
     static bool isSafeCommand(const std::string& cmd) {
@@ -95,7 +168,6 @@ private:
         for (const auto& prefix : safe) {
             if (cmd.find(prefix) == 0) return true;
         }
-        // Also safe: simple queries
         if (cmd.find("Get-ChildItem") != std::string::npos) return true;
         if (cmd.find("Get-Content") != std::string::npos) return true;
         if (cmd.find("Get-Process") != std::string::npos) return true;
