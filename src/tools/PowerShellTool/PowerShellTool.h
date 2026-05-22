@@ -199,7 +199,8 @@ private:
     static bool isSafeCommand(const std::string& cmd) {
         static const std::set<std::string> safe = {
             "Get-", "Select-", "Where-", "Format-", "Out-", "Write-",
-            "Test-", "Measure-", "Compare-", "ConvertTo-", "ConvertFrom-"
+            "Test-", "Measure-", "Compare-", "ConvertTo-", "ConvertFrom-",
+            "New-Item", "Set-Location", "Push-Location", "Pop-Location"
         };
         for (const auto& prefix : safe) {
             if (cmd.find(prefix) == 0) return true;

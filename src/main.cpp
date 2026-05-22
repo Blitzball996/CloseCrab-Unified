@@ -675,12 +675,24 @@ When the user asks a question, answer directly.)";
         firstToken = true;
         std::cerr << ansi::red() << "Error: " << err << ansi::reset() << "\n";
     };
-    callbacks.onAskPermission = [](const std::string& toolName, const std::string& desc) -> bool {
+    // Track session-level permission grants
+    bool autoApproveSession = false;
+    callbacks.onAskPermission = [&autoApproveSession](const std::string& toolName, const std::string& desc) -> bool {
+        // If user chose "accept all" earlier, auto-approve
+        if (autoApproveSession) return true;
+
         std::cout << ansi::yellow() << "  Allow " << toolName
-                  << ansi::reset() << " (" << desc << ")? [y/N]: ";
+                  << ansi::reset() << " (" << desc << ")? [y/N/a(ll)]: ";
         std::string answer;
         std::getline(std::cin, answer);
-        return !answer.empty() && (answer[0] == 'y' || answer[0] == 'Y');
+
+        if (answer.empty()) return false;
+        if (answer[0] == 'a' || answer[0] == 'A') {
+            autoApproveSession = true;
+            std::cout << ansi::green() << "  Auto-approving all tools for this session." << ansi::reset() << "\n";
+            return true;
+        }
+        return (answer[0] == 'y' || answer[0] == 'Y');
     };
 
     bool running = true;

@@ -269,7 +269,9 @@ private:
         static const std::set<std::string> safeCommands = {
             "ls", "dir", "cat", "head", "tail", "echo", "pwd", "whoami",
             "date", "time", "type", "find", "grep", "rg", "git status",
-            "git log", "git diff", "git branch", "npm test", "cmake"
+            "git log", "git diff", "git branch", "npm test", "cmake",
+            "mkdir", "cd", "which", "where", "python --version",
+            "node --version", "npm --version", "pip --version"
         };
         for (const auto& safe : safeCommands) {
             if (cmd.size() >= safe.size() && cmd.substr(0, safe.size()) == safe) {
