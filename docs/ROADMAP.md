@@ -43,7 +43,7 @@
 | 18 | DXT插件格式 | ⬜ | 支持JackProAi的DXT插件包格式 |
 | 19 | 自动更新 | ✅ | UpdateChecker: 检查GitHub releases新版本 |
 | 20 | Deep Link | ✅ | DeepLink.h: closecrab://URL scheme解析+注册 |
-| 21 | 设置云同步 | ⬜ | 跨设备同步settings.json和权限规则 |
+| 21 | 设置云同步 | ✅ | SettingsSync: 导入/导出JSON+OneDrive/Dropbox自动检测 |
 | 22 | 使用分析/遥测 | ✅ | Analytics.h: 本地统计工具使用频率、token消耗、命令频率 |
 | 23 | 会话搜索 | ✅ | SessionSearch + /search命令: SQLite全文检索历史对话 |
 | 24 | 多窗口/分屏 | ⬜ | 同时运行多个对话(类似tmux split) |
@@ -56,7 +56,7 @@
 |---|------|------|------|
 | 25 | Buddy伴侣动画 | ⬜ | 终端ASCII动画伴侣(JackProAi的CompanionSprite) |
 | 26 | 提示建议 | ✅ | PromptSuggestion: 根据上下文推荐下一步操作 |
-| 27 | Magic Docs | ⬜ | 自动生成项目文档(MagicDocs服务) |
+| 27 | Magic Docs | ✅ | MagicDocs: 扫描项目自动生成文档骨架 |
 | 28 | Auto Dream | ⬜ | 空闲时自动整理记忆/优化上下文(autoDream) |
 | 29 | Team Memory Sync | ⬜ | 多人协作时同步记忆和上下文 |
 | 30 | Agent Summary | ✅ | AgentSummary: 子代理完成后自动生成操作摘要 |
@@ -72,7 +72,7 @@
 | 33 | JetBrains扩展 | ⬜ | IntelliJ/PyCharm/CLion集成 |
 | 34 | Web UI | ⬜ | 浏览器界面(类似claude.ai/code) |
 | 35 | 移动端 | ⬜ | iOS/Android客户端通过WebSocket连接 |
-| 36 | 多模型路由 | ⬜ | 根据任务复杂度自动选择模型(简单用haiku,复杂用opus) |
+| 36 | 多模型路由 | ✅ | ModelRouter: 根据任务复杂度自动选haiku/sonnet/opus |
 | 37 | 本地微调 | ⬜ | 基于用户习惯微调本地模型的system prompt |
 | 38 | 协作模式 | ⬜ | 多人同时连接同一个CloseCrab实例 |
 
@@ -101,11 +101,12 @@
 ## 统计
 
 - **总需求**: 38项
-- **已完成**: 32项 (84%)
+- **已完成**: 35项 (92%)
 - **P0完成率**: 7/7 (100%) ✅
 - **P1完成率**: 8/8 (100%) ✅
-- **P2完成率**: 6/9 (67%)
-- **P3完成率**: 4/7 (57%)
+- **P2完成率**: 8/9 (89%)
+- **P3完成率**: 6/7 (86%)
+- **P4完成率**: 1/7 (14%)
 - **测试覆盖**: 17+个项目，14种语言，集成测试覆盖6个模块
 - **P0完成率**: 4/7 (57%)
 - **测试覆盖**: 17个项目，14种语言，3675行代码验证通过
