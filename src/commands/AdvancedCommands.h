@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Command.h"
+#include "../api/APIClient.h"
 #include "../rag/RAGManager.h"
 #include "../security/Sandbox.h"
 #include "../permissions/PermissionEngine.h"
@@ -285,6 +286,58 @@ public:
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
         ctx.print("Configuration reload requires restarting the program.\n");
         ctx.print("Please exit (/quit) and restart.\n");
+        return CommandResult::ok();
+    }
+};
+
+// /btw - Ask a side question without interrupting main conversation
+class BtwCommand : public Command {
+public:
+    std::string getName() const override { return "btw"; }
+    std::string getDescription() const override { return "Ask a quick side question without affecting main conversation"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        if (args.empty()) {
+            ctx.print("Usage: /btw <question>\n");
+            ctx.print("Ask a quick question without interrupting the main conversation.\n");
+            return CommandResult::ok();
+        }
+
+        if (!ctx.apiClient) {
+            ctx.print("Error: no API client configured\n");
+            return CommandResult::ok();
+        }
+
+        ctx.print("\033[90m[btw] Thinking...\033[0m\n");
+
+        try {
+            // Build a lightweight message list (just the question)
+            std::vector<Message> sideMessages;
+            sideMessages.push_back(Message::makeUser(args));
+
+            // Use a focused system prompt
+            std::string sidePrompt = "You are a helpful assistant answering a quick side question. "
+                "Be concise and direct. The user is in the middle of coding work and just wants a quick answer.";
+
+            ModelConfig config;
+            config.maxTokens = 2048;
+            config.temperature = 0.7f;
+            config.stream = true;
+
+            std::string response;
+            ctx.apiClient->streamChat(sideMessages, sidePrompt, config,
+                [&](const StreamEvent& event) {
+                    if (event.type == StreamEvent::EVT_TEXT) {
+                        response += event.content;
+                        ctx.print(event.content);
+                    }
+                });
+
+            ctx.print("\n\033[90m[/btw end]\033[0m\n");
+        } catch (const std::exception& e) {
+            ctx.print("Error: " + std::string(e.what()) + "\n");
+        }
+
         return CommandResult::ok();
     }
 };
