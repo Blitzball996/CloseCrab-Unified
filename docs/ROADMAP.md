@@ -42,7 +42,7 @@
 | 17 | Computer Use | ⬜ | 屏幕截图+鼠标键盘操作(类似Anthropic computer use) |
 | 18 | DXT插件格式 | ⬜ | 支持JackProAi的DXT插件包格式 |
 | 19 | 自动更新 | ✅ | UpdateChecker: 检查GitHub releases新版本 |
-| 20 | Deep Link | ⬜ | URL scheme处理(closecrab://open?file=...) |
+| 20 | Deep Link | ✅ | DeepLink.h: closecrab://URL scheme解析+注册 |
 | 21 | 设置云同步 | ⬜ | 跨设备同步settings.json和权限规则 |
 | 22 | 使用分析/遥测 | ✅ | Analytics.h: 本地统计工具使用频率、token消耗、命令频率 |
 | 23 | 会话搜索 | ✅ | SessionSearch + /search命令: SQLite全文检索历史对话 |
@@ -55,12 +55,12 @@
 | # | 功能 | 状态 | 说明 |
 |---|------|------|------|
 | 25 | Buddy伴侣动画 | ⬜ | 终端ASCII动画伴侣(JackProAi的CompanionSprite) |
-| 26 | 提示建议 | ⬜ | 根据上下文推荐下一步操作(PromptSuggestion) |
+| 26 | 提示建议 | ✅ | PromptSuggestion: 根据上下文推荐下一步操作 |
 | 27 | Magic Docs | ⬜ | 自动生成项目文档(MagicDocs服务) |
 | 28 | Auto Dream | ⬜ | 空闲时自动整理记忆/优化上下文(autoDream) |
 | 29 | Team Memory Sync | ⬜ | 多人协作时同步记忆和上下文 |
-| 30 | Agent Summary | ⬜ | 子代理执行完后自动生成摘要 |
-| 31 | Tips系统 | ⬜ | 根据使用习惯显示操作提示 |
+| 30 | Agent Summary | ✅ | AgentSummary: 子代理完成后自动生成操作摘要 |
+| 31 | Tips系统 | ✅ | Tips.h: 根据使用习惯显示上下文操作提示 |
 
 ---
 
@@ -101,10 +101,11 @@
 ## 统计
 
 - **总需求**: 38项
-- **已完成**: 28项 (74%)
+- **已完成**: 32项 (84%)
 - **P0完成率**: 7/7 (100%) ✅
 - **P1完成率**: 8/8 (100%) ✅
-- **P2完成率**: 3/9 (33%)
+- **P2完成率**: 6/9 (67%)
+- **P3完成率**: 4/7 (57%)
 - **测试覆盖**: 17+个项目，14种语言，集成测试覆盖6个模块
 - **P0完成率**: 4/7 (57%)
 - **测试覆盖**: 17个项目，14种语言，3675行代码验证通过
