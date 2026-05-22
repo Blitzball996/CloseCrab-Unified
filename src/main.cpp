@@ -603,13 +603,30 @@ When the user asks a question, answer directly.)";
     bool firstToken = true;
 
     std::string voiceAccumulator; // Accumulate text for TTS
-    callbacks.onText = [&voiceAccumulator, &spinner, &streamState, &firstToken](const std::string& text) {
+    bool inCodeBlock = false; // Track code block state for highlighting
+    callbacks.onText = [&voiceAccumulator, &spinner, &streamState, &firstToken, &inCodeBlock](const std::string& text) {
         if (firstToken || streamState != StreamState::RESPONDING) {
             spinner.stop();
             streamState = StreamState::RESPONDING;
             firstToken = false;
         }
-        std::cout << text << std::flush;
+        // Real-time code block detection for syntax highlighting
+        std::string output;
+        for (size_t i = 0; i < text.size(); i++) {
+            if (i + 2 < text.size() && text[i] == '`' && text[i+1] == '`' && text[i+2] == '`') {
+                if (!inCodeBlock) {
+                    inCodeBlock = true;
+                    output += "\033[48;5;236m"; // Dark background
+                } else {
+                    inCodeBlock = false;
+                    output += "\033[0m";
+                }
+                i += 2; // Skip the ```
+                continue;
+            }
+            output += text[i];
+        }
+        std::cout << output << std::flush;
         voiceAccumulator += text;
     };
     callbacks.onThinking = [&spinner, &streamState](const std::string& text) {
