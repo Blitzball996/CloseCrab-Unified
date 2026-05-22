@@ -1,5 +1,6 @@
 #pragma once
 #include "../Tool.h"
+#include "CudaBinaryAnalyzer.h"
 #include <fstream>
 #include <sstream>
 #include <iomanip>
@@ -25,11 +26,12 @@ public:
             {"properties", {
                 {"file_path", {{"type", "string"}, {"description", "Path to binary file"}}},
                 {"action", {{"type", "string"},
-                    {"enum", {"hexdump", "strings", "headers", "imports", "sections", "disasm", "functions"}},
-                    {"description", "Analysis action: hexdump, strings, headers, imports, sections, disasm (disassemble), functions (find function entries)"}}},
+                    {"enum", {"hexdump", "strings", "headers", "imports", "sections", "disasm", "functions", "entropy", "crypto", "compare"}},
+                    {"description", "Analysis action: hexdump, strings, headers, imports, sections, disasm, functions, entropy (CUDA-accelerated block entropy map), crypto (detect encryption/packers), compare (binary similarity)"}}},
                 {"offset", {{"type", "integer"}, {"description", "Start offset (default: entry point for disasm, 0 for hexdump)"}}},
                 {"length", {{"type", "integer"}, {"description", "Bytes to analyze (default 256 for hexdump, 512 for disasm)"}}},
-                {"min_length", {{"type", "integer"}, {"description", "Minimum string length (default 4)"}}}
+                {"min_length", {{"type", "integer"}, {"description", "Minimum string length (default 4)"}}},
+                {"compare_path", {{"type", "string"}, {"description", "Second binary path (for compare action)"}}}
             }},
             {"required", {"file_path", "action"}}
         };
@@ -62,6 +64,14 @@ public:
             return disassemble(path, offset, length);
         } else if (action == "functions") {
             return findFunctions(path);
+        } else if (action == "entropy") {
+            return analyzeEntropy(path);
+        } else if (action == "crypto") {
+            return detectCrypto(path);
+        } else if (action == "compare") {
+            std::string path2 = input.value("compare_path", "");
+            if (path2.empty()) return ToolResult::fail("compare_path required for compare action");
+            return compareBinaries(path, path2);
         }
         return ToolResult::fail("Unknown action: " + action);
     }
@@ -477,6 +487,103 @@ private:
             }
         }
         return result;
+    }
+
+    // === CUDA-accelerated analysis methods ===
+
+    ToolResult analyzeEntropy(const std::string& path) {
+        std::ifstream file(path, std::ios::binary);
+        if (!file) return ToolResult::fail("Cannot open file");
+        std::vector<uint8_t> data((std::istreambuf_iterator<char>(file)), {});
+
+        auto& analyzer = CudaBinaryAnalyzer::getInstance();
+        auto blocks = analyzer.calculateEntropy(data, 4096);
+
+        std::ostringstream oss;
+        oss << "Entropy analysis of " << path << " (" << data.size() << " bytes, "
+            << blocks.size() << " blocks):\n";
+        oss << (analyzer.isGpuAvailable() ? "[CUDA accelerated]\n\n" : "[CPU mode]\n\n");
+
+        // Summary
+        int code = 0, dataB = 0, compressed = 0, encrypted = 0, padding = 0;
+        for (const auto& b : blocks) {
+            if (b.classification == "code") code++;
+            else if (b.classification == "data") dataB++;
+            else if (b.classification == "compressed") compressed++;
+            else if (b.classification == "encrypted") encrypted++;
+            else if (b.classification == "padding") padding++;
+        }
+        oss << "Summary:\n";
+        oss << "  Code blocks:       " << code << " (" << (blocks.empty() ? 0 : code*100/blocks.size()) << "%)\n";
+        oss << "  Data blocks:       " << dataB << " (" << (blocks.empty() ? 0 : dataB*100/blocks.size()) << "%)\n";
+        oss << "  Compressed blocks: " << compressed << "\n";
+        oss << "  Encrypted blocks:  " << encrypted << "\n";
+        oss << "  Padding blocks:    " << padding << "\n\n";
+
+        // Show first 20 blocks detail
+        oss << "Block details (first 20):\n";
+        oss << std::left << std::setw(12) << "Offset" << std::setw(10) << "Entropy" << "Type\n";
+        oss << std::string(35, '-') << "\n";
+        for (size_t i = 0; i < std::min(blocks.size(), (size_t)20); i++) {
+            oss << "0x" << std::hex << std::setw(10) << std::setfill('0') << blocks[i].offset
+                << std::dec << std::setfill(' ') << std::setw(10) << std::fixed << std::setprecision(2) << blocks[i].entropy
+                << blocks[i].classification << "\n";
+        }
+
+        return ToolResult::ok(oss.str());
+    }
+
+    ToolResult detectCrypto(const std::string& path) {
+        std::ifstream file(path, std::ios::binary);
+        if (!file) return ToolResult::fail("Cannot open file");
+        std::vector<uint8_t> data((std::istreambuf_iterator<char>(file)), {});
+
+        auto& analyzer = CudaBinaryAnalyzer::getInstance();
+        auto sigs = analyzer.detectCrypto(data);
+
+        std::ostringstream oss;
+        oss << "Crypto/packer detection for " << path << ":\n";
+        oss << (analyzer.isGpuAvailable() ? "[CUDA accelerated]\n\n" : "[CPU mode]\n\n");
+
+        if (sigs.empty()) {
+            oss << "No known crypto signatures or packers detected.\n";
+        } else {
+            for (const auto& sig : sigs) {
+                oss << "  [" << std::fixed << std::setprecision(0) << (sig.confidence * 100) << "%] "
+                    << sig.name;
+                if (sig.offset > 0) oss << " @ offset 0x" << std::hex << sig.offset;
+                oss << "\n";
+            }
+        }
+        return ToolResult::ok(oss.str());
+    }
+
+    ToolResult compareBinaries(const std::string& path1, const std::string& path2) {
+        std::ifstream f1(path1, std::ios::binary), f2(path2, std::ios::binary);
+        if (!f1) return ToolResult::fail("Cannot open: " + path1);
+        if (!f2) return ToolResult::fail("Cannot open: " + path2);
+
+        std::vector<uint8_t> data1((std::istreambuf_iterator<char>(f1)), {});
+        std::vector<uint8_t> data2((std::istreambuf_iterator<char>(f2)), {});
+
+        auto& analyzer = CudaBinaryAnalyzer::getInstance();
+        auto result = analyzer.compareBinaries(data1, data2);
+
+        std::ostringstream oss;
+        oss << "Binary comparison:\n";
+        oss << (analyzer.isGpuAvailable() ? "[CUDA accelerated]\n\n" : "[CPU mode]\n\n");
+        oss << "  File 1: " << path1 << " (" << data1.size() << " bytes)\n";
+        oss << "  File 2: " << path2 << " (" << data2.size() << " bytes)\n\n";
+        oss << "  Overall similarity: " << std::fixed << std::setprecision(1) << (result.overallSimilarity * 100) << "%\n";
+        oss << "  Code similarity:    " << (result.codeSimilarity * 100) << "%\n";
+        oss << "  Data similarity:    " << (result.dataSimilarity * 100) << "%\n";
+
+        if (result.overallSimilarity > 0.9f) oss << "\n  Verdict: Nearly identical binaries\n";
+        else if (result.overallSimilarity > 0.7f) oss << "\n  Verdict: Same codebase, different build/version\n";
+        else if (result.overallSimilarity > 0.4f) oss << "\n  Verdict: Some shared code/libraries\n";
+        else oss << "\n  Verdict: Unrelated binaries\n";
+
+        return ToolResult::ok(oss.str());
     }
 };
 
