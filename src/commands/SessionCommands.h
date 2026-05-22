@@ -8,6 +8,8 @@
 #include <fstream>
 #include <chrono>
 #include <iomanip>
+#include <iostream>
+#include <sstream>
 
 namespace closecrab {
 
@@ -38,26 +40,72 @@ public:
     }
 };
 
-// /resume - restore last saved session
+// /resume - list and restore past sessions
 class ResumeCommand : public Command {
 public:
     std::string getName() const override { return "resume"; }
-    std::string getDescription() const override { return "Resume the last saved conversation session"; }
+    std::string getDescription() const override { return "List recent sessions and restore one"; }
 
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
-        std::string sessionId = ctx.queryEngine->getSessionId();
-        if (sessionId.empty()) {
-            ctx.print("No session ID available.\n");
+        std::string dbPath = "data/closecrab.db";
+        SessionManager mgr(dbPath);
+
+        // If a specific session ID is passed directly, restore it
+        if (!args.empty() && args.find_first_not_of("0123456789") != std::string::npos) {
+            return restoreSession(args, mgr, ctx);
+        }
+
+        // List recent sessions
+        auto sessions = mgr.listSessions(10);
+        if (sessions.empty()) {
+            ctx.print("No saved sessions found.\n");
             return CommandResult::ok();
         }
 
-        // Load from SessionManager via database
-        // The context is stored as JSON in the sessions table
-        std::string dbPath = "data/closecrab.db";
-        SessionManager mgr(dbPath);
+        ctx.print("\n\033[1mRecent sessions:\033[0m\n");
+        for (size_t i = 0; i < sessions.size(); i++) {
+            auto& s = sessions[i];
+            std::string timestamp = formatTimestamp(s->updatedAt);
+            std::string preview = extractPreview(s->context);
+            int msgCount = countMessages(s->context);
+
+            ctx.print("  \033[36m" + std::to_string(i + 1) + ".\033[0m [" + timestamp + "] ");
+            ctx.print("\"" + preview + "\"");
+            if (msgCount > 0) {
+                ctx.print(" (" + std::to_string(msgCount) + " messages)");
+            }
+            ctx.print("\n");
+        }
+        ctx.print("\nEnter number to restore (or press Enter for most recent): ");
+
+        // Read user choice
+        std::string input;
+        std::getline(std::cin, input);
+
+        // Default to most recent
+        int choice = 0;
+        if (!input.empty()) {
+            try {
+                choice = std::stoi(input) - 1;
+            } catch (...) {
+                ctx.print("Invalid selection.\n");
+                return CommandResult::ok();
+            }
+        }
+
+        if (choice < 0 || choice >= (int)sessions.size()) {
+            ctx.print("Invalid selection.\n");
+            return CommandResult::ok();
+        }
+
+        return restoreSession(sessions[choice]->id, mgr, ctx);
+    }
+
+private:
+    CommandResult restoreSession(const std::string& sessionId, SessionManager& mgr, CommandContext& ctx) {
         auto session = mgr.getSession(sessionId);
         if (!session || session->context.empty() || session->context == "{}") {
-            ctx.print("No saved session data found.\n");
+            ctx.print("No saved session data found for: " + sessionId + "\n");
             return CommandResult::ok();
         }
 
@@ -65,11 +113,49 @@ public:
             auto data = nlohmann::json::parse(session->context);
             ctx.queryEngine->deserializeMessages(data);
             ctx.print("Restored " + std::to_string(ctx.queryEngine->getMessages().size()) +
-                      " messages from session.\n");
+                      " messages from session [" + sessionId + "]\n");
         } catch (const std::exception& e) {
             ctx.print("Failed to restore session: " + std::string(e.what()) + "\n");
         }
         return CommandResult::ok();
+    }
+
+    std::string formatTimestamp(long long ts) {
+        std::time_t t = static_cast<std::time_t>(ts);
+        std::tm* tm = std::localtime(&t);
+        if (!tm) return "unknown";
+        std::ostringstream oss;
+        oss << std::put_time(tm, "%Y-%m-%d %H:%M");
+        return oss.str();
+    }
+
+    std::string extractPreview(const std::string& context) {
+        if (context.empty() || context == "{}") return "(empty)";
+        try {
+            auto data = nlohmann::json::parse(context);
+            // Try to find the first user message as preview
+            if (data.contains("messages") && data["messages"].is_array() && !data["messages"].empty()) {
+                for (const auto& msg : data["messages"]) {
+                    if (msg.contains("role") && msg["role"] == "user" && msg.contains("content")) {
+                        std::string text = msg["content"].get<std::string>();
+                        if (text.size() > 50) text = text.substr(0, 50) + "...";
+                        return text;
+                    }
+                }
+            }
+        } catch (...) {}
+        return "(session data)";
+    }
+
+    int countMessages(const std::string& context) {
+        if (context.empty() || context == "{}") return 0;
+        try {
+            auto data = nlohmann::json::parse(context);
+            if (data.contains("messages") && data["messages"].is_array()) {
+                return (int)data["messages"].size();
+            }
+        } catch (...) {}
+        return 0;
     }
 };
 

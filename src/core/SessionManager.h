@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <memory>
+#include <vector>
 #include <sqlite3.h>
 #include <filesystem>
 #include <spdlog/spdlog.h>
@@ -8,7 +9,7 @@
 struct Session {
     std::string id;
     std::string userId;
-    std::string context;  // JSON 格式的对话上下文
+    std::string context;  // JSON 锟斤拷式锟侥对伙拷锟斤拷锟斤拷锟斤拷
     long long createdAt;
     long long updatedAt;
 };
@@ -18,17 +19,20 @@ public:
     SessionManager(const std::string& dbPath);
     ~SessionManager();
 
-    // 创建新会话
+    // 锟斤拷锟斤拷锟铰会话
     std::string createSession(const std::string& userId);
 
-    // 获取会话
+    // 锟斤拷取锟结话
     std::shared_ptr<Session> getSession(const std::string& sessionId);
 
-    // 更新会话上下文
+    // 锟斤拷锟铰会话锟斤拷锟斤拷锟斤拷
     bool updateContext(const std::string& sessionId, const std::string& context);
 
-    // 删除会话
+    // 删锟斤拷锟结话
     bool deleteSession(const std::string& sessionId);
+
+    // 鍒楀嚭鏈�杩戠殑浼氳瘽
+    std::vector<std::shared_ptr<Session>> listSessions(int limit = 10);
 
 private:
     sqlite3* db;

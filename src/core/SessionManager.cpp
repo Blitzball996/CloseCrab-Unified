@@ -150,3 +150,32 @@ bool SessionManager::deleteSession(const std::string& sessionId) {
     spdlog::info("Deleted session: {}", sessionId);
     return rc == SQLITE_DONE;
 }
+
+std::vector<std::shared_ptr<Session>> SessionManager::listSessions(int limit) {
+    std::vector<std::shared_ptr<Session>> sessions;
+    const char* sql = "SELECT id, user_id, context, created_at, updated_at FROM sessions ORDER BY updated_at DESC LIMIT ?";
+    sqlite3_stmt* stmt;
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        spdlog::error("Failed to prepare listSessions: {}", sqlite3_errmsg(db));
+        return sessions;
+    }
+
+    sqlite3_bind_int(stmt, 1, limit);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        auto s = std::make_shared<Session>();
+        auto col0 = sqlite3_column_text(stmt, 0);
+        auto col1 = sqlite3_column_text(stmt, 1);
+        auto col2 = sqlite3_column_text(stmt, 2);
+        s->id = col0 ? reinterpret_cast<const char*>(col0) : "";
+        s->userId = col1 ? reinterpret_cast<const char*>(col1) : "";
+        s->context = col2 ? reinterpret_cast<const char*>(col2) : "{}";
+        s->createdAt = sqlite3_column_int64(stmt, 3);
+        s->updatedAt = sqlite3_column_int64(stmt, 4);
+        sessions.push_back(s);
+    }
+
+    sqlite3_finalize(stmt);
+    return sessions;
+}

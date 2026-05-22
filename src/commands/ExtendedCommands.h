@@ -1,6 +1,8 @@
 #pragma once
 
 #include "Command.h"
+#include "../api/RemoteAPIClient.h"
+#include "../config/Config.h"
 #include "../hooks/HookManager.h"
 #include "../memory/FileMemoryManager.h"
 #include "../agents/AgentManager.h"
@@ -919,7 +921,25 @@ public:
             ctx.print("Current model: " + ctx.appState->currentModel + "\n");
             return CommandResult::ok();
         }
+
+        // Read connection params from config/env (same priority as main.cpp)
+        auto& config = Config::getInstance();
+        std::string apiKey = config.getString("api.api_key", "");
+        std::string baseUrl = config.getString("api.base_url", "https://api.anthropic.com");
+        if (apiKey.empty()) {
+            const char* envKey = std::getenv("ANTHROPIC_AUTH_TOKEN");
+            if (envKey) apiKey = envKey;
+        }
+        if (baseUrl.empty()) baseUrl = "https://api.anthropic.com";
+
+        // Create new client with the requested model
+        static std::shared_ptr<closecrab::RemoteAPIClient> s_activeClient;
+        s_activeClient = std::make_shared<closecrab::RemoteAPIClient>(apiKey, baseUrl, args);
+
+        // Swap into QueryEngine
+        ctx.queryEngine->setApiClient(s_activeClient.get());
         ctx.appState->currentModel = args;
+
         ctx.print("Model switched to: " + args + "\n");
         return CommandResult::ok();
     }

@@ -64,6 +64,7 @@
 #include "memory/MemoryExtractor.h"
 #include "ui/TerminalUI.h"
 #include "ui/VimMode.h"
+#include "ui/KeyboardSelector.h"
 
 // Commands
 #include "commands/GitCommands.h"
@@ -684,17 +685,17 @@ When the user asks a question, answer directly.)";
         if (autoApproveSession) return true;
 
         std::cout << ansi::yellow() << "  Allow " << toolName
-                  << ansi::reset() << " (" << desc << ")? [y/N/a(ll)]: ";
-        std::string answer;
-        std::getline(std::cin, answer);
+                  << ansi::reset() << " (" << desc << ")?\n  ";
 
-        if (answer.empty()) return false;
-        if (answer[0] == 'a' || answer[0] == 'A') {
+        std::vector<std::string> options = {"Allow", "Deny", "Allow All"};
+        int choice = KeyboardSelector::select(options, 0);
+
+        if (choice == 2) { // Allow All
             autoApproveSession = true;
             std::cout << ansi::green() << "  Auto-approving all tools for this session." << ansi::reset() << "\n";
             return true;
         }
-        return (answer[0] == 'y' || answer[0] == 'Y');
+        return (choice == 0); // Allow=true, Deny or Escape=false
     };
 
     bool running = true;
