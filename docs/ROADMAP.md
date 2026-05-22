@@ -25,7 +25,7 @@
 |---|------|------|------|
 | 8 | TaskOutput/TaskStop | ✅ | 查看后台任务输出、停止任务 |
 | 9 | Assistant模式 | ✅ | AssistantMode.h: 长命令>15s自动后台化 |
-| 10 | MCP OAuth认证 | ⬜ | 连接需要OAuth的MCP服务器(GitHub/Slack等) |
+| 10 | MCP OAuth认证 | ✅ | MCPOAuth.h: 浏览器授权+本地回调+token持久化 |
 | 11 | 富文本UI框架 | ⬜ | 折叠工具输出、进度条、彩色diff、表格渲染 |
 | 12 | Git操作追踪 | ✅ | GitTracker: 自动记录git/PR操作统计 |
 | 13 | Prompt缓存优化 | ✅ | 三级cache_control: system+tools+last user message |
@@ -41,11 +41,11 @@
 | 16 | 远程会话 | ⬜ | WebSocket远程连接，多设备同步对话 |
 | 17 | Computer Use | ⬜ | 屏幕截图+鼠标键盘操作(类似Anthropic computer use) |
 | 18 | DXT插件格式 | ⬜ | 支持JackProAi的DXT插件包格式 |
-| 19 | 自动更新 | ⬜ | 检查新版本并自动下载更新 |
+| 19 | 自动更新 | ✅ | UpdateChecker: 检查GitHub releases新版本 |
 | 20 | Deep Link | ⬜ | URL scheme处理(closecrab://open?file=...) |
 | 21 | 设置云同步 | ⬜ | 跨设备同步settings.json和权限规则 |
 | 22 | 使用分析/遥测 | ✅ | Analytics.h: 本地统计工具使用频率、token消耗、命令频率 |
-| 23 | 会话搜索 | ⬜ | 搜索历史对话内容(全文检索) |
+| 23 | 会话搜索 | ✅ | SessionSearch + /search命令: SQLite全文检索历史对话 |
 | 24 | 多窗口/分屏 | ⬜ | 同时运行多个对话(类似tmux split) |
 
 ---
@@ -101,10 +101,10 @@
 ## 统计
 
 - **总需求**: 38项
-- **已完成**: 25项 (66%)
+- **已完成**: 28项 (74%)
 - **P0完成率**: 7/7 (100%) ✅
-- **P1完成率**: 7/8 (88%)
-- **P2完成率**: 1/9 (11%)
-- **测试覆盖**: 17+个项目，14种语言验证通过
+- **P1完成率**: 8/8 (100%) ✅
+- **P2完成率**: 3/9 (33%)
+- **测试覆盖**: 17+个项目，14种语言，集成测试覆盖6个模块
 - **P0完成率**: 4/7 (57%)
 - **测试覆盖**: 17个项目，14种语言，3675行代码验证通过

@@ -3,6 +3,7 @@
 #include "Command.h"
 #include "../core/QueryEngine.h"
 #include "../memory/MemorySystem.h"
+#include "../memory/SessionSearch.h"
 #include "../core/SessionManager.h"
 #include <filesystem>
 #include <fstream>
@@ -333,6 +334,32 @@ public:
         }
         ctx.print("Thinking: " + std::string(ctx.appState->thinkingConfig.enabled ? "ON" : "OFF") +
                   " (budget: " + std::to_string(ctx.appState->thinkingConfig.budgetTokens) + " tokens)\n");
+        return CommandResult::ok();
+    }
+};
+
+// /search - search conversation history
+class SearchCommand : public Command {
+public:
+    std::string getName() const override { return "search"; }
+    std::string getDescription() const override { return "Search conversation history by keyword"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        if (args.empty()) {
+            ctx.print("Usage: /search <keyword>\n");
+            return CommandResult::ok();
+        }
+        auto results = SessionSearch::search("data/closecrab.db", args);
+        if (results.empty()) {
+            ctx.print("No results found for: " + args + "\n");
+            return CommandResult::ok();
+        }
+        ctx.print("Found " + std::to_string(results.size()) + " sessions matching \"" + args + "\":\n\n");
+        for (size_t i = 0; i < results.size(); i++) {
+            ctx.print("  " + std::to_string(i+1) + ". [" + results[i].sessionId + "] "
+                + "(" + std::to_string(results[i].relevanceScore) + " matches)\n"
+                + "     " + results[i].matchedContent + "\n\n");
+        }
         return CommandResult::ok();
     }
 };
