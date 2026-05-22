@@ -14,8 +14,17 @@ class ReverseTool : public Tool {
 public:
     std::string getName() const override { return "Reverse"; }
     std::string getDescription() const override {
-        return "Binary analysis: hex dump, string extraction, PE/ELF parsing, disassembly. "
-               "Use for reverse engineering, understanding how executables work.";
+        return "Binary reverse engineering tool. Actions: "
+               "hexdump (view raw bytes), "
+               "strings (extract text), "
+               "headers (PE/ELF file info), "
+               "imports (DLL dependencies), "
+               "sections (memory layout), "
+               "disasm (x86-64 disassembly), "
+               "functions (find function entries), "
+               "entropy (code/data/encrypted classification), "
+               "crypto (detect AES/RC4/packers), "
+               "compare (binary similarity).";
     }
     std::string getCategory() const override { return "analysis"; }
     bool isReadOnly() const override { return true; }
