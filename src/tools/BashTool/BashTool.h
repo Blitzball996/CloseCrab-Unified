@@ -64,7 +64,7 @@ public:
             return runInBackground(cmd, ctx);
         }
 
-        return executeWithTimeout(cmd, timeout, ctx.abortFlag);
+        return executeWithTimeout(cmd, timeout, ctx.abortFlag, ctx.onStreamOutput);
     }
 
     std::string getActivityDescription(const nlohmann::json& input) const override {
@@ -111,16 +111,20 @@ private:
         return ToolResult::ok("Background task started: " + taskId + "\nUse TaskOutput to check results.");
     }
 
-    ToolResult executeWithTimeout(const std::string& cmd, int timeoutMs, std::atomic<bool>* abortFlag) {
+    ToolResult executeWithTimeout(const std::string& cmd, int timeoutMs,
+                                   std::atomic<bool>* abortFlag,
+                                   std::function<void(const std::string&)> streamCb = nullptr) {
 #ifdef _WIN32
-        return executeWithTimeoutWin32(cmd, timeoutMs, abortFlag);
+        return executeWithTimeoutWin32(cmd, timeoutMs, abortFlag, streamCb);
 #else
         return executeWithTimeoutPosix(cmd, timeoutMs, abortFlag);
 #endif
     }
 
 #ifdef _WIN32
-    ToolResult executeWithTimeoutWin32(const std::string& cmd, int timeoutMs, std::atomic<bool>* abortFlag) {
+    ToolResult executeWithTimeoutWin32(const std::string& cmd, int timeoutMs,
+                                       std::atomic<bool>* abortFlag,
+                                       std::function<void(const std::string&)> streamCb) {
         // Create pipes for stdout
         SECURITY_ATTRIBUTES sa = {};
         sa.nLength = sizeof(sa);
@@ -160,6 +164,10 @@ private:
             while (ReadFile(hReadPipe, buf, sizeof(buf) - 1, &bytesRead, nullptr) && bytesRead > 0) {
                 buf[bytesRead] = '\0';
                 output += buf;
+                // Stream output line-by-line to UI
+                if (streamCb) {
+                    streamCb(std::string(buf, bytesRead));
+                }
                 if (output.size() > 100 * 1024) {
                     output += "\n... (output truncated at 100KB)";
                     break;

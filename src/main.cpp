@@ -53,6 +53,7 @@
 #include "tools/SnipTool/SnipTool.h"
 #include "tools/VerifyPlanTool/VerifyPlanTool.h"
 #include "tools/WebBrowserTool/WebBrowserTool.h"
+#include "tools/MonitorTool/MonitorTool.h"
 #include "mcp/MCPClient.h"
 #include "plugins/PluginManager.h"
 #include "core/CostTracker.h"
@@ -507,6 +508,7 @@ int main(int argc, char* argv[]) {
     toolRegistry.registerTool(std::make_unique<NotebookEditTool>());
     toolRegistry.registerTool(std::make_unique<LSPTool>());
     toolRegistry.registerTool(std::make_unique<PowerShellTool>());
+    toolRegistry.registerTool(std::make_unique<MonitorTool>());
     toolRegistry.registerTool(std::make_unique<REPLTool>());
     toolRegistry.registerTool(std::make_unique<TeamCreateTool>());
     toolRegistry.registerTool(std::make_unique<TeamDeleteTool>());

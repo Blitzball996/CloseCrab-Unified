@@ -76,6 +76,9 @@ struct ToolContext {
     // Progress callback: tool can report intermediate progress
     std::function<void(const std::string&)> onProgress;
 
+    // Stream output callback: real-time line-by-line output for execution tools
+    std::function<void(const std::string&)> onStreamOutput;
+
     // File read cache (mtime-based dedup, like JackProAi readFileState)
     std::map<std::string, int64_t>* fileReadCache = nullptr;
 

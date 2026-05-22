@@ -1,4 +1,5 @@
 #include "PermissionEngine.h"
+#include "BashClassifier.h"
 #include <chrono>
 #include <ctime>
 #include <sstream>

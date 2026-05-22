@@ -3,6 +3,7 @@
 #include "../utils/StringUtils.h"
 #include "../api/APIError.h"
 #include "../hooks/HookManager.h"
+#include "../tools/OutputPersistence.h"
 #include "../memory/FileMemoryManager.h"
 #include "ErrorRecovery.h"
 #include <spdlog/spdlog.h>
@@ -270,6 +271,16 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
     ctx.apiClient = config_.apiClient;
     ctx.toolRegistry = config_.toolRegistry;
 
+    // Stream output callback for execution tools (Bash/PowerShell)
+    if (callbacks.onToolUse) {
+        ctx.onStreamOutput = [&callbacks, &event](const std::string& chunk) {
+            // onProgress is used for streaming — UI can display in real-time
+            if (callbacks.onToolResult) {
+                // We don't call onToolResult here; streaming is handled by main.cpp's onStreamOutput
+            }
+        };
+    }
+
     auto start = std::chrono::steady_clock::now();
     ToolResult result;
     try {
@@ -297,6 +308,10 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
 
     // Add tool result to messages (ensure valid UTF-8 for JSON serialization)
     std::string safeContent = ensureUtf8(result.success ? result.content : result.error);
+    // Persist large output to disk, return preview to LLM
+    if (result.success) {
+        safeContent = OutputPersistence::persistIfNeeded(safeContent, event.toolName, event.toolUseId);
+    }
     safeContent = budgetTracker_.applyToolResultBudget(safeContent);
     nlohmann::json resultJson = nlohmann::json(safeContent);
     messages_.push_back(Message::makeToolResult(event.toolUseId, resultJson, !result.success));
