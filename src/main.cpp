@@ -55,6 +55,7 @@
 #include "tools/WebBrowserTool/WebBrowserTool.h"
 #include "tools/MonitorTool/MonitorTool.h"
 #include "tools/ReverseTool/ReverseTool.h"
+#include "tools/ImageInputTool/ImageInputTool.h"
 #include "mcp/MCPClient.h"
 #include "plugins/PluginManager.h"
 #include "core/CostTracker.h"
@@ -529,6 +530,7 @@ int main(int argc, char* argv[]) {
     toolRegistry.registerTool(std::make_unique<VerifyPlanTool>());
     toolRegistry.registerTool(std::make_unique<WebBrowserTool>());
     toolRegistry.registerTool(std::make_unique<ReverseTool>());
+    toolRegistry.registerTool(std::make_unique<ImageInputTool>());
     spdlog::info("Registered {} tools", toolRegistry.getToolNames().size());
 
     // Load MCP servers from settings
