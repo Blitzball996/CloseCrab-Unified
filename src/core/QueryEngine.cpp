@@ -375,6 +375,42 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
             compactor_.compactIfNeeded(messages_, config_.apiClient);
         }
 
+        // Pre-flight size check: estimate total request size and compact if too large
+        // This prevents 503 errors from oversized requests (especially after large tool results)
+        {
+            int estimatedTokens = 0;
+            for (const auto& msg : messages_) {
+                for (const auto& block : msg.content) {
+                    if (block.type == ContentBlockType::TEXT || block.type == ContentBlockType::TOOL_RESULT) {
+                        std::string text = block.text.empty() ?
+                            (block.toolResult.is_string() ? block.toolResult.get<std::string>() : block.toolResult.dump()) : block.text;
+                        estimatedTokens += (int)text.size() / 4;
+                    }
+                }
+            }
+            // If estimated tokens > 150K, force compact before sending
+            if (estimatedTokens > 150000) {
+                spdlog::warn("Pre-flight: estimated {} tokens, forcing compaction", estimatedTokens);
+                compactor_.forceCompact(messages_, config_.apiClient);
+            }
+            // If still too large after compaction, truncate old tool results
+            if (estimatedTokens > 180000) {
+                spdlog::warn("Still too large after compact, truncating old tool results");
+                for (size_t i = 0; i < messages_.size() - 6; i++) {
+                    for (auto& block : messages_[i].content) {
+                        if (block.type == ContentBlockType::TOOL_RESULT) {
+                            std::string text = block.toolResult.is_string() ?
+                                block.toolResult.get<std::string>() : block.toolResult.dump();
+                            if (text.size() > 2000) {
+                                block.toolResult = nlohmann::json(text.substr(0, 500) +
+                                    "\n... [truncated, " + std::to_string(text.size()) + " chars total]");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         std::string accumulatedText;
         std::vector<StreamEvent> pendingToolCalls;
         bool gotStop = false;
@@ -442,6 +478,30 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                     spdlog::info("Recovered from prompt too long: {}", recovery.reason);
                     continue; // Retry the turn
                 }
+            }
+            // Handle 503/overloaded by compacting and retrying once
+            if (e.type == APIErrorType::OVERLOADED || e.type == APIErrorType::SERVER_ERROR) {
+                static int overloadRetries = 0;
+                if (overloadRetries < 2) {
+                    overloadRetries++;
+                    spdlog::warn("503/overloaded (attempt {}), compacting and retrying...", overloadRetries);
+                    compactor_.forceCompact(messages_, config_.apiClient);
+                    // Also truncate large tool results in history
+                    for (size_t i = 0; i < messages_.size(); i++) {
+                        for (auto& block : messages_[i].content) {
+                            if (block.type == ContentBlockType::TOOL_RESULT) {
+                                std::string text = block.toolResult.is_string() ?
+                                    block.toolResult.get<std::string>() : block.toolResult.dump();
+                                if (text.size() > 5000) {
+                                    block.toolResult = nlohmann::json(text.substr(0, 1000) +
+                                        "\n... [truncated to save context, was " + std::to_string(text.size()) + " chars]");
+                                }
+                            }
+                        }
+                    }
+                    continue; // Retry
+                }
+                overloadRetries = 0;
             }
             spdlog::error("API call failed: {}", e.what());
             if (callbacks.onError) callbacks.onError(e.what());
