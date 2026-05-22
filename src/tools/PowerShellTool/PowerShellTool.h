@@ -128,6 +128,9 @@ public:
             output += "\n... (command timed out after " + std::to_string(timeout / 1000) + "s)";
         }
 
+        // Strip CLIXML progress noise from PowerShell output
+        output = stripCliXml(output);
+
         return ToolResult::ok(output);
 #endif
     }
@@ -137,6 +140,39 @@ public:
     }
 
 private:
+    // Strip CLIXML progress/error markup from PowerShell output
+    static std::string stripCliXml(const std::string& output) {
+        std::string result;
+        result.reserve(output.size());
+        size_t i = 0;
+        while (i < output.size()) {
+            // Skip "#< CLIXML" lines
+            if (i == 0 || (i > 0 && output[i-1] == '\n')) {
+                if (output.compare(i, 9, "#< CLIXML") == 0) {
+                    while (i < output.size() && output[i] != '\n') i++;
+                    if (i < output.size()) i++; // skip newline
+                    continue;
+                }
+            }
+            // Skip <Objs>...</Objs> XML blocks
+            if (output.compare(i, 5, "<Objs") == 0) {
+                size_t end = output.find("</Objs>", i);
+                if (end != std::string::npos) {
+                    i = end + 7;
+                    if (i < output.size() && output[i] == '\n') i++;
+                    continue;
+                }
+            }
+            result += output[i];
+            i++;
+        }
+        // Trim trailing whitespace
+        while (!result.empty() && (result.back() == '\n' || result.back() == '\r' || result.back() == ' ')) {
+            result.pop_back();
+        }
+        return result;
+    }
+
     // Encode command as Base64 UTF-16LE for -EncodedCommand (avoids all quoting issues)
     static std::string encodeForPowerShell(const std::string& cmd) {
         // Convert UTF-8 to UTF-16LE
