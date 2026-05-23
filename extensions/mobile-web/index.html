@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#1a1a2e">
+<title>CloseCrab Remote</title>
+<link rel="manifest" href="manifest.json">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.header {
+    background: #16213e;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid #0f3460;
+}
+.header h1 { font-size: 18px; color: #4fc3f7; }
+.status { font-size: 12px; padding: 4px 8px; border-radius: 12px; }
+.status.connected { background: #1b5e20; color: #a5d6a7; }
+.status.disconnected { background: #b71c1c; color: #ef9a9a; }
+
+.messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+    -webkit-overflow-scrolling: touch;
+}
+.msg {
+    margin-bottom: 12px;
+    padding: 10px 14px;
+    border-radius: 12px;
+    max-width: 90%;
+    word-wrap: break-word;
+    font-size: 14px;
+    line-height: 1.5;
+}
+.msg.user { background: #0f3460; margin-left: auto; }
+.msg.assistant { background: #1e1e3f; border: 1px solid #333; }
+.msg.tool {
+    background: #1a2744;
+    border-left: 3px solid #4fc3f7;
+    font-family: monospace;
+    font-size: 13px;
+}
+.msg.tool .tool-name { color: #ffd54f; font-weight: bold; }
+.msg.tool .tool-status { color: #81c784; }
+.msg.tool .tool-time { color: #90a4ae; font-size: 11px; }
+.msg.error { background: #3e1a1a; border-left: 3px solid #ef5350; }
+.msg.thinking { background: #1a2e1a; border-left: 3px solid #66bb6a; font-style: italic; }
+
+.permission-request {
+    background: #2e2e0a;
+    border: 1px solid #ffd54f;
+    border-radius: 12px;
+    padding: 14px;
+    margin: 12px;
+}
+.permission-request .perm-title { color: #ffd54f; font-weight: bold; margin-bottom: 8px; }
+.permission-request .perm-desc { color: #ccc; font-size: 13px; margin-bottom: 12px; }
+.permission-buttons { display: flex; gap: 8px; }
+.permission-buttons button {
+    flex: 1;
+    padding: 12px;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: bold;
+    cursor: pointer;
+}
+.btn-allow { background: #2e7d32; color: white; }
+.btn-deny { background: #c62828; color: white; }
+.btn-all { background: #1565c0; color: white; }
+
+.input-area {
+    background: #16213e;
+    padding: 12px;
+    border-top: 1px solid #0f3460;
+    display: flex;
+    gap: 8px;
+}
+.input-area input {
+    flex: 1;
+    padding: 12px;
+    border: 1px solid #333;
+    border-radius: 8px;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    font-size: 16px;
+    outline: none;
+}
+.input-area input:focus { border-color: #4fc3f7; }
+.input-area button {
+    padding: 12px 20px;
+    background: #4fc3f7;
+    color: #1a1a2e;
+    border: none;
+    border-radius: 8px;
+    font-weight: bold;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid #4fc3f7; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="header">
+    <h1>&#x1F980; CloseCrab</h1>
+    <span class="status disconnected" id="status">Disconnected</span>
+</div>
+
+<div class="messages" id="messages"></div>
+
+<div class="input-area">
+    <input type="text" id="input" placeholder="Type a message..." autocomplete="off">
+    <button onclick="send()">Send</button>
+</div>
+
+<script>
+const SERVER = location.hostname + ':9001';
+let ws = null;
+let reconnectTimer = null;
+
+function connect() {
+    ws = new WebSocket('ws://' + SERVER + '/ws/mobile');
+
+    ws.onopen = () => {
+        document.getElementById('status').textContent = 'Connected';
+        document.getElementById('status').className = 'status connected';
+        if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
+    };
+
+    ws.onclose = () => {
+        document.getElementById('status').textContent = 'Disconnected';
+        document.getElementById('status').className = 'status disconnected';
+        if (!reconnectTimer) reconnectTimer = setInterval(connect, 3000);
+    };
+
+    ws.onmessage = (e) => {
+        try {
+            const msg = JSON.parse(e.data);
+            handleMessage(msg);
+        } catch (err) {
+            addMessage('error', e.data);
+        }
+    };
+
+    ws.onerror = () => {};
+}
+
+function handleMessage(msg) {
+    switch (msg.type) {
+        case 'text':
+            appendToLast('assistant', msg.content);
+            break;
+        case 'tool_use':
+            addMessage('tool', '<span class="tool-name">[' + msg.tool + ']</span> ' + (msg.description || '') + ' <span class="spinner"></span>');
+            break;
+        case 'tool_result':
+            const status = msg.success ? '<span class="tool-status">OK</span>' : '<span style="color:#ef5350">Error</span>';
+            const time = msg.elapsed ? '<span class="tool-time">(' + msg.elapsed.toFixed(1) + 's)</span>' : '';
+            addMessage('tool', '<span class="tool-name">[' + msg.tool + ']</span> ' + status + ' ' + time);
+            break;
+        case 'permission_request':
+            showPermissionRequest(msg.tool, msg.description, msg.request_id);
+            break;
+        case 'thinking':
+            addMessage('thinking', 'Thinking...');
+            break;
+        case 'error':
+            addMessage('error', msg.content);
+            break;
+        case 'complete':
+            break;
+    }
+    scrollToBottom();
+}
+
+function showPermissionRequest(tool, desc, requestId) {
+    const container = document.getElementById('messages');
+    const div = document.createElement('div');
+    div.className = 'permission-request';
+    div.innerHTML =
+        '<div class="perm-title">Warning: Permission Required</div>' +
+        '<div class="perm-desc">' + tool + ': ' + desc + '</div>' +
+        '<div class="permission-buttons">' +
+            '<button class="btn-allow" onclick="respondPermission(\'' + requestId + '\', \'allow\', this)">Allow</button>' +
+            '<button class="btn-deny" onclick="respondPermission(\'' + requestId + '\', \'deny\', this)">Deny</button>' +
+            '<button class="btn-all" onclick="respondPermission(\'' + requestId + '\', \'allow_all\', this)">Allow All</button>' +
+        '</div>';
+    container.appendChild(div);
+    scrollToBottom();
+    if (navigator.vibrate) navigator.vibrate(200);
+}
+
+function respondPermission(requestId, decision, btn) {
+    ws.send(JSON.stringify({ type: 'permission_response', request_id: requestId, decision: decision }));
+    btn.parentElement.parentElement.remove();
+}
+
+function addMessage(type, content) {
+    const container = document.getElementById('messages');
+    const div = document.createElement('div');
+    div.className = 'msg ' + type;
+    div.innerHTML = content;
+    container.appendChild(div);
+    scrollToBottom();
+}
+
+function appendToLast(type, content) {
+    const container = document.getElementById('messages');
+    const last = container.lastElementChild;
+    if (last && last.classList.contains(type)) {
+        last.innerHTML += content;
+    } else {
+        addMessage(type, content);
+    }
+}
+
+function send() {
+    const input = document.getElementById('input');
+    const msg = input.value.trim();
+    if (!msg || !ws || ws.readyState !== WebSocket.OPEN) return;
+    input.value = '';
+    addMessage('user', msg);
+    ws.send(JSON.stringify({ type: 'message', content: msg }));
+}
+
+function scrollToBottom() {
+    const container = document.getElementById('messages');
+    container.scrollTop = container.scrollHeight;
+}
+
+document.getElementById('input').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') send();
+});
+
+connect();
+</script>
+</body>
+</html>
