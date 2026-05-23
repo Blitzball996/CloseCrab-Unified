@@ -130,17 +130,26 @@ body {
 </div>
 
 <script>
-const WS_PORT = location.port == '9001' ? '9002' : (parseInt(location.port) + 1).toString();
 const API_BASE = location.origin;
 let ws = null;
 let reconnectTimer = null;
 let useHttpFallback = false;
-let wsAttempts = 0;
+
+// Determine if WebSocket is possible (only on local network with known port)
+const httpPort = location.port || (location.protocol === 'https:' ? '443' : '80');
+const wsPort = httpPort === '9001' ? '9002' : '';
+const canUseWebSocket = wsPort !== '' && location.hostname !== '' && !location.hostname.includes('trycloudflare');
 
 function connect() {
-    // Try WebSocket first (works on local network)
+    if (!canUseWebSocket) {
+        // Remote access via tunnel — use HTTP mode directly
+        enableHttpMode();
+        return;
+    }
+
+    // Local network — try WebSocket
     try {
-        ws = new WebSocket('ws://' + location.hostname + ':' + WS_PORT);
+        ws = new WebSocket('ws://' + location.hostname + ':' + wsPort);
     } catch(e) {
         enableHttpMode();
         return;
@@ -149,24 +158,15 @@ function connect() {
     ws.onopen = () => {
         document.getElementById('status').textContent = 'Connected (WS)';
         document.getElementById('status').className = 'status connected';
-        if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
-        wsAttempts = 0;
+        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     };
 
     ws.onclose = () => {
-        wsAttempts++;
-        if (wsAttempts >= 2) {
-            enableHttpMode();
-        } else {
-            document.getElementById('status').textContent = 'Reconnecting...';
-            document.getElementById('status').className = 'status disconnected';
-            if (!reconnectTimer) reconnectTimer = setTimeout(connect, 2000);
-        }
+        enableHttpMode();
     };
 
     ws.onerror = () => {
-        wsAttempts++;
-        if (wsAttempts >= 2) enableHttpMode();
+        enableHttpMode();
     };
 
     ws.onmessage = (e) => {
@@ -180,18 +180,20 @@ function connect() {
 }
 
 function enableHttpMode() {
+    if (useHttpFallback) return; // Already in HTTP mode
     useHttpFallback = true;
-    document.getElementById('status').textContent = 'Connected (HTTP)';
+    document.getElementById('status').textContent = 'Connected';
     document.getElementById('status').className = 'status connected';
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-    // Check health
+    // Verify connection
     fetch(API_BASE + '/health').then(r => r.json()).then(d => {
         if (d.status === 'ok') {
-            addMessage('assistant', 'Connected to CloseCrab via HTTP. You can send messages.');
+            addMessage('assistant', 'Connected to CloseCrab. Send a message to start.');
         }
     }).catch(() => {
         document.getElementById('status').textContent = 'Offline';
         document.getElementById('status').className = 'status disconnected';
+        addMessage('error', 'Cannot reach CloseCrab backend.');
     });
 }
 
