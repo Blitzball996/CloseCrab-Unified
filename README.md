@@ -1,21 +1,28 @@
+<div align="center">
+
+**English** | [中文](README.zh-CN.md)
+
+</div>
+
 # CloseCrab-Unified
 
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
 [![CUDA](https://img.shields.io/badge/CUDA-12.x-green.svg)](https://developer.nvidia.com/cuda-toolkit)
 [![Windows](https://img.shields.io/badge/Platform-Windows%20|%20Linux%20|%20macOS-0078d7.svg)](#platforms)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tools](https://img.shields.io/badge/Tools-46-orange.svg)](#tools-46)
+[![Tools](https://img.shields.io/badge/Tools-51-orange.svg)](#tools-51)
+[![Skills](https://img.shields.io/badge/Skills-11-purple.svg)](#skills)
 [![Binary Size](https://img.shields.io/badge/Binary-~3.2MB-brightgreen.svg)](#)
 
-A local-first AI coding assistant. Single C++17 binary, 46 tools, 81 commands, runs LLMs on your GPU or connects to cloud APIs.
+A local-first AI coding assistant. Single C++17 binary, 51 tools, 83 commands, runs LLMs on your GPU or connects to cloud APIs.
 
 ---
 
 ## What is CloseCrab-Unified?
 
-CloseCrab-Unified is a terminal-based AI coding assistant written in C++17. It runs large language models locally on your hardware via llama.cpp, or connects to Anthropic (Claude), OpenAI, and compatible APIs through a single configuration change. The AI gets the same 46 tools either way: file operations, shell execution, code search, multi-agent collaboration, web access, and more.
+CloseCrab-Unified is a terminal-based AI coding assistant written in C++17. It runs large language models locally on your hardware via llama.cpp, or connects to Anthropic (Claude), OpenAI, and compatible APIs through a single configuration change. The AI gets the same 51 tools either way: file operations, shell execution, code search, multi-agent collaboration, web access, and more.
 
-The project merges two predecessors: **CloseCrab** (a C++ local inference engine with RAG and MoE streaming) and **JackProAi-claudecode** (a TypeScript CLI with 40+ tools and 95 commands). The result is a single ~3.0 MB executable built from ~160 source files, with 46 tools, 81 commands, and 30 service modules.
+The project merges two predecessors: **CloseCrab** (a C++ local inference engine with RAG and MoE streaming) and **JackProAi-claudecode** (a TypeScript CLI with 40+ tools and 95 commands). The result is a single ~3.0 MB executable built from ~160 source files, with 51 tools, 83 commands, and 30 service modules.
 
 ### Why use it?
 
@@ -185,9 +192,9 @@ All commands start with `/`. Use `/help` to see the full list at runtime.
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
-| `/tools` | | List all 46 registered tools |
-| `/skills` | | List available skill files from `.claude/skills/` |
-| `/plugin` | `/plugins` | List loaded plugins from `.claude/plugins/` |
+| `/tools` | | List all 51 registered tools |
+| `/skills` | | List available skill files from `.crab/skills/` |
+| `/plugin` | `/plugins` | List loaded plugins from `.crab/plugins/` |
 | `/mcp` | | List MCP servers and their connection status |
 | `/hooks` | | List configured PreToolUse/PostToolUse hooks |
 | `/agents` | | List running and completed sub-agents |
@@ -232,7 +239,7 @@ All commands start with `/`. Use `/help` to see the full list at runtime.
 
 ---
 
-## Tools (46)
+## Tools (51)
 
 Tools are the capabilities exposed to the LLM. Each tool has a JSON Schema for input validation, a permission check, and a result renderer. The LLM calls tools via the API `tool_use` protocol (Anthropic/OpenAI) or via `SKILL:` / function-call format (local models).
 
@@ -260,7 +267,7 @@ Tools are the capabilities exposed to the LLM. Each tool has a JSON Schema for i
 | Tool | Description | Read-only |
 |------|-------------|-----------|
 | Agent | Spawn a sub-agent (5 types: general-purpose, explore, plan, verification, code-guide) | No |
-| Skill | Invoke a skill from `.claude/skills/` | No |
+| Skill | Invoke a skill from `.crab/skills/` | No |
 
 ### MCP (Model Context Protocol)
 
@@ -339,6 +346,20 @@ Tools are the capabilities exposed to the LLM. Each tool has a JSON Schema for i
 
 ---
 
+## Reverse Engineering
+
+Built-in reverse engineering capabilities with CUDA acceleration:
+
+| Feature | Description |
+|---------|-------------|
+| Capstone Disassembly | Multi-architecture disassembly (x86, x64, ARM, AArch64, MIPS) |
+| CUDA-Accelerated Binary Analysis | GPU-accelerated pattern matching and entropy computation |
+| PE/ELF Parsing | Structured parsing of Windows PE and Linux ELF binaries |
+| Entropy Analysis | Section-level entropy calculation for packer/encryption detection |
+| Crypto Detection | Identify cryptographic constants and algorithm signatures in binaries |
+
+---
+
 ## Key Features
 
 ### History Compression (5-Strategy System)
@@ -363,7 +384,7 @@ Three-layer budget control: per-query budget, per-task budget, and per-tool-resu
 
 ### Hooks System
 
-Configure `PreToolUse` and `PostToolUse` event hooks in `.claude/settings.json`. Hooks run shell commands before or after specific tools execute, enabling custom validation, logging, or side effects. Supports 4 event types: `PreToolUse`, `PostToolUse`, `PostSampling` (after API response), and `StopFailure` (when stop hooks fail). Hook results include execution duration metrics.
+Configure `PreToolUse` and `PostToolUse` event hooks in `.crab/settings.json`. Hooks run shell commands before or after specific tools execute, enabling custom validation, logging, or side effects. Supports 4 event types: `PreToolUse`, `PostToolUse`, `PostSampling` (after API response), and `StopFailure` (when stop hooks fail). Hook results include execution duration metrics.
 
 ```json
 {
@@ -386,7 +407,7 @@ Configure `PreToolUse` and `PostToolUse` event hooks in `.claude/settings.json`.
 
 ### File-Based Memory System
 
-Persistent memory stored as markdown files with YAML frontmatter in `.claude/memory/`. An index file (`MEMORY.md`) tracks all entries. Four memory types:
+Persistent memory stored as markdown files with YAML frontmatter in `.crab/memory/`. An index file (`MEMORY.md`) tracks all entries. Four memory types:
 
 | Type | Purpose |
 |------|---------|
@@ -420,7 +441,7 @@ Multi-agent task decomposition via `/coordinator <task>`. The coordinator analyz
 
 ### New Commands (v0.2.0)
 
-20 new commands added: `/config`, `/model`, `/cost`, `/permissions`, `/status`, `/clear`, `/fork`, `/security-review`, `/sandbox-toggle`, `/keybindings`, `/privacy-settings`, `/rate-limit-options`, `/commit-push-pr`, `/release-notes`, `/stats`, `/bridge`, `/buddy`, `/peers`, `/workflows`, `/oauth-refresh`. Total: 81 commands.
+20 new commands added: `/config`, `/model`, `/cost`, `/permissions`, `/status`, `/clear`, `/fork`, `/security-review`, `/sandbox-toggle`, `/keybindings`, `/privacy-settings`, `/rate-limit-options`, `/commit-push-pr`, `/release-notes`, `/stats`, `/bridge`, `/buddy`, `/peers`, `/workflows`, `/oauth-refresh`. Total: 83 commands.
 
 ### Vim Mode
 
@@ -475,7 +496,7 @@ Prefix any input with `!` to run it directly as a shell command:
 Checks the health of your environment:
 - External tools: `git`, `rg` (ripgrep), `node`, `python`, `gh`
 - Config files: `CLAUDE.md`, `settings.json`, `config.yaml`
-- Directories: `.claude/memory/`, `.claude/skills/`
+- Directories: `.crab/memory/`, `.crab/skills/`
 - Core status: model, session, tools, permissions, RAG, cost
 
 ### /review -- Code Review
@@ -516,11 +537,11 @@ When the conversation grows long, the prompt displays `~Nk tok` to show the appr
 
 ### Plugin System
 
-Place a `manifest.json` in `.claude/plugins/<plugin-name>/` to register a plugin. Plugins can provide additional tools, commands, or system prompt extensions. Manage with `/plugin`.
+Place a `manifest.json` in `.crab/plugins/<plugin-name>/` to register a plugin. Plugins can provide additional tools, commands, or system prompt extensions. Manage with `/plugin`.
 
 ### Skill System
 
-Place `.md` files with YAML frontmatter in `.claude/skills/`. Skills are triggered by name or by matching trigger patterns. Frontmatter fields: `name`, `description`, `trigger`. List with `/skills`.
+Place `.md` files with YAML frontmatter in `.crab/skills/`. Skills are triggered by name or by matching trigger patterns. Frontmatter fields: `name`, `description`, `trigger`. List with `/skills`.
 
 ### Cron Scheduler
 
@@ -551,7 +572,7 @@ src/
 ├── main.cpp              Entry point, component initialization, main loop
 ├── core/                 QueryEngine, Message, AppState, CostTracker, SessionManager
 ├── api/                  API clients: LocalLLMClient, AnthropicClient, OpenAIClient
-├── tools/                46 tool implementations (see Tools section)
+├── tools/                51 tool implementations (see Tools section)
 │   ├── Tool.h            Base class with validation, permissions, schema
 │   ├── ToolRegistry.*    Registry with alias lookup and definition caching
 │   ├── FileReadTool/     Read, Write, Edit, Glob, Grep, NotebookEdit
@@ -566,7 +587,7 @@ src/
 │   ├── WebTools/         WebSearch, WebFetch (with 15-min cache)
 │   ├── CronTools/        Cron expression parsing and scheduling
 │   └── SystemTools/      Config, LSP, RemoteTrigger, ToolSearch, Brief
-├── commands/             81 slash commands (5 categories)
+├── commands/             83 slash commands (5 categories)
 │   ├── CommandRegistry.* Registry with alias support and categorized help
 │   ├── SessionCommands.h Session, history, export, compact, context, env
 │   ├── GitCommands.h     Commit, diff, branch, log, push, pull, stash
@@ -635,7 +656,7 @@ rag:
   reranker_tokenizer_path: "models/bge-reranker-base/tokenizer.json"
 ```
 
-### .claude/settings.json
+### .crab/settings.json
 
 Project-level settings for permissions, hooks, MCP servers, and allowed/denied patterns:
 
@@ -665,7 +686,7 @@ Place a `CLAUDE.md` file in your project root to provide persistent instructions
 
 ### Memory files
 
-Stored in `.claude/memory/` as markdown files with YAML frontmatter:
+Stored in `.crab/memory/` as markdown files with YAML frontmatter:
 
 ```markdown
 ---
@@ -679,7 +700,7 @@ description: Project coding standards
 - Tests go in tests/ directory
 ```
 
-The `MEMORY.md` index file in `.claude/memory/` tracks all memory entries.
+The `MEMORY.md` index file in `.crab/memory/` tracks all memory entries.
 
 ---
 
@@ -770,7 +791,7 @@ cd build && ctest -C Release --output-on-failure
 | High memory usage | Use `/compact` to compress history, or start a `/new` session |
 | "No saved session data" | Session persistence requires the SQLite database at `data/closecrab.db`. Check the path exists |
 | Voice not working | Requires platform TTS: Windows SAPI, macOS `say`, Linux `espeak`. Install the appropriate package |
-| MCP server disconnected | Check `.claude/settings.json` for correct server config. Use `/mcp` to see status |
+| MCP server disconnected | Check `.crab/settings.json` for correct server config. Use `/mcp` to see status |
 | `/doctor` shows tool "not found" | Install the missing tool (`git`, `rg`, `node`, `python`, `gh`) and ensure it's on your PATH |
 | CUDA out of memory | Reduce `llm.max_tokens` or use a smaller quantized model (Q4_K_M instead of Q8) |
 

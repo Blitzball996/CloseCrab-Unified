@@ -1,6 +1,6 @@
 ; CloseCrab-Unified Installer
 #define MyAppName "CloseCrab-Unified"
-#define MyAppVersion "0.2.0"
+#define MyAppVersion "0.5.0"
 #define MyAppPublisher "CloseCrab"
 #define MyAppExeName "closecrab-unified.exe"
 
@@ -31,6 +31,7 @@ Source: "icons\closecrab.ico"; DestDir: "{app}\icons"; Flags: ignoreversion
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.zh-CN.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs
+Source: ".crab\skills\*"; DestDir: "{app}\.crab\skills"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\run.bat"; IconFilename: "{app}\icons\closecrab.ico"; IconIndex: 0
@@ -108,10 +109,10 @@ begin
     'Works with any OpenAI-format API: OpenAI, LM Studio,' + #13#10 +
     'SiliconFlow, Ollama, vLLM, and other providers.' + #13#10 +
     '' + #13#10 +
-    'All modes include: 46 tools, 81 commands, multi-agent,' + #13#10 +
+    'All modes include: 51 tools, 83 commands, 11 skills, multi-agent,' + #13#10 +
     'memory system, hooks, vim mode, voice output, and more.' + #13#10 +
-    'v0.2.0: 5-strategy compression, token budgets, error recovery,' + #13#10 +
-    '20 new commands, 4 new tools, 14 service modules.';
+    'v0.5.0: reverse engineering, CUDA acceleration, 5-strategy' + #13#10 +
+    'compression, token budgets, error recovery, 14 service modules.';
 
   // ==========================================
   // PAGE 2: Local Model Selection
@@ -385,9 +386,9 @@ Type: dirifempty; Name: "{app}\data"
 Type: dirifempty; Name: "{app}\config"
 Type: dirifempty; Name: "{app}\icons"
 Type: dirifempty; Name: "{app}\docs"
-Type: dirifempty; Name: "{app}\.claude\memory"
-Type: dirifempty; Name: "{app}\.claude\skills"
-Type: dirifempty; Name: "{app}\.claude\plugins"
-Type: dirifempty; Name: "{app}\.claude\snippets"
-Type: dirifempty; Name: "{app}\.claude\workflows"
-Type: dirifempty; Name: "{app}\.claude"
+Type: dirifempty; Name: "{app}\.crab\memory"
+Type: dirifempty; Name: "{app}\.crab\skills"
+Type: dirifempty; Name: "{app}\.crab\plugins"
+Type: dirifempty; Name: "{app}\.crab\snippets"
+Type: dirifempty; Name: "{app}\.crab\workflows"
+Type: dirifempty; Name: "{app}\.crab"
