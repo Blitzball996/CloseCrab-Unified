@@ -180,21 +180,13 @@ function connect() {
 }
 
 function enableHttpMode() {
-    if (useHttpFallback) return; // Already in HTTP mode
+    if (useHttpFallback) return;
     useHttpFallback = true;
+    // Immediately show connected — don't wait for health check
     document.getElementById('status').textContent = 'Connected';
     document.getElementById('status').className = 'status connected';
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-    // Verify connection
-    fetch(API_BASE + '/health').then(r => r.json()).then(d => {
-        if (d.status === 'ok') {
-            addMessage('assistant', 'Connected to CloseCrab. Send a message to start.');
-        }
-    }).catch(() => {
-        document.getElementById('status').textContent = 'Offline';
-        document.getElementById('status').className = 'status disconnected';
-        addMessage('error', 'Cannot reach CloseCrab backend.');
-    });
+    addMessage('assistant', 'Ready. Type a message below and press Send.');
 }
 
     ws.onerror = () => {};
