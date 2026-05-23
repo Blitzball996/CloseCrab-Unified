@@ -1,3 +1,17 @@
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#ifdef ERROR
+#undef ERROR
+#endif
+#endif
+
 #include <iostream>
 #include <string>
 #include <memory>
@@ -69,6 +83,7 @@
 #include "ui/TerminalUI.h"
 #include "ui/VimMode.h"
 #include "network/HttpServer.h"
+#include "network/MobileWebSocket.h"
 #include "ui/KeyboardSelector.h"
 #include "ui/OutputCollapse.h"
 
@@ -634,6 +649,7 @@ When the user asks a question, answer directly.)";
             output += text[i];
         }
         std::cout << output << std::flush;
+        closecrab::MobileWebSocket::getInstance().sendText(text);
         voiceAccumulator += text;
     };
     callbacks.onThinking = [&spinner, &streamState](const std::string& text) {
@@ -665,6 +681,7 @@ When the user asks a question, answer directly.)";
         }
         std::cout << std::flush;
         spinner.start(name);
+        closecrab::MobileWebSocket::getInstance().sendToolUse(name, input.value("command", input.value("file_path", "")));
     };
     callbacks.onToolResult = [&spinner, &streamState](const std::string& name, const ToolResult& result) {
         spinner.stop();
@@ -691,6 +708,7 @@ When the user asks a question, answer directly.)";
             std::cout << "\n";
         }
         // After tool result, API will be called again — show waiting
+        closecrab::MobileWebSocket::getInstance().sendToolResult(name, result.success, result.elapsedSeconds);
         spinner.start("Waiting for response...");
     };
     callbacks.onComplete = [&spinner, &voiceAccumulator, &streamState, &firstToken]() {
@@ -698,6 +716,7 @@ When the user asks a question, answer directly.)";
         streamState = StreamState::WAITING;
         firstToken = true;
         std::cout << "\n" << std::flush;
+        closecrab::MobileWebSocket::getInstance().sendComplete();
         if (VoiceEngine::getInstance().isEnabled() && !voiceAccumulator.empty()) {
             VoiceEngine::getInstance().speak(voiceAccumulator);
         }
@@ -708,6 +727,7 @@ When the user asks a question, answer directly.)";
         streamState = StreamState::WAITING;
         firstToken = true;
         std::cerr << ansi::red() << "Error: " << err << ansi::reset() << "\n";
+        closecrab::MobileWebSocket::getInstance().sendError(err);
     };
     // Track session-level permission grants
     bool autoApproveSession = false;
@@ -739,6 +759,65 @@ When the user asks a question, answer directly.)";
     HttpServer httpServer(9001);
     httpServer.start();
     spdlog::info("HTTP server started on port 9001 (mobile: http://localhost:9001/mobile)");
+
+    // Start WebSocket server for mobile remote control
+    auto& mobileWs = closecrab::MobileWebSocket::getInstance();
+    mobileWs.start(9002);
+
+    // Auto-start cloudflared tunnel for remote mobile access
+    std::string tunnelUrl;
+    {
+        std::vector<std::string> cloudflaredPaths = {
+            "cloudflared.exe",
+            "extensions/mobile-web/cloudflared.exe",
+            "../extensions/mobile-web/cloudflared.exe",
+            "../../extensions/mobile-web/cloudflared.exe"
+        };
+        std::string cloudflaredPath;
+        for (const auto& p : cloudflaredPaths) {
+            if (fs::exists(p)) { cloudflaredPath = p; break; }
+        }
+
+        if (!cloudflaredPath.empty()) {
+            // Start cloudflared and capture URL via temp file
+            std::string logFile = (fs::current_path() / "data" / "tunnel.log").string();
+            fs::create_directories("data");
+            std::string absPath = fs::absolute(cloudflaredPath).string();
+            std::string cmd = absPath + " tunnel --url http://localhost:9001 > " + logFile + " 2>&1";
+#ifdef _WIN32
+            STARTUPINFOA si = {}; si.cb = sizeof(si);
+            PROCESS_INFORMATION pi = {};
+            std::string fullCmd = "cmd /c " + cmd;
+            std::vector<char> cmdBuf(fullCmd.begin(), fullCmd.end());
+            cmdBuf.push_back('\0');
+            CreateProcessA(nullptr, cmdBuf.data(), nullptr, nullptr, FALSE,
+                           CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+            if (pi.hProcess) { CloseHandle(pi.hProcess); CloseHandle(pi.hThread); }
+#endif
+
+            // Wait for URL to appear in log (max 12 seconds)
+            for (int i = 0; i < 24; i++) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                std::ifstream f(logFile);
+                if (f.is_open()) {
+                    std::string content((std::istreambuf_iterator<char>(f)), {});
+                    size_t pos = content.find("https://");
+                    size_t end = content.find(".trycloudflare.com");
+                    if (pos != std::string::npos && end != std::string::npos) {
+                        tunnelUrl = content.substr(pos, end - pos + 18);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (!tunnelUrl.empty()) {
+            std::cout << "\n" << ansi::green() << "  Remote access ready!" << ansi::reset() << "\n";
+            std::cout << "  " << ansi::cyan() << tunnelUrl << "/mobile" << ansi::reset() << "\n\n";
+        } else {
+            std::cout << ansi::dim() << "  Local only: http://localhost:9001/mobile" << ansi::reset() << "\n";
+        }
+    }
 
     bool running = true;
     while (running) {

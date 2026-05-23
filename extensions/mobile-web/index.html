@@ -130,12 +130,12 @@ body {
 </div>
 
 <script>
-const SERVER = location.hostname + ':9001';
+const WS_PORT = location.port == '9001' ? '9002' : (parseInt(location.port) + 1).toString();
 let ws = null;
 let reconnectTimer = null;
 
 function connect() {
-    ws = new WebSocket('ws://' + SERVER + '/ws/mobile');
+    ws = new WebSocket('ws://' + location.hostname + ':' + WS_PORT);
 
     ws.onopen = () => {
         document.getElementById('status').textContent = 'Connected';
