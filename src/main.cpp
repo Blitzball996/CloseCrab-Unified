@@ -757,6 +757,19 @@ When the user asks a question, answer directly.)";
 
     // Start HTTP server for mobile remote control and API
     HttpServer httpServer(9001);
+    httpServer.onChat([&apiClient](const std::string& message, const std::string& sessionId) -> std::string {
+        if (!apiClient) return "No API client configured";
+        try {
+            std::vector<Message> msgs;
+            msgs.push_back(Message::makeUser(message));
+            ModelConfig cfg;
+            cfg.maxTokens = 4096;
+            cfg.stream = false;
+            return apiClient->chat(msgs, "You are CloseCrab AI assistant. Be concise and helpful.", cfg);
+        } catch (const std::exception& e) {
+            return std::string("Error: ") + e.what();
+        }
+    });
     httpServer.start();
     spdlog::info("HTTP server started on port 9001 (mobile: http://localhost:9001/mobile)");
 

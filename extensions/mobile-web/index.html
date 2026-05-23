@@ -131,22 +131,42 @@ body {
 
 <script>
 const WS_PORT = location.port == '9001' ? '9002' : (parseInt(location.port) + 1).toString();
+const API_BASE = location.origin;
 let ws = null;
 let reconnectTimer = null;
+let useHttpFallback = false;
+let wsAttempts = 0;
 
 function connect() {
-    ws = new WebSocket('ws://' + location.hostname + ':' + WS_PORT);
+    // Try WebSocket first (works on local network)
+    try {
+        ws = new WebSocket('ws://' + location.hostname + ':' + WS_PORT);
+    } catch(e) {
+        enableHttpMode();
+        return;
+    }
 
     ws.onopen = () => {
-        document.getElementById('status').textContent = 'Connected';
+        document.getElementById('status').textContent = 'Connected (WS)';
         document.getElementById('status').className = 'status connected';
         if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
+        wsAttempts = 0;
     };
 
     ws.onclose = () => {
-        document.getElementById('status').textContent = 'Disconnected';
-        document.getElementById('status').className = 'status disconnected';
-        if (!reconnectTimer) reconnectTimer = setInterval(connect, 3000);
+        wsAttempts++;
+        if (wsAttempts >= 2) {
+            enableHttpMode();
+        } else {
+            document.getElementById('status').textContent = 'Reconnecting...';
+            document.getElementById('status').className = 'status disconnected';
+            if (!reconnectTimer) reconnectTimer = setTimeout(connect, 2000);
+        }
+    };
+
+    ws.onerror = () => {
+        wsAttempts++;
+        if (wsAttempts >= 2) enableHttpMode();
     };
 
     ws.onmessage = (e) => {
@@ -157,6 +177,23 @@ function connect() {
             addMessage('error', e.data);
         }
     };
+}
+
+function enableHttpMode() {
+    useHttpFallback = true;
+    document.getElementById('status').textContent = 'Connected (HTTP)';
+    document.getElementById('status').className = 'status connected';
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    // Check health
+    fetch(API_BASE + '/health').then(r => r.json()).then(d => {
+        if (d.status === 'ok') {
+            addMessage('assistant', 'Connected to CloseCrab via HTTP. You can send messages.');
+        }
+    }).catch(() => {
+        document.getElementById('status').textContent = 'Offline';
+        document.getElementById('status').className = 'status disconnected';
+    });
+}
 
     ws.onerror = () => {};
 }
@@ -233,10 +270,28 @@ function appendToLast(type, content) {
 function send() {
     const input = document.getElementById('input');
     const msg = input.value.trim();
-    if (!msg || !ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!msg) return;
     input.value = '';
     addMessage('user', msg);
-    ws.send(JSON.stringify({ type: 'message', content: msg }));
+
+    if (!useHttpFallback && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'message', content: msg }));
+    } else {
+        // HTTP fallback - use /chat API
+        document.getElementById('status').textContent = 'Thinking...';
+        fetch(API_BASE + '/chat', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({message: msg, session_id: 'mobile'})
+        }).then(r => r.json()).then(d => {
+            document.getElementById('status').textContent = 'Connected (HTTP)';
+            document.getElementById('status').className = 'status connected';
+            addMessage('assistant', d.response || d.error || 'No response');
+        }).catch(e => {
+            document.getElementById('status').textContent = 'Error';
+            addMessage('error', 'Failed: ' + e.message);
+        });
+    }
 }
 
 function scrollToBottom() {
