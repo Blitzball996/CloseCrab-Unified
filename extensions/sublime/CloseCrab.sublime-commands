@@ -1,0 +1,5 @@
+[
+    { "caption": "CloseCrab: Chat", "command": "closecrab_chat" },
+    { "caption": "CloseCrab: Explain Selection", "command": "closecrab_explain" },
+    { "caption": "CloseCrab: Fix Selection", "command": "closecrab_fix" }
+]

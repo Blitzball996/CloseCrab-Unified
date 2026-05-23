@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">
+  <Metadata>
+    <Identity Id="CloseCrab.AI.Extension" Version="0.5.0" Language="en-US" Publisher="Blitzball996" />
+    <DisplayName>CloseCrab AI</DisplayName>
+    <Description>AI coding assistant powered by CloseCrab-Unified. 51 tools, reverse engineering, CUDA acceleration.</Description>
+    <Tags>AI, Coding Assistant, Code Review, Reverse Engineering</Tags>
+  </Metadata>
+  <Installation>
+    <InstallationTarget Id="Microsoft.VisualStudio.Community" Version="[16.0,18.0)" />
+    <InstallationTarget Id="Microsoft.VisualStudio.Professional" Version="[16.0,18.0)" />
+    <InstallationTarget Id="Microsoft.VisualStudio.Enterprise" Version="[16.0,18.0)" />
+  </Installation>
+  <Dependencies>
+    <Dependency Id="Microsoft.Framework.NDP" DisplayName="Microsoft .NET Framework" Version="[4.7.2,)" />
+  </Dependencies>
+</PackageManifest>

@@ -1,0 +1,5 @@
+[
+    { "keys": ["ctrl+shift+c"], "command": "closecrab_chat" },
+    { "keys": ["ctrl+shift+e"], "command": "closecrab_explain" },
+    { "keys": ["ctrl+shift+f"], "command": "closecrab_fix" }
+]
