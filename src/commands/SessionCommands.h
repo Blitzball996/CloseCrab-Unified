@@ -5,6 +5,7 @@
 #include "../memory/MemorySystem.h"
 #include "../memory/SessionSearch.h"
 #include "../core/SessionManager.h"
+#include "../services/CompactSummary.h"
 #include <filesystem>
 #include <fstream>
 #include <chrono>
@@ -51,8 +52,14 @@ public:
         std::string dbPath = "data/closecrab.db";
         SessionManager mgr(dbPath);
 
-        // If a specific session ID is passed directly, restore it
+        // If a specific session/fork ID is passed directly, try to restore it
         if (!args.empty() && args.find_first_not_of("0123456789") != std::string::npos) {
+            // Check if it's a fork file first
+            namespace fs = std::filesystem;
+            std::string forkPath = "data/forks/" + args + ".json";
+            if (fs::exists(forkPath)) {
+                return restoreFork(forkPath, args, ctx);
+            }
             return restoreSession(args, mgr, ctx);
         }
 
@@ -103,6 +110,21 @@ public:
     }
 
 private:
+    CommandResult restoreFork(const std::string& forkPath, const std::string& forkId, CommandContext& ctx) {
+        try {
+            std::ifstream f(forkPath);
+            if (!f.is_open()) return CommandResult::fail("Cannot open fork file: " + forkPath);
+            std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            auto data = nlohmann::json::parse(content);
+            ctx.queryEngine->deserializeMessages(data);
+            ctx.print("Restored " + std::to_string(ctx.queryEngine->getMessages().size()) +
+                      " messages from fork [" + forkId + "]\n");
+        } catch (const std::exception& e) {
+            ctx.print("Failed to restore fork: " + std::string(e.what()) + "\n");
+        }
+        return CommandResult::ok();
+    }
+
     CommandResult restoreSession(const std::string& sessionId, SessionManager& mgr, CommandContext& ctx) {
         auto session = mgr.getSession(sessionId);
         if (!session || session->context.empty() || session->context == "{}") {
@@ -232,6 +254,15 @@ public:
         }
 
         size_t before = msgs.size();
+
+        // Show summary of what will be compacted (keep last ~40% of messages)
+        int keepCount = std::max(4, (int)(msgs.size() * 2 / 5));
+        int compactEnd = (int)msgs.size() - keepCount - 1;
+        if (compactEnd > 0) {
+            std::string summary = CompactSummary::summarize(msgs, 0, compactEnd);
+            ctx.print("\033[2m" + summary + "\033[0m\n");
+        }
+
         bool compacted = ctx.queryEngine->compactHistory();
         if (compacted) {
             size_t after = ctx.queryEngine->getMessages().size();

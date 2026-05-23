@@ -3,6 +3,7 @@
 #include "../commands/CommandRegistry.h"
 #include "../permissions/PermissionEngine.h"
 #include "../memory/MemorySystem.h"
+#include "../services/AgentProgress.h"
 #include <spdlog/spdlog.h>
 
 namespace closecrab {
@@ -73,9 +74,14 @@ std::string AgentManager::spawnAgent(const AgentConfig& config, APIClient* apiCl
                 QueryEngine subEngine(qeConfig);
 
                 std::string accumulated;
+                int turnsCompleted = 0;
                 QueryCallbacks callbacks;
                 callbacks.onText = [&](const std::string& text) {
                     accumulated += text;
+                    // Update progress after each text chunk (approximates turn completion)
+                    turnsCompleted++;
+                    int pct = std::min(95, (turnsCompleted * 100) / config.maxTurns);
+                    AgentProgress::getInstance().setProgress(agentPtr->id, pct, "processing");
                 };
                 callbacks.onError = [&](const std::string& err) {
                     agentPtr->error = err;
@@ -84,13 +90,16 @@ std::string AgentManager::spawnAgent(const AgentConfig& config, APIClient* apiCl
                     return true; // Auto-approve in sub-agents
                 };
 
+                AgentProgress::getInstance().setProgress(agentPtr->id, 5, "starting");
                 subEngine.submitMessage(config.prompt, callbacks);
 
                 agentPtr->output = accumulated;
                 agentPtr->status = AgentStatus::COMPLETED;
+                AgentProgress::getInstance().setProgress(agentPtr->id, 100, "done");
             } catch (const std::exception& e) {
                 agentPtr->error = e.what();
                 agentPtr->status = AgentStatus::FAILED;
+                AgentProgress::getInstance().setProgress(agentPtr->id, 100, "failed");
             }
         }
     );

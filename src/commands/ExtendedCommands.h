@@ -13,6 +13,9 @@
 #include "../utils/ProcessRunner.h"
 #include "../security/Sandbox.h"
 #include "../permissions/PermissionEngine.h"
+#include <filesystem>
+#include <fstream>
+#include <chrono>
 
 namespace closecrab {
 
@@ -1033,18 +1036,38 @@ public:
     }
 };
 
-// /fork - Fork current session
+// /fork - Fork conversation: save current state and start a new branch
 class ForkCommand : public Command {
 public:
     std::string getName() const override { return "fork"; }
-    std::string getDescription() const override { return "Fork current session"; }
+    std::string getDescription() const override { return "Fork conversation: save current state and start a new branch"; }
 
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
-        std::string newId = ctx.appState->sessionId + "_fork_" + std::to_string(std::time(nullptr));
-        // The messages are already in queryEngine; just assign a new session ID
+        if (!ctx.queryEngine) return CommandResult::fail("No active session");
+
+        // Generate fork ID
+        std::string forkId = "fork_" + std::to_string(std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+
+        // Serialize current messages
+        nlohmann::json state = ctx.queryEngine->serializeMessages();
+
+        // Save to file
+        namespace fs = std::filesystem;
+        fs::create_directories("data/forks");
+        std::ofstream f("data/forks/" + forkId + ".json");
+        if (!f.is_open()) return CommandResult::fail("Failed to save fork state");
+        f << state.dump();
+        f.close();
+
+        // Start new branch with a new session ID
+        std::string newId = ctx.appState->sessionId + "_" + forkId;
         ctx.queryEngine->setSessionId(newId);
         ctx.appState->sessionId = newId;
-        ctx.print("Session forked. New session ID: " + newId + "\n");
+
+        size_t msgCount = ctx.queryEngine->getMessages().size();
+        ctx.print("Forked at: " + forkId + " (" + std::to_string(msgCount) + " messages saved)\n");
+        ctx.print("Continue this branch, or use /resume " + forkId + " to return to this point.\n");
         return CommandResult::ok();
     }
 };
