@@ -8,6 +8,7 @@
 #include <sstream>
 #include <iomanip>
 #include <filesystem>
+#include <fstream>
 
 namespace closecrab {
 
@@ -338,6 +339,33 @@ public:
             ctx.print("Error: " + std::string(e.what()) + "\n");
         }
 
+        return CommandResult::ok();
+    }
+};
+
+// /init - Generate CRAB.md for the current project
+class InitCommand : public Command {
+public:
+    std::string getName() const override { return "init"; }
+    std::string getDescription() const override { return "Generate a CRAB.md file for the current project"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        namespace fs = std::filesystem;
+        fs::path crabMd = fs::path(ctx.cwd) / "CRAB.md";
+        if (fs::exists(crabMd) && args != "--force") {
+            ctx.print("CRAB.md already exists. Use /init --force to overwrite.\n");
+            return CommandResult::ok();
+        }
+        std::string content = "# Project: " + fs::path(ctx.cwd).filename().string() + "\n\n";
+        content += "## Rules\n\n";
+        content += "- Follow existing code style and conventions\n";
+        content += "- Run tests after changes\n";
+        content += "- Keep files under 500 lines\n\n";
+        content += "## Build\n\n```bash\n# Add build commands here\n```\n\n";
+        content += "## Test\n\n```bash\n# Add test commands here\n```\n";
+        std::ofstream f(crabMd.string());
+        if (f.is_open()) { f << content; f.close(); }
+        ctx.print("Created " + crabMd.string() + "\n");
         return CommandResult::ok();
     }
 };

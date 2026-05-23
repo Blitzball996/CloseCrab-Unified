@@ -403,6 +403,7 @@ int main(int argc, char* argv[]) {
     cmdRegistry.registerCommand(std::make_unique<PushCommand>());
     cmdRegistry.registerCommand(std::make_unique<PullCommand>());
     cmdRegistry.registerCommand(std::make_unique<StashCommand>());
+    cmdRegistry.registerCommand(std::make_unique<UndoCommand>());
     // Session
     cmdRegistry.registerCommand(std::make_unique<SessionCommand>());
     cmdRegistry.registerCommand(std::make_unique<NewSessionCommand>());
@@ -421,6 +422,7 @@ int main(int argc, char* argv[]) {
     cmdRegistry.registerCommand(std::make_unique<SandboxCommand>());
     cmdRegistry.registerCommand(std::make_unique<PlanCommand>());
     cmdRegistry.registerCommand(std::make_unique<DoctorCommand>());
+    cmdRegistry.registerCommand(std::make_unique<InitCommand>());
     cmdRegistry.registerCommand(std::make_unique<AddDirCommand>());
     cmdRegistry.registerCommand(std::make_unique<FilesCommand>());
     cmdRegistry.registerCommand(std::make_unique<ProviderCommand>());
@@ -664,6 +666,9 @@ When the user asks a question, answer directly.)";
         streamState = StreamState::WAITING;
         if (result.success) {
             std::cout << " " << ansi::green() << "OK" << ansi::reset();
+            if (result.elapsedSeconds > 0.1) {
+                std::cout << ansi::dim() << " (" << std::fixed << std::setprecision(1) << result.elapsedSeconds << "s)" << ansi::reset();
+            }
             // Show collapsed output for execution tools so user can see progress
             if ((name == "Bash" || name == "PowerShell") && !result.content.empty()) {
                 auto collapsed = OutputCollapse::collapse(result.content);
@@ -674,7 +679,11 @@ When the user asks a question, answer directly.)";
             }
             std::cout << "\n" << std::flush;
         } else {
-            std::cout << " " << ansi::red() << "Error: " << result.error << ansi::reset() << "\n";
+            std::cout << " " << ansi::red() << "Error: " << result.error << ansi::reset();
+            if (result.elapsedSeconds > 0.1) {
+                std::cout << ansi::dim() << " (" << std::fixed << std::setprecision(1) << result.elapsedSeconds << "s)" << ansi::reset();
+            }
+            std::cout << "\n";
         }
         // After tool result, API will be called again — show waiting
         spinner.start("Waiting for response...");

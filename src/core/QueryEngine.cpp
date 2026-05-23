@@ -299,6 +299,8 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
             config_.appState->totalToolDuration.load() + elapsed);
     }
 
+    result.elapsedSeconds = elapsed;
+
     if (callbacks.onToolResult) callbacks.onToolResult(event.toolName, result);
 
     // Fire PostToolUse hooks
@@ -489,8 +491,9 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                     spdlog::warn("503/overloaded (attempt {}), waiting {}s then compacting...",
                                  overloadRetries, waitSec);
                     if (callbacks.onError) {
-                        callbacks.onError("API temporarily unavailable, retrying in " +
-                            std::to_string(waitSec) + "s...");
+                        callbacks.onError("API overloaded, retrying in " +
+                            std::to_string(waitSec) + "s (attempt " +
+                            std::to_string(overloadRetries) + "/2)...");
                     }
                     std::this_thread::sleep_for(std::chrono::seconds(waitSec));
                     compactor_.forceCompact(messages_, config_.apiClient);

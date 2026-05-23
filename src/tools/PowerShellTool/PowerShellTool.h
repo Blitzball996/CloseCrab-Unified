@@ -63,7 +63,8 @@ public:
 
         // Use pwsh (PowerShell 7) if available, fallback to powershell.exe
         // Use -EncodedCommand to avoid quoting issues with complex commands
-        std::string encoded = encodeForPowerShell(cmd);
+        std::string wrappedCmd = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + cmd;
+        std::string encoded = encodeForPowerShell(wrappedCmd);
         std::string fullCmd = "powershell.exe -NoProfile -NonInteractive -EncodedCommand " + encoded;
 
         // Execute with timeout using CreateProcess (same pattern as BashTool)

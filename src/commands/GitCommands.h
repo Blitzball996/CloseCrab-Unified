@@ -66,11 +66,30 @@ public:
         std::string diff = shellExec("git diff" + (args.empty() ? "" : " " + args));
         std::string staged = shellExec("git diff --cached");
         std::string out;
-        if (!staged.empty()) out += "=== Staged ===\n" + staged + "\n";
-        if (!diff.empty()) out += "=== Unstaged ===\n" + diff + "\n";
+        if (!staged.empty()) out += "=== Staged ===\n" + colorizeDiff(staged) + "\n";
+        if (!diff.empty()) out += "=== Unstaged ===\n" + colorizeDiff(diff) + "\n";
         if (out.empty()) out = "No changes.\n";
         ctx.print(out);
         return CommandResult::ok();
+    }
+
+private:
+    static std::string colorizeDiff(const std::string& diff) {
+        std::string result;
+        std::istringstream stream(diff);
+        std::string line;
+        while (std::getline(stream, line)) {
+            if (!line.empty() && line[0] == '+' && line.substr(0, 3) != "+++") {
+                result += "\033[32m" + line + "\033[0m\n";
+            } else if (!line.empty() && line[0] == '-' && line.substr(0, 3) != "---") {
+                result += "\033[31m" + line + "\033[0m\n";
+            } else if (line.size() >= 2 && line.substr(0, 2) == "@@") {
+                result += "\033[36m" + line + "\033[0m\n";
+            } else {
+                result += line + "\n";
+            }
+        }
+        return result;
     }
 };
 
@@ -141,6 +160,34 @@ public:
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
         std::string cmd = "git stash" + (args.empty() ? "" : " " + args);
         ctx.print(shellExec(cmd));
+        return CommandResult::ok();
+    }
+};
+
+// /undo
+class UndoCommand : public Command {
+public:
+    std::string getName() const override { return "undo"; }
+    std::string getDescription() const override { return "Undo last file modification (git checkout)"; }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        if (args.empty()) {
+            ctx.print("Usage: /undo <file_path> or /undo --all\n");
+            return CommandResult::ok();
+        }
+        std::string cmd;
+        if (args == "--all") {
+            cmd = "git checkout -- .";
+        } else {
+            cmd = "git checkout -- \"" + args + "\"";
+        }
+        std::string output = shellExec(cmd);
+        if (output.find("error") == std::string::npos &&
+            output.find("fatal") == std::string::npos) {
+            ctx.print("Reverted: " + (args == "--all" ? "all files" : args) + "\n");
+        } else {
+            ctx.print("Failed to undo: " + output + "\n");
+        }
         return CommandResult::ok();
     }
 };

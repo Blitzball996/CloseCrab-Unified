@@ -307,18 +307,68 @@ private:
         int bytesRead = (int)file.gcount();
         if (bytesRead == 0) return ToolResult::fail("No data at offset " + std::to_string(offset));
 
+        // Auto-detect architecture from PE/ELF header
+        cs_arch arch = CS_ARCH_X86;
+        cs_mode mode = CS_MODE_64;
+        std::ifstream hdrFile(path, std::ios::binary);
+        if (hdrFile) {
+            uint8_t magic[2];
+            hdrFile.read(reinterpret_cast<char*>(magic), 2);
+            if (magic[0] == 'M' && magic[1] == 'Z') {
+                // PE file: read machine type
+                hdrFile.seekg(0x3C);
+                uint32_t peOff = 0;
+                hdrFile.read(reinterpret_cast<char*>(&peOff), 4);
+                hdrFile.seekg(peOff + 4); // Skip PE signature
+                uint16_t machine = 0;
+                hdrFile.read(reinterpret_cast<char*>(&machine), 2);
+                if (machine == 0xAA64) {
+                    arch = CS_ARCH_ARM64; mode = CS_MODE_ARM;
+                } else if (machine == 0x1C0 || machine == 0x1C4) {
+                    arch = CS_ARCH_ARM; mode = CS_MODE_THUMB;
+                } else if (machine == 0x14C) {
+                    arch = CS_ARCH_X86; mode = CS_MODE_32;
+                }
+                // 0x8664 = x86-64, already the default
+            } else if (magic[0] == 0x7F && magic[1] == 'E') {
+                // ELF file: read e_machine
+                hdrFile.seekg(4); // skip rest of EI_MAG
+                uint8_t elfClass = 0;
+                hdrFile.read(reinterpret_cast<char*>(&elfClass), 1);
+                // e_machine is at offset 18 in ELF header
+                hdrFile.seekg(18);
+                uint16_t eMachine = 0;
+                hdrFile.read(reinterpret_cast<char*>(&eMachine), 2);
+                if (eMachine == 183) { // EM_AARCH64
+                    arch = CS_ARCH_ARM64; mode = CS_MODE_ARM;
+                } else if (eMachine == 40) { // EM_ARM
+                    arch = CS_ARCH_ARM; mode = CS_MODE_THUMB;
+                } else if (eMachine == 3) { // EM_386
+                    arch = CS_ARCH_X86; mode = CS_MODE_32;
+                } else if (eMachine == 62) { // EM_X86_64
+                    arch = CS_ARCH_X86; mode = CS_MODE_64;
+                }
+            }
+            hdrFile.close();
+        }
+
         // Initialize Capstone
         csh handle;
         cs_insn* insn;
-        if (cs_open(CS_ARCH_X86, CS_MODE_64, &handle) != CS_ERR_OK) {
+        if (cs_open(arch, mode, &handle) != CS_ERR_OK) {
             return ToolResult::fail("Failed to initialize disassembler");
         }
         cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON);
 
         size_t count = cs_disasm(handle, code.data(), bytesRead, baseAddr, 0, &insn);
 
+        std::string archName = "x86-64";
+        if (arch == CS_ARCH_ARM64) archName = "ARM64";
+        else if (arch == CS_ARCH_ARM) archName = "ARM/Thumb";
+        else if (arch == CS_ARCH_X86 && mode == CS_MODE_32) archName = "x86";
+
         std::ostringstream oss;
-        oss << "Disassembly of " << path << " (offset 0x" << std::hex << offset
+        oss << "Disassembly of " << path << " [" << archName << "] (offset 0x" << std::hex << offset
             << ", " << std::dec << bytesRead << " bytes, " << count << " instructions):\n\n";
 
         if (count > 0) {

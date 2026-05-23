@@ -50,6 +50,8 @@ struct ToolResult {
     bool hasContextModification = false;
     nlohmann::json contextModification;  // JSON describing context changes
 
+    double elapsedSeconds = 0.0;  // Execution time
+
     static ToolResult ok(const std::string& content, const nlohmann::json& data = nullptr) {
         return {true, content, data, ""};
     }
