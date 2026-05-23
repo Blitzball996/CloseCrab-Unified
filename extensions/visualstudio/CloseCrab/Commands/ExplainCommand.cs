@@ -41,8 +41,12 @@ namespace CloseCrab
         {
             ThreadHelper.ThrowIfNotOnUIThread();
             var textManager = package.GetService<SVsTextManager, IVsTextManager>();
-            textManager?.GetActiveView(1, null, out var view);
-            view?.GetSelectedText(out var text);
+            if (textManager == null) return "";
+            IVsTextView view = null;
+            textManager.GetActiveView(1, null, out view);
+            if (view == null) return "";
+            string text = null;
+            view.GetSelectedText(out text);
             return text ?? "";
         }
     }
