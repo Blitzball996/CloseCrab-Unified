@@ -68,6 +68,7 @@
 #include "memory/MemoryExtractor.h"
 #include "ui/TerminalUI.h"
 #include "ui/VimMode.h"
+#include "network/HttpServer.h"
 #include "ui/KeyboardSelector.h"
 #include "ui/OutputCollapse.h"
 
@@ -733,6 +734,11 @@ When the user asks a question, answer directly.)";
         }
         return (sel.index == 0); // Allow=true, Deny or Escape=false
     };
+
+    // Start HTTP server for mobile remote control and API
+    HttpServer httpServer(9001);
+    httpServer.start();
+    spdlog::info("HTTP server started on port 9001 (mobile: http://localhost:9001/mobile)");
 
     bool running = true;
     while (running) {

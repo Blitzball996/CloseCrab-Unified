@@ -4,6 +4,8 @@
 #include <nlohmann/json.hpp>
 #include <thread>
 #include <atomic>
+#include <fstream>
+#include <vector>
 
 using json = nlohmann::json;
 
@@ -33,7 +35,7 @@ void HttpServer::start() {
 
     pImpl->server = std::make_unique<httplib::Server>();
 
-    // 健康检查
+    // Health check
     pImpl->server->Get("/health", [](const httplib::Request& req, httplib::Response& res) {
         json resp = {
             {"status", "ok"},
@@ -43,10 +45,28 @@ void HttpServer::start() {
         res.set_content(resp.dump(), "application/json");
         });
 
-    // 聊天接口
+    // Mobile remote control page
+    pImpl->server->Get("/mobile", [](const httplib::Request& req, httplib::Response& res) {
+        std::vector<std::string> paths = {
+            "extensions/mobile-web/index.html",
+            "../extensions/mobile-web/index.html",
+            "../../extensions/mobile-web/index.html"
+        };
+        for (const auto& path : paths) {
+            std::ifstream f(path);
+            if (f.is_open()) {
+                std::string html((std::istreambuf_iterator<char>(f)), {});
+                res.set_content(html, "text/html");
+                return;
+            }
+        }
+        res.set_content("<html><body><h1>CloseCrab Mobile</h1><p>mobile-web/index.html not found</p></body></html>", "text/html");
+    });
+
+    // Chat API
     pImpl->server->Post("/chat", [this](const httplib::Request& req, httplib::Response& res) {
         try {
-            // 解析 JSON
+            // (comment)
             json body = json::parse(req.body);
 
             std::string message = body.value("message", "");
@@ -62,7 +82,7 @@ void HttpServer::start() {
 
             spdlog::info("HTTP API request: {}", message);
 
-            // 调用回调
+            // (comment)
             if (pImpl->chatCallback) {
                 std::string response = pImpl->chatCallback(message, sessionId);
 
@@ -91,16 +111,16 @@ void HttpServer::start() {
         }
         });
 
-    // 获取会话历史
+    // (comment)
     pImpl->server->Get("/history/:session_id", [](const httplib::Request& req, httplib::Response& res) {
-        // 这里可以获取会话历史
+        // (comment)
         json resp = { {"message", "history endpoint - to be implemented"} };
         res.set_content(resp.dump(), "application/json");
         });
 
-    // 获取技能列表
+    // (comment)
     pImpl->server->Get("/skills", [](const httplib::Request& req, httplib::Response& res) {
-        // 这里可以返回技能列表
+        // (comment)
         json resp = { {"message", "skills endpoint - to be implemented"} };
         res.set_content(resp.dump(), "application/json");
         });
