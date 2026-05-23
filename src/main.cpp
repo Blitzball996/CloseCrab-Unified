@@ -760,12 +760,17 @@ When the user asks a question, answer directly.)";
     httpServer.onChat([&apiClient](const std::string& message, const std::string& sessionId) -> std::string {
         if (!apiClient) return "No API client configured";
         try {
+            std::string result;
             std::vector<Message> msgs;
             msgs.push_back(Message::makeUser(message));
             ModelConfig cfg;
             cfg.maxTokens = 4096;
-            cfg.stream = false;
-            return apiClient->chat(msgs, "You are CloseCrab AI assistant. Be concise and helpful.", cfg);
+            cfg.stream = true;
+            apiClient->streamChat(msgs, "You are CloseCrab AI. Be concise.", cfg,
+                [&](const StreamEvent& event) {
+                    if (event.type == StreamEvent::EVT_TEXT) result += event.content;
+                });
+            return result.empty() ? "No response from AI" : result;
         } catch (const std::exception& e) {
             return std::string("Error: ") + e.what();
         }
