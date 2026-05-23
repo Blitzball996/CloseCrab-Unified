@@ -1,0 +1,31 @@
+<idea-plugin>
+    <id>com.closecrab.plugin</id>
+    <name>CloseCrab AI</name>
+    <vendor>Blitzball996</vendor>
+    <version>0.5.0</version>
+    <description><![CDATA[
+        AI coding assistant powered by CloseCrab-Unified.<br>
+        51 tools, 83 commands, local LLM + cloud API, reverse engineering, CUDA acceleration.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="CloseCrab" anchor="right"
+                    factoryClass="com.closecrab.plugin.ChatToolWindowFactory"/>
+    </extensions>
+
+    <actions>
+        <group id="CloseCrab.Menu" text="CloseCrab" popup="true">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <action id="CloseCrab.Explain" class="com.closecrab.plugin.actions.ExplainAction"
+                    text="Explain Selection" description="Ask CloseCrab to explain selected code"/>
+            <action id="CloseCrab.Fix" class="com.closecrab.plugin.actions.FixAction"
+                    text="Fix Selection" description="Ask CloseCrab to fix bugs"/>
+            <action id="CloseCrab.Refactor" class="com.closecrab.plugin.actions.RefactorAction"
+                    text="Refactor Selection" description="Ask CloseCrab to refactor"/>
+            <action id="CloseCrab.Test" class="com.closecrab.plugin.actions.TestAction"
+                    text="Generate Tests" description="Generate unit tests"/>
+        </group>
+    </actions>
+</idea-plugin>

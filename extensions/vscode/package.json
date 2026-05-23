@@ -1,0 +1,58 @@
+{
+  "name": "closecrab",
+  "displayName": "CloseCrab AI",
+  "description": "AI coding assistant powered by CloseCrab-Unified (51 tools, local LLM + cloud API)",
+  "version": "0.5.0",
+  "publisher": "Blitzball996",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["AI", "Programming Languages", "Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "closecrab.chat", "title": "CloseCrab: Open Chat" },
+      { "command": "closecrab.explain", "title": "CloseCrab: Explain Selection" },
+      { "command": "closecrab.fix", "title": "CloseCrab: Fix Selection" },
+      { "command": "closecrab.refactor", "title": "CloseCrab: Refactor Selection" },
+      { "command": "closecrab.test", "title": "CloseCrab: Generate Tests" },
+      { "command": "closecrab.review", "title": "CloseCrab: Review File" }
+    ],
+    "viewsContainers": {
+      "activitybar": [{
+        "id": "closecrab",
+        "title": "CloseCrab",
+        "icon": "media/icon.svg"
+      }]
+    },
+    "views": {
+      "closecrab": [{
+        "type": "webview",
+        "id": "closecrab.chatView",
+        "name": "Chat"
+      }]
+    },
+    "configuration": {
+      "title": "CloseCrab",
+      "properties": {
+        "closecrab.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:9001",
+          "description": "CloseCrab backend URL"
+        },
+        "closecrab.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-start CloseCrab backend"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}
