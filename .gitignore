@@ -42,4 +42,7 @@ data/
 
 # 系统文件
 Thumbs.db
-.DS_Store
+.DS_Storeextensions/vscode/node_modules/
+extensions/vscode/out/
+extensions/vscode/node_modules/
+extensions/vscode/out/
