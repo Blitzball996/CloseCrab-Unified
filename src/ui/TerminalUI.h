@@ -45,6 +45,11 @@ public:
         if (running_.load()) return;
         running_ = true;
         message_ = message;
+        // When running under CloseCrab-Web, skip animation
+        if (std::getenv("CLOSECRAB_WEB")) {
+            std::cout << message_ << "\n" << std::flush;
+            return;
+        }
         thread_ = std::thread([this]() {
             const char* frames[] = {"|","/","-","\\","|","/","-","\\"};
             int i = 0;
