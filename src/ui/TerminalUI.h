@@ -45,9 +45,12 @@ public:
         if (running_.load()) return;
         running_ = true;
         message_ = message;
-        // When running under CloseCrab-Web, skip animation
+        // When running under CloseCrab-Web, emit a marker the mobile UI parses
+        // into a single inline animation instead of spamming repeated text +
+        // static spinner glyphs. Format: <<<CCSPIN:START:message>>>
+        // Choose printable ASCII so it survives PTY/ANSI passthrough.
         if (std::getenv("CLOSECRAB_WEB")) {
-            std::cout << message_ << "\n" << std::flush;
+            std::cout << "<<<CCSPIN:START:" << message_ << ">>>\n" << std::flush;
             return;
         }
         thread_ = std::thread([this]() {
@@ -67,8 +70,13 @@ public:
     }
 
     void stop() {
-        running_ = false;
+        bool was_running = running_.exchange(false);
         if (thread_.joinable()) thread_.join();
+        // Emit STOP marker so the mobile UI can clear its inline animation.
+        // Only emit if we were actually running and operating in web mode.
+        if (was_running && std::getenv("CLOSECRAB_WEB")) {
+            std::cout << "<<<CCSPIN:STOP>>>\n" << std::flush;
+        }
     }
 
     void setMessage(const std::string& msg) {
