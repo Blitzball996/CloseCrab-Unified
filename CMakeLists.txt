@@ -1,7 +1,16 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(CloseCrab-Unified VERSION 0.1.0 LANGUAGES C CXX)
-set(CMAKE_PREFIX_PATH "G:/vcpkg/installed/x64-windows")
+project(CloseCrab-Unified VERSION 0.2.0 LANGUAGES C CXX)
+
+# ============================================
+# Build options
+# ============================================
+
+option(USE_CUDA "Enable CUDA GPU acceleration" ON)
+
+if(EXISTS "G:/vcpkg/installed/x64-windows")
+    set(CMAKE_PREFIX_PATH "G:/vcpkg/installed/x64-windows")
+endif()
 
 # ============================================
 # Global config
