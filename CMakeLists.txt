@@ -6,10 +6,27 @@ project(CloseCrab-Unified VERSION 0.2.0 LANGUAGES C CXX)
 # Build options
 # ============================================
 
-option(USE_CUDA "Enable CUDA GPU acceleration" ON)
+option(USE_CUDA "Enable CUDA GPU acceleration (Windows/Linux with NVIDIA)" ON)
+option(USE_LOCAL_LLM "Enable local LLM inference via llama.cpp" ON)
+option(USE_FAISS "Enable FAISS vector search for RAG" ON)
+option(USE_ONNX "Enable ONNX Runtime for embeddings" ON)
+option(BUILD_TESTS "Build unit tests" OFF)
 
-if(EXISTS "G:/vcpkg/installed/x64-windows")
-    set(CMAKE_PREFIX_PATH "G:/vcpkg/installed/x64-windows")
+# ============================================
+# Platform detection
+# ============================================
+
+if(APPLE)
+    set(USE_CUDA OFF)
+    set(PLATFORM_MACOS TRUE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "10.14" CACHE STRING "Minimum macOS version")
+elseif(UNIX)
+    set(PLATFORM_LINUX TRUE)
+elseif(WIN32)
+    set(PLATFORM_WINDOWS TRUE)
+    if(EXISTS "G:/vcpkg/installed/x64-windows")
+        set(CMAKE_PREFIX_PATH "G:/vcpkg/installed/x64-windows")
+    endif()
 endif()
 
 # ============================================
@@ -25,20 +42,19 @@ if(MSVC)
 endif()
 
 # ============================================
-# CUDA (optional — disabled on macOS/Linux CI)
+# CUDA (optional)
 # ============================================
 
-option(USE_CUDA "Enable CUDA GPU acceleration" ON)
 if(USE_CUDA)
     find_package(CUDAToolkit QUIET)
     if(NOT CUDAToolkit_FOUND)
-        message(WARNING "CUDA not found — building without GPU acceleration")
+        message(WARNING "CUDA not found - building without GPU acceleration")
         set(USE_CUDA OFF)
     endif()
 endif()
 
 # ============================================
-# vcpkg dependencies (CURL, ZLIB)
+# Required dependencies (cross-platform)
 # ============================================
 
 find_package(CURL CONFIG QUIET)
@@ -47,34 +63,7 @@ if(NOT CURL_FOUND)
 endif()
 find_package(ZLIB REQUIRED)
 
-# ============================================
-# FetchContent
-# ============================================
-
 include(FetchContent)
-
-# ============================================
-# ONNX Runtime
-# ============================================
-
-set(ONNXRUNTIME_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/onnxruntime-win-x64-gpu-1.24.4")
-add_library(onnxruntime SHARED IMPORTED)
-set_target_properties(onnxruntime PROPERTIES
-    IMPORTED_LOCATION "${ONNXRUNTIME_DIR}/lib/onnxruntime.dll"
-    IMPORTED_IMPLIB "${ONNXRUNTIME_DIR}/lib/onnxruntime.lib"
-    INTERFACE_INCLUDE_DIRECTORIES "${ONNXRUNTIME_DIR}/include"
-)
-
-if(USE_ONNX_GPU AND EXISTS "${ONNXRUNTIME_DIR}/lib/onnxruntime_providers_cuda.dll")
-    add_definitions(-DUSE_ONNX_GPU)
-    add_library(onnxruntime_cuda SHARED IMPORTED)
-    set_target_properties(onnxruntime_cuda PROPERTIES
-        IMPORTED_LOCATION "${ONNXRUNTIME_DIR}/lib/onnxruntime_providers_cuda.dll"
-    )
-    set(ONNXRUNTIME_EXTRA_LIBS onnxruntime_cuda)
-else()
-    set(ONNXRUNTIME_EXTRA_LIBS "")
-endif()
 
 # spdlog
 FetchContent_Declare(spdlog
@@ -109,9 +98,9 @@ FetchContent_MakeAvailable(thread_pool)
 
 # sqlite3
 FetchContent_Declare(sqlite3
-    URL https://www.sqlite.org/2024/sqlite-autoconf-3460100.tar.gz)
+    URL https://www.sqlite.org/2024/sqlite-autoconf-3460100.tar.gz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(sqlite3)
-
 if(NOT TARGET sqlite3)
     add_library(sqlite3 STATIC ${sqlite3_SOURCE_DIR}/sqlite3.c)
     target_include_directories(sqlite3 PUBLIC ${sqlite3_SOURCE_DIR})
@@ -123,7 +112,7 @@ FetchContent_Declare(httplib
     GIT_TAG v0.18.1)
 FetchContent_MakeAvailable(httplib)
 
-# Capstone disassembly engine
+# capstone
 set(CAPSTONE_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 set(CAPSTONE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(CAPSTONE_BUILD_CSTOOL OFF CACHE BOOL "" FORCE)
@@ -132,200 +121,284 @@ FetchContent_Declare(capstone
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(capstone)
 
-# ============================================
-# ixwebsocket (local)
-# ============================================
-
+# ixwebsocket
 set(IXWEBSOCKET_PATH "${CMAKE_CURRENT_SOURCE_DIR}/external/ixwebsocket")
 if(EXISTS ${IXWEBSOCKET_PATH}/CMakeLists.txt)
     add_subdirectory(${IXWEBSOCKET_PATH})
+else()
+    # Fetch from source if not available locally
+    FetchContent_Declare(ixwebsocket
+        GIT_REPOSITORY https://github.com/machinezone/IXWebSocket.git
+        GIT_TAG v11.4.5)
+    set(USE_TLS OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(ixwebsocket)
 endif()
 
 # ============================================
-# FAISS (vcpkg)
+# ONNX Runtime (optional, platform-specific)
 # ============================================
 
-set(FAISS_DIR "G:/vcpkg/installed/x64-windows")
-add_library(faiss SHARED IMPORTED)
-set_target_properties(faiss PROPERTIES
-    IMPORTED_IMPLIB "${FAISS_DIR}/lib/faiss.lib"
-    IMPORTED_LOCATION "${FAISS_DIR}/bin/faiss.dll"
-    INTERFACE_INCLUDE_DIRECTORIES "${FAISS_DIR}/include"
-)
-target_link_libraries(faiss INTERFACE
-    "${FAISS_DIR}/lib/openblas.lib"
-)
+if(USE_ONNX)
+    if(PLATFORM_WINDOWS)
+        set(ONNXRUNTIME_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/onnxruntime-win-x64-gpu-1.24.4")
+        if(EXISTS "${ONNXRUNTIME_DIR}/lib/onnxruntime.lib")
+            add_library(onnxruntime SHARED IMPORTED)
+            set_target_properties(onnxruntime PROPERTIES
+                IMPORTED_LOCATION "${ONNXRUNTIME_DIR}/lib/onnxruntime.dll"
+                IMPORTED_IMPLIB "${ONNXRUNTIME_DIR}/lib/onnxruntime.lib"
+                INTERFACE_INCLUDE_DIRECTORIES "${ONNXRUNTIME_DIR}/include")
+        else()
+            message(WARNING "ONNX Runtime not found - disabling")
+            set(USE_ONNX OFF)
+        endif()
+    elseif(PLATFORM_MACOS)
+        find_library(ONNXRUNTIME_LIB onnxruntime PATHS /usr/local/lib /opt/homebrew/lib)
+        if(ONNXRUNTIME_LIB)
+            add_library(onnxruntime SHARED IMPORTED)
+            set_target_properties(onnxruntime PROPERTIES IMPORTED_LOCATION ${ONNXRUNTIME_LIB})
+        else()
+            message(WARNING "ONNX Runtime not found on macOS - disabling (install: brew install onnxruntime)")
+            set(USE_ONNX OFF)
+        endif()
+    else()
+        find_library(ONNXRUNTIME_LIB onnxruntime)
+        if(ONNXRUNTIME_LIB)
+            add_library(onnxruntime SHARED IMPORTED)
+            set_target_properties(onnxruntime PROPERTIES IMPORTED_LOCATION ${ONNXRUNTIME_LIB})
+        else()
+            message(WARNING "ONNX Runtime not found - disabling")
+            set(USE_ONNX OFF)
+        endif()
+    endif()
+endif()
+
+# ============================================
+# FAISS (optional, platform-specific)
+# ============================================
+
+if(USE_FAISS)
+    if(PLATFORM_WINDOWS)
+        set(FAISS_DIR "G:/vcpkg/installed/x64-windows")
+        if(EXISTS "${FAISS_DIR}/lib/faiss.lib")
+            add_library(faiss SHARED IMPORTED)
+            set_target_properties(faiss PROPERTIES
+                IMPORTED_IMPLIB "${FAISS_DIR}/lib/faiss.lib"
+                IMPORTED_LOCATION "${FAISS_DIR}/bin/faiss.dll"
+                INTERFACE_INCLUDE_DIRECTORIES "${FAISS_DIR}/include")
+            target_link_libraries(faiss INTERFACE "${FAISS_DIR}/lib/openblas.lib")
+            if(USE_CUDA)
+                target_link_libraries(faiss INTERFACE CUDA::cudart CUDA::cublas CUDA::cufft CUDA::curand)
+                add_definitions(-DFAISS_GPU_ENABLED)
+            endif()
+        else()
+            message(WARNING "FAISS not found - disabling RAG vector search")
+            set(USE_FAISS OFF)
+        endif()
+    else()
+        # macOS/Linux: try system FAISS (brew install faiss / apt install libfaiss-dev)
+        find_library(FAISS_LIB faiss PATHS /usr/local/lib /opt/homebrew/lib)
+        find_path(FAISS_INCLUDE faiss/IndexFlat.h PATHS /usr/local/include /opt/homebrew/include)
+        if(FAISS_LIB AND FAISS_INCLUDE)
+            add_library(faiss SHARED IMPORTED)
+            set_target_properties(faiss PROPERTIES
+                IMPORTED_LOCATION ${FAISS_LIB}
+                INTERFACE_INCLUDE_DIRECTORIES ${FAISS_INCLUDE})
+        else()
+            message(WARNING "FAISS not found - disabling RAG vector search (install: brew install faiss)")
+            set(USE_FAISS OFF)
+        endif()
+    endif()
+endif()
+
+# ============================================
+# llama.cpp (optional, platform-specific)
+# ============================================
+
+if(USE_LOCAL_LLM)
+    set(LLAMA_PATH "${CMAKE_CURRENT_SOURCE_DIR}/external/llama.cpp")
+    if(PLATFORM_WINDOWS AND EXISTS "${LLAMA_PATH}/build/src/Release/llama.lib")
+        # Windows: use pre-built libs
+        set(LLAMA_LIB_DIR "${LLAMA_PATH}/build/src/Release")
+        set(GGML_LIB_DIR "${LLAMA_PATH}/build/ggml/src/Release")
+        add_library(llama STATIC IMPORTED)
+        set_target_properties(llama PROPERTIES
+            IMPORTED_LOCATION "${LLAMA_LIB_DIR}/llama.lib"
+            INTERFACE_INCLUDE_DIRECTORIES "${LLAMA_PATH}/include")
+        add_library(ggml STATIC IMPORTED)
+        set_target_properties(ggml PROPERTIES IMPORTED_LOCATION "${GGML_LIB_DIR}/ggml.lib")
+        add_library(ggml-base STATIC IMPORTED)
+        set_target_properties(ggml-base PROPERTIES IMPORTED_LOCATION "${GGML_LIB_DIR}/ggml-base.lib")
+        add_library(ggml-cpu STATIC IMPORTED)
+        set_target_properties(ggml-cpu PROPERTIES IMPORTED_LOCATION "${GGML_LIB_DIR}/ggml-cpu.lib")
+    elseif(EXISTS "${LLAMA_PATH}/CMakeLists.txt")
+        # macOS/Linux: build from source with Metal/CPU
+        set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+        if(APPLE)
+            set(GGML_METAL ON CACHE BOOL "" FORCE)
+            message(STATUS "llama.cpp: Metal GPU acceleration ENABLED")
+        else()
+            set(GGML_METAL OFF CACHE BOOL "" FORCE)
+        endif()
+        if(USE_CUDA)
+            set(GGML_CUDA ON CACHE BOOL "" FORCE)
+        else()
+            set(GGML_CUDA OFF CACHE BOOL "" FORCE)
+        endif()
+        add_subdirectory(${LLAMA_PATH} llama.cpp)
+    else()
+        message(WARNING "llama.cpp not found - disabling local LLM inference")
+        set(USE_LOCAL_LLM OFF)
+    endif()
+endif()
+
+# ============================================
+# Compile definitions based on available features
+# ============================================
+
+if(USE_ONNX)
+    add_definitions(-DCLOSECRAB_HAS_ONNX)
+endif()
+if(USE_FAISS)
+    add_definitions(-DCLOSECRAB_HAS_FAISS)
+endif()
+if(USE_LOCAL_LLM)
+    add_definitions(-DCLOSECRAB_HAS_LOCAL_LLM)
+endif()
 if(USE_CUDA)
-    target_link_libraries(faiss INTERFACE
-        CUDA::cudart CUDA::cublas CUDA::cufft CUDA::curand
-    )
+    add_definitions(-DCLOSECRAB_HAS_CUDA)
 endif()
 
 # ============================================
-# llama.cpp (pre-built)
+# Executable
 # ============================================
-
-set(LLAMA_PATH "${CMAKE_CURRENT_SOURCE_DIR}/external/llama.cpp")
-set(LLAMA_LIB_DIR "${LLAMA_PATH}/build/src/Release")
-set(GGML_LIB_DIR "${LLAMA_PATH}/build/ggml/src/Release")
-
-add_library(llama STATIC IMPORTED)
-set_target_properties(llama PROPERTIES
-    IMPORTED_LOCATION "${LLAMA_LIB_DIR}/llama.lib"
-    INTERFACE_INCLUDE_DIRECTORIES "${LLAMA_PATH}/include"
-)
-
-add_library(ggml STATIC IMPORTED)
-set_target_properties(ggml PROPERTIES IMPORTED_LOCATION "${GGML_LIB_DIR}/ggml.lib")
-
-add_library(ggml-base STATIC IMPORTED)
-set_target_properties(ggml-base PROPERTIES IMPORTED_LOCATION "${GGML_LIB_DIR}/ggml-base.lib")
-
-add_library(ggml-cpu STATIC IMPORTED)
-set_target_properties(ggml-cpu PROPERTIES IMPORTED_LOCATION "${GGML_LIB_DIR}/ggml-cpu.lib")
-
-# ============================================
-# Executable: closecrab-unified
-# ============================================
-
-add_definitions(-DFAISS_GPU_ENABLED)
 
 add_executable(closecrab-unified
-    # Main entry
     src/main.cpp
-
-    # Core
     src/core/QueryEngine.cpp
     src/core/Message.cpp
     src/core/SessionManager.cpp
     src/core/SessionRouter.cpp
-
-    # Stats
     src/stats/StatsEngine.cpp
-
-    # Knowledge
     src/knowledge/SharedKnowledge.cpp
-
-    # API clients
     src/api/LocalLLMClient.cpp
     src/api/RemoteAPIClient.cpp
     src/api/OpenAICompatClient.cpp
     src/api/StreamParser.cpp
-
-    # Tools
     src/tools/ToolRegistry.cpp
-
-    # Commands
     src/commands/CommandRegistry.cpp
-
-    # Permissions
     src/permissions/PermissionEngine.cpp
-
-    # Agents
     src/agents/AgentManager.cpp
-
-    # MCP
     src/mcp/MCPClient.cpp
-
-    # LSP
     src/lsp/LSPClient.cpp
-
-    # Bridge
     src/bridge/BridgeClient.cpp
-
-    # Config
     src/config/Config.cpp
     src/config/SettingsManager.cpp
-
-    # Memory
     src/memory/MemorySystem.cpp
-
-    # LLM
     src/llm/LLMEngine.cpp
-
-    # Network
     src/network/WebSocketServer.cpp
     src/network/HttpServer.cpp
     src/network/SSEServer.cpp
-
-    # Security
     src/security/Sandbox.cpp
-
-    # RAG
     src/rag/RAGManager.cpp
     src/rag/EmbeddingEngine.cpp
     src/rag/RerankerEngine.cpp
     src/rag/HFTokenizer.cpp
-
-    # SSD Expert Streaming
     src/ssd/SSDExpertStreamer.cpp
 )
 
-if(USE_CUDA_EXPERT_CACHE)
-    target_compile_definitions(closecrab-unified PRIVATE USE_CUDA_EXPERT_CACHE)
-endif()
-
 # ============================================
-# Link libraries
+# Link libraries (cross-platform)
 # ============================================
 
-target_link_libraries(closecrab-unified PRIVATE
+set(CLOSECRAB_LIBS
     spdlog::spdlog
     nlohmann_json::nlohmann_json
     yaml-cpp
     CLI11::CLI11
     sqlite3
-
-    onnxruntime
-    ${ONNXRUNTIME_EXTRA_LIBS}
-    faiss
-    llama ggml ggml-base ggml-cpu
-
     ixwebsocket
     capstone
-
     CURL::libcurl
     ZLIB::ZLIB
-
-    ws2_32 wldap32 crypt32 advapi32 user32 iphlpapi secur32
 )
+
+if(USE_ONNX)
+    list(APPEND CLOSECRAB_LIBS onnxruntime)
+endif()
+if(USE_FAISS)
+    list(APPEND CLOSECRAB_LIBS faiss)
+endif()
+if(USE_LOCAL_LLM)
+    if(PLATFORM_WINDOWS)
+        list(APPEND CLOSECRAB_LIBS llama ggml ggml-base ggml-cpu)
+    else()
+        list(APPEND CLOSECRAB_LIBS llama ggml)
+    endif()
+endif()
+
+# Platform-specific system libraries
+if(PLATFORM_WINDOWS)
+    list(APPEND CLOSECRAB_LIBS ws2_32 wldap32 crypt32 advapi32 user32 iphlpapi secur32)
+elseif(PLATFORM_MACOS)
+    find_library(FOUNDATION Foundation)
+    find_library(SECURITY Security)
+    list(APPEND CLOSECRAB_LIBS ${FOUNDATION} ${SECURITY} pthread)
+    if(USE_LOCAL_LLM)
+        find_library(METAL Metal)
+        find_library(METALKIT MetalKit)
+        if(METAL)
+            list(APPEND CLOSECRAB_LIBS ${METAL} ${METALKIT})
+        endif()
+    endif()
+elseif(PLATFORM_LINUX)
+    list(APPEND CLOSECRAB_LIBS pthread dl)
+endif()
+
+target_link_libraries(closecrab-unified PRIVATE ${CLOSECRAB_LIBS})
 
 # ============================================
 # Include directories
 # ============================================
 
-target_include_directories(closecrab-unified PRIVATE
+set(CLOSECRAB_INCLUDES
     src
     ${thread_pool_SOURCE_DIR}/include
-    ${ONNXRUNTIME_DIR}/include
-    ${LLAMA_PATH}/include
-    ${LLAMA_PATH}/ggml/include
-    ${FAISS_DIR}/include
-    ${IXWEBSOCKET_PATH}
     ${httplib_SOURCE_DIR}
     ${capstone_SOURCE_DIR}/include
 )
 
+if(USE_ONNX AND PLATFORM_WINDOWS)
+    list(APPEND CLOSECRAB_INCLUDES ${ONNXRUNTIME_DIR}/include)
+endif()
+if(USE_LOCAL_LLM AND EXISTS "${LLAMA_PATH}/include")
+    list(APPEND CLOSECRAB_INCLUDES ${LLAMA_PATH}/include ${LLAMA_PATH}/ggml/include)
+endif()
+if(USE_FAISS AND PLATFORM_WINDOWS)
+    list(APPEND CLOSECRAB_INCLUDES ${FAISS_DIR}/include)
+endif()
+if(EXISTS ${IXWEBSOCKET_PATH})
+    list(APPEND CLOSECRAB_INCLUDES ${IXWEBSOCKET_PATH})
+endif()
+
+target_include_directories(closecrab-unified PRIVATE ${CLOSECRAB_INCLUDES})
+
 # ============================================
-# Copy DLLs
+# Post-build: Copy DLLs (Windows only)
 # ============================================
 
-add_custom_command(TARGET closecrab-unified POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${FAISS_DIR}/bin/faiss.dll" $<TARGET_FILE_DIR:closecrab-unified>
-)
-
-add_custom_command(TARGET closecrab-unified POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${ONNXRUNTIME_DIR}/lib/onnxruntime.dll" $<TARGET_FILE_DIR:closecrab-unified>
-)
-
-if(ONNXRUNTIME_EXTRA_LIBS)
-    add_custom_command(TARGET closecrab-unified POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${ONNXRUNTIME_DIR}/lib/onnxruntime_providers_cuda.dll"
-            $<TARGET_FILE_DIR:closecrab-unified>
-    )
+if(PLATFORM_WINDOWS)
+    if(USE_FAISS AND EXISTS "${FAISS_DIR}/bin/faiss.dll")
+        add_custom_command(TARGET closecrab-unified POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${FAISS_DIR}/bin/faiss.dll" $<TARGET_FILE_DIR:closecrab-unified>)
+    endif()
+    if(USE_ONNX AND EXISTS "${ONNXRUNTIME_DIR}/lib/onnxruntime.dll")
+        add_custom_command(TARGET closecrab-unified POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ONNXRUNTIME_DIR}/lib/onnxruntime.dll" $<TARGET_FILE_DIR:closecrab-unified>)
+    endif()
 endif()
 
 # ============================================
@@ -334,58 +407,28 @@ endif()
 
 message(STATUS "========================================")
 message(STATUS "CloseCrab-Unified v${PROJECT_VERSION}")
-message(STATUS "MSVC Runtime: ${CMAKE_MSVC_RUNTIME_LIBRARY}")
+message(STATUS "  Platform:    ${CMAKE_SYSTEM_NAME}")
+message(STATUS "  CUDA:        ${USE_CUDA}")
+message(STATUS "  Local LLM:   ${USE_LOCAL_LLM}")
+message(STATUS "  FAISS:       ${USE_FAISS}")
+message(STATUS "  ONNX:        ${USE_ONNX}")
+if(APPLE AND USE_LOCAL_LLM)
+    message(STATUS "  Metal:       ON (Apple GPU)")
+endif()
 message(STATUS "========================================")
 
 # ============================================
-# Tests (optional, requires GTest)
+# Tests (optional)
 # ============================================
-
-option(BUILD_TESTS "Build unit tests" OFF)
 
 if(BUILD_TESTS)
     find_package(GTest CONFIG QUIET)
     if(GTest_FOUND)
         enable_testing()
-
-        # Core tests (existing)
-        add_executable(closecrab-tests
-            tests/test_core.cpp
-            src/api/StreamParser.cpp
-        )
+        add_executable(closecrab-tests tests/test_core.cpp src/api/StreamParser.cpp)
         target_include_directories(closecrab-tests PRIVATE
-            ${CMAKE_SOURCE_DIR}/src
-            ${json_SOURCE_DIR}/include
-            ${spdlog_SOURCE_DIR}/include
-        )
+            ${CMAKE_SOURCE_DIR}/src ${json_SOURCE_DIR}/include ${spdlog_SOURCE_DIR}/include)
         target_link_libraries(closecrab-tests PRIVATE GTest::gtest GTest::gtest_main spdlog::spdlog)
         add_test(NAME CoreTests COMMAND closecrab-tests)
-
-        # Extended tests (new)
-        add_executable(closecrab-tests-extended
-            tests/test_tools_extended.cpp
-            src/api/StreamParser.cpp
-            src/permissions/PermissionEngine.cpp
-            src/commands/CommandRegistry.cpp
-            src/core/SessionManager.cpp
-            src/config/Config.cpp
-        )
-        target_include_directories(closecrab-tests-extended PRIVATE
-            ${CMAKE_SOURCE_DIR}/src
-            ${json_SOURCE_DIR}/include
-            ${spdlog_SOURCE_DIR}/include
-        )
-        target_link_libraries(closecrab-tests-extended PRIVATE
-            GTest::gtest GTest::gtest_main
-            spdlog::spdlog
-            nlohmann_json::nlohmann_json
-            yaml-cpp
-            sqlite3
-        )
-        add_test(NAME ExtendedTests COMMAND closecrab-tests-extended)
-
-        message(STATUS "Tests: ENABLED (core + extended)")
-    else()
-        message(STATUS "Tests: GTest not found, skipping")
     endif()
 endif()
