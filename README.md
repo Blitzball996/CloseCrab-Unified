@@ -11,10 +11,11 @@
 [![Windows](https://img.shields.io/badge/Platform-Windows%20|%20Linux%20|%20macOS-0078d7.svg)](#platforms)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Tools](https://img.shields.io/badge/Tools-51-orange.svg)](#tools-51)
+[![Team Mode](https://img.shields.io/badge/Team%20Mode-Parallel-ff69b4.svg)](#team-mode)
 [![Skills](https://img.shields.io/badge/Skills-11-purple.svg)](#skills)
 [![Binary Size](https://img.shields.io/badge/Binary-~3.2MB-brightgreen.svg)](#)
 
-A local-first AI coding assistant. Single C++17 binary, 51 tools, 83 commands, runs LLMs on your GPU or connects to cloud APIs.
+A local-first AI coding assistant. Single C++17 binary, 51 tools, 83 commands, Team Mode, runs LLMs on your GPU or connects to cloud APIs.
 
 ---
 
@@ -32,6 +33,7 @@ The project merges two predecessors: **CloseCrab** (a C++ local inference engine
 - **Extensible** -- Plugin system, MCP protocol support, skill directories, cron scheduling, hooks.
 - **Fast** -- C++17, CUDA GPU acceleration, concurrent tool execution, no runtime dependencies, single binary.
 - **Multi-agent** -- 5 agent types with coordinator mode for complex task decomposition.
+- **Team Mode** -- Multi-client parallel inference with gamification and shared knowledge base.
 
 ---
 
@@ -560,6 +562,45 @@ The local LLM client supports three strategies for parsing tool calls from model
 3. **Function call** -- `function_name(param1, param2)` format
 
 The client tries each strategy in order and uses the first successful parse.
+
+---
+
+## Team Mode
+
+Team Mode enables multiple developers to connect to a single CloseCrab server and work in parallel, each with independent conversation history and full tool access.
+
+### How it works
+
+- **Multi-client connections** -- Multiple phones, laptops, or PCs connect to one CloseCrab server via CloseCrab-Web. Each client is assigned a unique ID.
+- **Independent conversation history** -- Each connected client maintains its own conversation context. One developer's session does not interfere with another's.
+- **True parallel inference** -- In API mode, requests are dispatched as concurrent HTTP calls. In local mode, llama.cpp's `n_parallel` slots handle simultaneous inference for multiple clients.
+- **Gamification** -- Built-in leaderboard tracks coding stats (lines written, tools used, bugs fixed). Achievements unlock as developers hit milestones.
+- **Shared knowledge base** -- Team Q&A is automatically indexed and searchable. When one developer solves a problem, the solution becomes discoverable by the whole team.
+- **Session persistence** -- Collaboration sessions can be saved and restored. Pick up where you left off, even after server restarts.
+
+### Quick start
+
+```bash
+# Start CloseCrab server (Team Mode auto-enabled on port 9002)
+closecrab-unified --config config/config.yaml
+
+# Connect from multiple phones/PCs via CloseCrab-Web
+# Each client gets unique ID, independent history, and appears on leaderboard
+```
+
+### Configuration
+
+Add to `config/config.yaml`:
+
+```yaml
+team:
+  enabled: true
+  port: 9002                    # Team Mode WebSocket port
+  max_clients: 8                # Maximum simultaneous connections
+  leaderboard: true             # Enable gamification leaderboard
+  shared_knowledge: true        # Enable shared Q&A knowledge base
+  session_persistence: true     # Save/restore collaboration sessions
+```
 
 ---
 

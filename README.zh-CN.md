@@ -6,13 +6,14 @@
 
 # CloseCrab-Unified — 本地 AI 编程助手
 
-一个用 C++17 编写的本地优先 AI 编程助手。可以在你自己的 GPU 上运行大语言模型，也可以连接 Claude、OpenAI 等远程 API — 只需改一行配置。AI 拥有 51 个工具、83 个命令、多智能体协作、记忆系统、语音输出，全部受权限系统保护。单文件可执行程序，约 3.0MB。
+一个用 C++17 编写的本地优先 AI 编程助手。可以在你自己的 GPU 上运行大语言模型，也可以连接 Claude、OpenAI 等远程 API — 只需改一行配置。AI 拥有 51 个工具、83 个命令、多智能体协作、Team Mode（多客户端并行推理）、记忆系统、语音输出，全部受权限系统保护。单文件可执行程序，约 3.0MB。
 
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
 [![CUDA](https://img.shields.io/badge/CUDA-12.x-green.svg)](https://developer.nvidia.com/cuda-toolkit)
 [![Windows](https://img.shields.io/badge/Platform-Windows%20|%20Linux%20|%20macOS-0078d7.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Tools](https://img.shields.io/badge/Tools-51-orange.svg)](#tools-51)
+[![Team Mode](https://img.shields.io/badge/Team%20Mode-Parallel-ff69b4.svg)](#team-mode团队模式)
 [![Skills](https://img.shields.io/badge/Skills-11-purple.svg)](#skills)
 
 ---
@@ -30,6 +31,7 @@
 - **真工具**：AI 不只是聊天 — 它能读文件、写代码、跑测试、搜索网络
 - **智能**：多 Agent 协调、历史压缩、记忆系统、Hooks 自动化
 - **可扩展**：51 个内置工具 + 插件系统 + MCP 协议 + 技能目录
+- **Team Mode**：多客户端并行推理，内置排行榜、成就系统和共享知识库
 - **快**：C++17，CUDA GPU 加速，无 Python 运行时
 
 ---
@@ -398,6 +400,45 @@ LocalLLMClient 使用 3 层策略解析本地模型的 tool 调用：
 1. JSON 格式：`{"name": "Read", "input": {"file_path": "..."}}`
 2. SKILL 格式：`SKILL: Read\nPARAMS: {"file_path": "..."}`
 3. 函数调用格式：`Read(file_path="...")`
+
+---
+
+## Team Mode（团队模式）
+
+Team Mode 允许多个开发者同时连接到一台 CloseCrab 服务器，各自拥有独立的对话历史和完整工具访问权限。
+
+### 工作原理
+
+- **多客户端连接** -- 多台手机、笔记本或 PC 通过 CloseCrab-Web 连接到同一台服务器。每个客户端分配唯一 ID。
+- **独立对话历史** -- 每个连接的客户端维护自己的对话上下文，互不干扰。
+- **真正的并行推理** -- API 模式下，请求以并发 HTTP 调用方式分发；本地模式下，利用 llama.cpp 的 `n_parallel` 槽位同时为多个客户端推理。
+- **游戏化** -- 内置排行榜追踪编码统计（代码行数、工具使用次数、修复 bug 数）。开发者达成里程碑时解锁成就。
+- **共享知识库** -- 团队 Q&A 自动索引并可搜索。一个开发者解决了问题，解决方案对整个团队可见。
+- **会话持久化** -- 协作会话可保存和恢复。即使服务器重启，也能从上次中断处继续。
+
+### 快速开始
+
+```bash
+# 启动 CloseCrab 服务器（Team Mode 自动在端口 9002 启用）
+closecrab-unified --config config/config.yaml
+
+# 从多台手机/PC 通过 CloseCrab-Web 连接
+# 每个客户端获得唯一 ID、独立历史，并出现在排行榜上
+```
+
+### 配置
+
+在 `config/config.yaml` 中添加：
+
+```yaml
+team:
+  enabled: true
+  port: 9002                    # Team Mode WebSocket 端口
+  max_clients: 8                # 最大同时连接数
+  leaderboard: true             # 启用游戏化排行榜
+  shared_knowledge: true        # 启用共享 Q&A 知识库
+  session_persistence: true     # 保存/恢复协作会话
+```
 
 ---
 

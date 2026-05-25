@@ -1,7 +1,10 @@
 ; CloseCrab-Unified Installer
+; Cross-platform packaging: Windows Inno Setup script
+; Version 0.2.0 - Team Mode release
 #define MyAppName "CloseCrab-Unified"
-#define MyAppVersion "0.5.0"
-#define MyAppPublisher "CloseCrab"
+#define MyAppVersion "0.2.0"
+#define MyAppPublisher "Blitzball996"
+#define MyAppURL "https://github.com/Blitzball996/CloseCrab-Unified"
 #define MyAppExeName "closecrab-unified.exe"
 
 [Setup]
@@ -9,9 +12,13 @@ AppId={{CloseCrab-Unified-AI}}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
+AppPublisherURL={#MyAppURL}
+AppSupportURL={#MyAppURL}/issues
+AppUpdatesURL={#MyAppURL}/releases
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
+LicenseFile=LICENSE
 Compression=lzma2
 SolidCompression=yes
 OutputDir=installer
@@ -20,17 +27,30 @@ PrivilegesRequired=lowest
 WizardStyle=modern
 SetupIconFile=icons\closecrab.ico
 WizardSizePercent=130,120
+ChangesEnvironment=yes
 
 [Files]
+; Main executable and DLLs
 Source: "out\build\x64-release\closecrab-unified.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "out\build\x64-release\*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+; Configuration
 Source: "config\config.yaml"; DestDir: "{app}\config"; Flags: ignoreversion
+Source: "config\*"; DestDir: "{app}\config"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
+; Scripts
 Source: "download_model.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "run.bat"; DestDir: "{app}"; Flags: ignoreversion
+; Icons
 Source: "icons\closecrab.ico"; DestDir: "{app}\icons"; Flags: ignoreversion
+; Documentation
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.zh-CN.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs
+; Team Mode files (coordinator, services, knowledge sharing)
+Source: "src\coordinator\*"; DestDir: "{app}\coordinator"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
+Source: "src\services\*"; DestDir: "{app}\services"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
+Source: "src\knowledge\*"; DestDir: "{app}\knowledge"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
+; Skills and plugins
 Source: ".crab\skills\*"; DestDir: "{app}\.crab\skills"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
 
 [Icons]
@@ -41,8 +61,26 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\run.bat"; IconFilename: "{a
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "addtopath"; Description: "Add CloseCrab to PATH"; GroupDescription: "System Integration:"; Flags: unchecked
+
+[Registry]
+; Add to user PATH if task selected
+Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Tasks: addtopath; Check: NeedsAddPath(ExpandConstant('{app}'))
 
 [Code]
+// Check if directory is already in PATH
+function NeedsAddPath(Param: string): Boolean;
+var
+  OrigPath: string;
+begin
+  if not RegQueryStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', OrigPath) then
+  begin
+    Result := True;
+    exit;
+  end;
+  Result := Pos(';' + Param + ';', ';' + OrigPath + ';') = 0;
+end;
+
 var
   // Page 1: Provider mode
   ProviderPage: TWizardPage;
@@ -111,7 +149,8 @@ begin
     '' + #13#10 +
     'All modes include: 51 tools, 83 commands, 11 skills, multi-agent,' + #13#10 +
     'memory system, hooks, vim mode, voice output, and more.' + #13#10 +
-    'v0.5.0: reverse engineering, CUDA acceleration, 5-strategy' + #13#10 +
+    'v0.2.0: Team Mode, session coordination, shared knowledge,' + #13#10 +
+    'reverse engineering, CUDA acceleration, 5-strategy' + #13#10 +
     'compression, token budgets, error recovery, 14 service modules.';
 
   // ==========================================

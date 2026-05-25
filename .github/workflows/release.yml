@@ -1,0 +1,400 @@
+# =============================================================================
+# CloseCrab-Unified Release CI/CD
+# Builds cross-platform packages and uploads to GitHub Releases
+# Triggers on version tag push (v*)
+# =============================================================================
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  APP_NAME: closecrab-unified
+  BUILD_TYPE: Release
+
+permissions:
+  contents: write
+
+jobs:
+  # ===========================================================================
+  # Windows Build (MSVC + CUDA)
+  # ===========================================================================
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.16
+        id: cuda-toolkit
+        with:
+          cuda: '12.4.0'
+          method: 'network'
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: '2024.01.12'
+
+      - name: Install vcpkg dependencies
+        run: |
+          vcpkg install curl:x64-windows zlib:x64-windows
+
+      - name: Configure CMake
+        run: |
+          cmake -S . -B build `
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} `
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}/vcpkg_installed/x64-windows" `
+            -DBUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} -j $env:NUMBER_OF_PROCESSORS
+
+      - name: Package Windows installer
+        shell: pwsh
+        run: |
+          # Collect build artifacts for Inno Setup
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          $outDir = "build/${{ env.BUILD_TYPE }}"
+
+          # Copy config and assets alongside exe for Inno Setup
+          New-Item -ItemType Directory -Force -Path "out/build/x64-release"
+          Copy-Item "$outDir/${{ env.APP_NAME }}.exe" "out/build/x64-release/"
+          Copy-Item "$outDir/*.dll" "out/build/x64-release/" -ErrorAction SilentlyContinue
+
+          # Build installer with Inno Setup
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss /DMyAppVersion=$version
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: installer/CloseCrab-Unified_Setup.exe
+
+  # ===========================================================================
+  # macOS Build (Clang, universal binary)
+  # ===========================================================================
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          brew install cmake create-dmg curl
+
+      - name: Configure CMake (universal binary)
+        run: |
+          cmake -S . -B build-macos \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="11.0" \
+            -DUSE_CUDA=OFF \
+            -DUSE_ONNX_GPU=OFF \
+            -DBUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build build-macos --config ${{ env.BUILD_TYPE }} -j $(sysctl -n hw.ncpu)
+
+      - name: Create .app bundle and DMG
+        run: |
+          chmod +x scripts/build-macos.sh
+          # Use the build script for packaging (skip rebuild)
+          APP_VERSION="${{ github.ref_name }}"
+          APP_VERSION="${APP_VERSION#v}"
+
+          APP_BUNDLE="build-macos/CloseCrab-Unified.app"
+          mkdir -p "${APP_BUNDLE}/Contents/MacOS"
+          mkdir -p "${APP_BUNDLE}/Contents/Resources/config"
+
+          cp build-macos/${{ env.APP_NAME }} "${APP_BUNDLE}/Contents/MacOS/CloseCrab-Unified"
+          cp -r config/* "${APP_BUNDLE}/Contents/Resources/config/" 2>/dev/null || true
+
+          # Info.plist
+          cat > "${APP_BUNDLE}/Contents/Info.plist" << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleName</key><string>CloseCrab-Unified</string>
+              <key>CFBundleIdentifier</key><string>com.blitzball996.closecrab-unified</string>
+              <key>CFBundleVersion</key><string>${APP_VERSION}</string>
+              <key>CFBundleShortVersionString</key><string>${APP_VERSION}</string>
+              <key>CFBundleExecutable</key><string>CloseCrab-Unified</string>
+              <key>CFBundlePackageType</key><string>APPL</string>
+              <key>LSMinimumSystemVersion</key><string>11.0</string>
+              <key>NSHighResolutionCapable</key><true/>
+              <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
+          </dict>
+          </plist>
+          EOF
+
+          echo -n "APPLCCRB" > "${APP_BUNDLE}/Contents/PkgInfo"
+
+          # Ad-hoc sign
+          codesign --force --deep --sign - "${APP_BUNDLE}"
+
+          # Create DMG
+          DMG_NAME="CloseCrab-Unified-${APP_VERSION}-macOS-universal.dmg"
+          create-dmg \
+            --volname "CloseCrab-Unified ${APP_VERSION}" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "CloseCrab-Unified.app" 150 185 \
+            --app-drop-link 450 185 \
+            "build-macos/${DMG_NAME}" \
+            "${APP_BUNDLE}" || true
+
+          # Fallback if create-dmg fails
+          if [ ! -f "build-macos/${DMG_NAME}" ]; then
+            mkdir -p build-macos/dmg-staging
+            cp -r "${APP_BUNDLE}" build-macos/dmg-staging/
+            ln -s /Applications build-macos/dmg-staging/Applications
+            hdiutil create -volname "CloseCrab-Unified" \
+              -srcfolder build-macos/dmg-staging \
+              -ov -format UDZO \
+              "build-macos/${DMG_NAME}"
+          fi
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: build-macos/*.dmg
+
+  # ===========================================================================
+  # Linux Build (GCC, AppImage + .deb)
+  # ===========================================================================
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake \
+            libcurl4-openssl-dev zlib1g-dev \
+            libfuse2 file dpkg-dev \
+            imagemagick
+
+      - name: Configure CMake
+        run: |
+          cmake -S . -B build-linux \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DUSE_CUDA=OFF \
+            -DUSE_ONNX_GPU=OFF \
+            -DBUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build build-linux --config ${{ env.BUILD_TYPE }} -j $(nproc)
+
+      - name: Create AppImage
+        run: |
+          APP_VERSION="${{ github.ref_name }}"
+          APP_VERSION="${APP_VERSION#v}"
+          ARCH=$(uname -m)
+
+          # Prepare AppDir
+          APPDIR="build-linux/AppDir"
+          mkdir -p "${APPDIR}/usr/bin"
+          mkdir -p "${APPDIR}/usr/share/applications"
+          mkdir -p "${APPDIR}/usr/share/icons/hicolor/256x256/apps"
+          mkdir -p "${APPDIR}/usr/share/${{ env.APP_NAME }}/config"
+
+          cp "build-linux/${{ env.APP_NAME }}" "${APPDIR}/usr/bin/"
+          chmod +x "${APPDIR}/usr/bin/${{ env.APP_NAME }}"
+          cp -r config/* "${APPDIR}/usr/share/${{ env.APP_NAME }}/config/" 2>/dev/null || true
+
+          # Desktop file
+          cat > "${APPDIR}/usr/share/applications/${{ env.APP_NAME }}.desktop" << EOF
+          [Desktop Entry]
+          Type=Application
+          Name=CloseCrab-Unified
+          Comment=AI-powered coding assistant with Team Mode
+          Exec=${{ env.APP_NAME }}
+          Icon=${{ env.APP_NAME }}
+          Terminal=true
+          Categories=Development;IDE;
+          EOF
+          cp "${APPDIR}/usr/share/applications/${{ env.APP_NAME }}.desktop" "${APPDIR}/"
+
+          # Icon
+          if [ -f "icons/closecrab.ico" ]; then
+            convert "icons/closecrab.ico[0]" -resize 256x256 \
+              "${APPDIR}/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png"
+            cp "${APPDIR}/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png" "${APPDIR}/"
+          fi
+
+          # Download linuxdeploy
+          curl -fsSL -o linuxdeploy "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${ARCH}.AppImage"
+          chmod +x linuxdeploy
+
+          # Build AppImage
+          APPIMAGE_NAME="CloseCrab-Unified-${APP_VERSION}-${ARCH}.AppImage"
+          OUTPUT="build-linux/${APPIMAGE_NAME}" ./linuxdeploy \
+            --appdir "${APPDIR}" \
+            --output appimage || {
+              # Fallback: manual AppRun
+              cat > "${APPDIR}/AppRun" << 'APPRUN'
+          #!/bin/bash
+          SELF=$(readlink -f "$0")
+          HERE=${SELF%/*}
+          export PATH="${HERE}/usr/bin:${PATH}"
+          export LD_LIBRARY_PATH="${HERE}/usr/bin:${LD_LIBRARY_PATH}"
+          exec "${HERE}/usr/bin/closecrab-unified" "$@"
+          APPRUN
+              chmod +x "${APPDIR}/AppRun"
+              # Use appimagetool as fallback
+              curl -fsSL -o appimagetool "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-${ARCH}.AppImage"
+              chmod +x appimagetool
+              ./appimagetool "${APPDIR}" "build-linux/${APPIMAGE_NAME}" || true
+            }
+
+      - name: Create .deb package
+        run: |
+          APP_VERSION="${{ github.ref_name }}"
+          APP_VERSION="${APP_VERSION#v}"
+
+          DEB_DIR="build-linux/deb-package"
+          mkdir -p "${DEB_DIR}/DEBIAN"
+          mkdir -p "${DEB_DIR}/usr/bin"
+          mkdir -p "${DEB_DIR}/usr/share/applications"
+          mkdir -p "${DEB_DIR}/usr/share/icons/hicolor/256x256/apps"
+          mkdir -p "${DEB_DIR}/usr/share/${{ env.APP_NAME }}/config"
+          mkdir -p "${DEB_DIR}/usr/share/doc/${{ env.APP_NAME }}"
+
+          cp "build-linux/${{ env.APP_NAME }}" "${DEB_DIR}/usr/bin/"
+          chmod 755 "${DEB_DIR}/usr/bin/${{ env.APP_NAME }}"
+          cp -r config/* "${DEB_DIR}/usr/share/${{ env.APP_NAME }}/config/" 2>/dev/null || true
+          cp LICENSE "${DEB_DIR}/usr/share/doc/${{ env.APP_NAME }}/copyright" 2>/dev/null || true
+
+          # Desktop file
+          cat > "${DEB_DIR}/usr/share/applications/${{ env.APP_NAME }}.desktop" << EOF
+          [Desktop Entry]
+          Type=Application
+          Name=CloseCrab-Unified
+          Comment=AI-powered coding assistant with Team Mode
+          Exec=${{ env.APP_NAME }}
+          Icon=${{ env.APP_NAME }}
+          Terminal=true
+          Categories=Development;IDE;
+          EOF
+
+          # Icon
+          if [ -f "icons/closecrab.ico" ]; then
+            convert "icons/closecrab.ico[0]" -resize 256x256 \
+              "${DEB_DIR}/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png"
+          fi
+
+          INSTALLED_SIZE=$(du -sk "${DEB_DIR}" | cut -f1)
+
+          cat > "${DEB_DIR}/DEBIAN/control" << EOF
+          Package: ${{ env.APP_NAME }}
+          Version: ${APP_VERSION}
+          Section: devel
+          Priority: optional
+          Architecture: amd64
+          Installed-Size: ${INSTALLED_SIZE}
+          Maintainer: Blitzball996 <blitzball996@users.noreply.github.com>
+          Homepage: https://github.com/Blitzball996/CloseCrab-Unified
+          Description: AI-powered coding assistant with Team Mode
+           CloseCrab-Unified supports local LLM, Anthropic API, and OpenAI-compatible
+           endpoints. Features multi-agent coordination, shared knowledge, 51 tools,
+           83 commands, and CUDA acceleration (Windows only).
+          Depends: libc6 (>= 2.31), libstdc++6 (>= 10), libcurl4 (>= 7.68), zlib1g (>= 1.2.11)
+          EOF
+
+          dpkg-deb --build --root-owner-group "${DEB_DIR}" \
+            "build-linux/${{ env.APP_NAME }}_${APP_VERSION}_amd64.deb"
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            build-linux/*.AppImage
+            build-linux/*.deb
+
+  # ===========================================================================
+  # Create GitHub Release
+  # ===========================================================================
+  release:
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f | sort
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "CloseCrab-Unified ${{ github.ref_name }}"
+          body: |
+            ## CloseCrab-Unified ${{ github.ref_name }} - Team Mode Release
+
+            ### Downloads
+
+            | Platform | File | Notes |
+            |----------|------|-------|
+            | Windows | `CloseCrab-Unified_Setup.exe` | Installer with CUDA support |
+            | macOS | `*.dmg` | Universal binary (arm64 + x86_64) |
+            | Linux | `*.AppImage` | Portable, no install needed |
+            | Linux | `*.deb` | Debian/Ubuntu package |
+
+            ### What's New
+            - Team Mode: multi-agent session coordination
+            - Shared knowledge base across team members
+            - Session routing and coordinator service
+
+            ### Notes
+            - **Windows**: Includes CUDA acceleration (requires NVIDIA GPU)
+            - **macOS/Linux**: CPU-only build (no CUDA dependency)
+            - macOS requires macOS 11.0+ (Big Sur or later)
+            - Linux AppImage requires FUSE (`sudo apt install libfuse2`)
+
+            ### Checksums
+            ```
+            See checksums.txt in the release assets
+            ```
+          draft: false
+          prerelease: false
+          files: |
+            artifacts/windows-installer/*
+            artifacts/macos-dmg/*
+            artifacts/linux-packages/*
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          find . -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.AppImage" -o -name "*.deb" \) \
+            -exec sha256sum {} \; > ../checksums.txt
+          cat ../checksums.txt
+
+      - name: Upload checksums
+        uses: softprops/action-gh-release@v2
+        with:
+          files: checksums.txt
