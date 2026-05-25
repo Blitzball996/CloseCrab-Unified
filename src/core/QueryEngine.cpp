@@ -411,10 +411,13 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                 }
             }
 
-            // Context window limits: Claude 3.5 = 200K, Claude 3 = 200K, most proxies = 128K
-            // Auto-compact threshold: context_window - 13K buffer (matches Claude Code)
-            const int64_t AUTOCOMPACT_THRESHOLD = 80000;   // Conservative for proxy APIs
-            const int64_t BLOCKING_LIMIT = 120000;         // Hard stop — never send above this
+            // Context window limits depend on provider:
+            // - Anthropic direct: 200K tokens
+            // - Proxy APIs (yikoulian, etc.): often 32K-64K
+            // - OpenAI: 128K
+            // Use conservative defaults that work with ALL providers
+            const int64_t AUTOCOMPACT_THRESHOLD = 30000;   // Compact at 30K (safe for proxy APIs)
+            const int64_t BLOCKING_LIMIT = 50000;          // Hard stop at 50K
 
             if (estimatedTokens > AUTOCOMPACT_THRESHOLD) {
                 spdlog::warn("Pre-flight: {} tokens (>{} threshold), auto-compacting...",
@@ -532,30 +535,31 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                 static int overloadRetries = 0;
                 if (overloadRetries < 3) {
                     overloadRetries++;
-                    int waitSec = overloadRetries * 3;  // 3s, 6s, 9s
-                    spdlog::warn("503/overloaded (attempt {}), waiting {}s then compacting...",
-                                 overloadRetries, waitSec);
+                    int waitSec = overloadRetries * 2;  // 2s, 4s, 6s
+                    spdlog::warn("503/overloaded (attempt {}), compacting + truncating...",
+                                 overloadRetries);
                     if (callbacks.onError) {
-                        callbacks.onError("API overloaded, retrying in " +
-                            std::to_string(waitSec) + "s (attempt " +
+                        callbacks.onError("API overloaded, retrying (attempt " +
                             std::to_string(overloadRetries) + "/3)...");
                     }
                     std::this_thread::sleep_for(std::chrono::seconds(waitSec));
                     compactor_.forceCompact(messages_, config_.apiClient);
-                    // Aggressively truncate ALL old tool results (keep only last 4 messages intact)
-                    for (size_t i = 0; i + 4 < messages_.size(); i++) {
+                    lastKnownInputTokens_ = 0;
+                    lastKnownTokensAtMessageIndex_ = 0;
+                    // Aggressively truncate ALL tool results except last 2 messages
+                    for (size_t i = 0; i + 2 < messages_.size(); i++) {
                         for (auto& block : messages_[i].content) {
                             if (block.type == ContentBlockType::TOOL_RESULT) {
                                 std::string text = block.toolResult.is_string() ?
                                     block.toolResult.get<std::string>() : block.toolResult.dump();
-                                if (text.size() > 300) {
-                                    block.toolResult = nlohmann::json(text.substr(0, 200) +
-                                        "\n... [truncated after 503]");
+                                if (text.size() > 100) {
+                                    block.toolResult = nlohmann::json(
+                                        text.substr(0, 80) + "\n[truncated]");
                                 }
                             }
                         }
                     }
-                    continue; // Retry after wait
+                    continue;
                 }
                 overloadRetries = 0;
             }
