@@ -1,5 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
 
+# Fix compatibility with CMake 3.27+ (yaml-cpp and other deps use old cmake_minimum_required)
+if(POLICY CMP0148)
+    cmake_policy(SET CMP0148 OLD)
+endif()
+if(POLICY CMP0167)
+    cmake_policy(SET CMP0167 OLD)
+endif()
+set(CMAKE_POLICY_DEFAULT_CMP0148 OLD)
+
 project(CloseCrab-Unified VERSION 0.2.0 LANGUAGES C CXX)
 
 # ============================================
