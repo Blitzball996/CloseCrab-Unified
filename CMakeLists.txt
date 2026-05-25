@@ -75,25 +75,35 @@ find_package(ZLIB REQUIRED)
 include(FetchContent)
 
 # spdlog
-FetchContent_Declare(spdlog
-    GIT_REPOSITORY https://github.com/gabime/spdlog.git
-    GIT_TAG v1.14.1)
-FetchContent_MakeAvailable(spdlog)
+# spdlog — prefer system install, fallback to FetchContent
+find_package(spdlog QUIET)
+if(NOT spdlog_FOUND)
+    FetchContent_Declare(spdlog
+        GIT_REPOSITORY https://github.com/gabime/spdlog.git
+        GIT_TAG v1.14.1)
+    FetchContent_MakeAvailable(spdlog)
+endif()
 
-# json
-FetchContent_Declare(json
-    GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG v3.11.3)
-FetchContent_MakeAvailable(json)
+# json — prefer system install
+find_package(nlohmann_json QUIET)
+if(NOT nlohmann_json_FOUND)
+    FetchContent_Declare(json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG v3.11.3)
+    FetchContent_MakeAvailable(json)
+endif()
 
-# yaml-cpp
-set(YAML_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(yaml-cpp
-    GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
-    GIT_TAG 0.8.0)
-set(CMAKE_POLICY_DEFAULT_CMP0148 OLD CACHE STRING "" FORCE)
-FetchContent_MakeAvailable(yaml-cpp)
+# yaml-cpp — prefer system install
+find_package(yaml-cpp QUIET)
+if(NOT yaml-cpp_FOUND)
+    set(YAML_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(yaml-cpp
+        GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
+        GIT_TAG 0.8.0)
+    set(CMAKE_POLICY_DEFAULT_CMP0148 OLD CACHE STRING "" FORCE)
+    FetchContent_MakeAvailable(yaml-cpp)
+endif()
 
 # CLI11
 FetchContent_Declare(CLI11
