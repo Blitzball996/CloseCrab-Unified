@@ -371,9 +371,13 @@ int main(int argc, char* argv[]) {
     if (provider == "anthropic") {
         if (apiBaseUrl.empty()) apiBaseUrl = "https://api.anthropic.com";
         if (apiModel.empty()) apiModel = "claude-sonnet-4-20250514";
-        apiClient = std::make_unique<RemoteAPIClient>(apiKey, apiBaseUrl, apiModel);
+        auto remote = std::make_unique<RemoteAPIClient>(apiKey, apiBaseUrl, apiModel);
+        // Set fallback model for 503/529 auto-downgrade
+        std::string fallback = config.getString("api.fallback_model", "claude-sonnet-4-20250514");
+        if (fallback != apiModel) remote->setFallbackModel(fallback);
         appState.currentModel = apiModel;
-        spdlog::info("Using Anthropic API: {} ({})", apiBaseUrl, apiModel);
+        spdlog::info("Using Anthropic API: {} ({}, fallback={})", apiBaseUrl, apiModel, fallback);
+        apiClient = std::move(remote);
     } else if (provider == "openai" || provider == "lmstudio" || provider == "siliconflow") {
         if (apiBaseUrl.empty()) apiBaseUrl = "http://127.0.0.1:1234";
         if (apiModel.empty()) apiModel = "default";

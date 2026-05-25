@@ -24,6 +24,13 @@ api:
   model: ""
 
 # ============================================
+# HTTP Proxy (optional)
+# Also reads from env: CLOSECRAB_PROXY, https_proxy, HTTPS_PROXY
+# Example: "http://127.0.0.1:7897"
+# ============================================
+proxy: ""
+
+# ============================================
 # Local LLM Configuration
 # ============================================
 llm:

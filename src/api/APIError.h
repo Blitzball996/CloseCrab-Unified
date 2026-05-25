@@ -66,7 +66,7 @@ inline bool isRetryable(APIErrorType type) {
 // Retry helper: calls fn up to maxRetries times with exponential backoff
 // fn should return true on success, throw APIError on failure
 template<typename Fn>
-void withRetry(Fn fn, int maxRetries = 3) {
+void withRetry(Fn fn, int maxRetries = 5) {
     int attempt = 0;
     while (true) {
         try {
@@ -77,14 +77,15 @@ void withRetry(Fn fn, int maxRetries = 3) {
             if (!isRetryable(e.type) || attempt > maxRetries) {
                 throw; // Non-retryable or exhausted retries
             }
-            // Exponential backoff: 1s, 2s, 4s
-            int delayMs = 1000 * (1 << (attempt - 1));
+            // Exponential backoff: 2s, 4s, 8s, 16s, 32s
+            int delayMs = 2000 * (1 << (attempt - 1));
             if (e.type == APIErrorType::RATE_LIMIT) {
-                delayMs = std::max(delayMs, 2000); // Rate limit: at least 2s
+                delayMs = std::max(delayMs, 5000);
             }
-            if (e.type == APIErrorType::OVERLOADED) {
-                delayMs = std::max(delayMs, 5000); // Overloaded: at least 5s
+            if (e.type == APIErrorType::OVERLOADED || e.type == APIErrorType::SERVER_ERROR) {
+                delayMs = std::max(delayMs, 8000);
             }
+            delayMs = std::min(delayMs, 60000); // Cap at 60s
             spdlog::warn("{} (attempt {}/{}), retrying in {}ms...",
                          e.what(), attempt, maxRetries, delayMs);
             std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));

@@ -26,10 +26,13 @@ public:
     bool supportsToolUse() const override { return true; }
     bool supportsThinking() const override { return true; }
 
+    void setFallbackModel(const std::string& model) { fallbackModel_ = model; }
+
 private:
     nlohmann::json buildRequestBody(const std::vector<Message>& messages,
                                      const std::string& systemPrompt,
-                                     const ModelConfig& config) const;
+                                     const ModelConfig& config,
+                                     const std::string& modelOverride = "") const;
     void handleSSEEvent(const StreamParser::SSEEvent& event, StreamCallback& callback,
                         std::string& currentToolName, std::string& currentToolId,
                         std::string& currentToolJson) const;
@@ -37,6 +40,7 @@ private:
     std::string apiKey_;
     std::string baseUrl_;
     std::string model_;
+    std::string fallbackModel_;
 };
 
 } // namespace closecrab

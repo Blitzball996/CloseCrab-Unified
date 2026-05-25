@@ -1,9 +1,31 @@
 #include "RemoteAPIClient.h"
 #include "APIError.h"
+#include "../config/Config.h"
 #include <curl/curl.h>
 #include <spdlog/spdlog.h>
 #include <fstream>
 #include <cstdlib>
+#include <mutex>
+#include <condition_variable>
+
+// Global API request semaphore: limits concurrent requests to avoid overwhelming proxy
+static std::mutex g_apiMutex;
+static std::condition_variable g_apiCv;
+static int g_activeRequests = 0;
+static constexpr int MAX_CONCURRENT_REQUESTS = 1;
+
+struct APIRequestGuard {
+    APIRequestGuard() {
+        std::unique_lock<std::mutex> lock(g_apiMutex);
+        g_apiCv.wait(lock, [] { return g_activeRequests < MAX_CONCURRENT_REQUESTS; });
+        g_activeRequests++;
+    }
+    ~APIRequestGuard() {
+        std::lock_guard<std::mutex> lock(g_apiMutex);
+        g_activeRequests--;
+        g_apiCv.notify_one();
+    }
+};
 
 namespace closecrab {
 
@@ -15,10 +37,11 @@ RemoteAPIClient::RemoteAPIClient(const std::string& apiKey,
 nlohmann::json RemoteAPIClient::buildRequestBody(
     const std::vector<Message>& messages,
     const std::string& systemPrompt,
-    const ModelConfig& config
+    const ModelConfig& config,
+    const std::string& modelOverride
 ) const {
     nlohmann::json body;
-    body["model"] = model_;
+    body["model"] = modelOverride.empty() ? model_ : modelOverride;
     body["max_tokens"] = config.maxTokens;
     body["stream"] = config.stream;
 
@@ -173,6 +196,22 @@ void RemoteAPIClient::handleSSEEvent(
 
 } // namespace closecrab (close before CURL calls)
 
+// Resolve proxy URL: env vars > config.yaml
+// Priority: CLOSECRAB_PROXY > https_proxy > HTTPS_PROXY > http_proxy > HTTP_PROXY > config.yaml proxy
+static std::string resolveProxy() {
+    const char* envVars[] = {
+        "CLOSECRAB_PROXY", "https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY"
+    };
+    for (const char* var : envVars) {
+        const char* val = std::getenv(var);
+        if (val && val[0] != '\0') return val;
+    }
+    // Fallback: read from config.yaml
+    std::string cfgProxy = Config::getInstance().getString("proxy", "");
+    if (!cfgProxy.empty()) return cfgProxy;
+    return "";
+}
+
 // Free function: perform CURL SSE request (outside namespace to avoid macro issues)
 // Throws closecrab::APIError on retryable failures
 static void performCurlSSE(
@@ -191,7 +230,7 @@ static void performCurlSSE(
     headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
     headers = curl_slist_append(headers, "content-type: application/json");
     headers = curl_slist_append(headers, "accept: text/event-stream");
-    headers = curl_slist_append(headers, "anthropic-beta: prompt-caching-2024-07-31,prompt-caching-scope-2026-01-05,token-efficient-tools-2026-03-28");
+    headers = curl_slist_append(headers, "anthropic-beta: prompt-caching-2024-07-31");
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -201,13 +240,20 @@ static void performCurlSSE(
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curlStreamCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &curlCtx);
 
+    // Proxy support
+    std::string proxy = resolveProxy();
+    if (!proxy.empty()) {
+        curl_easy_setopt(curl, CURLOPT_PROXY, proxy.c_str());
+        spdlog::debug("Using proxy: {}", proxy);
+    }
+
     // SSL
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
     curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
 
     // Timeouts
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);       // 5 min overall timeout
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
 
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
@@ -223,7 +269,6 @@ static void performCurlSSE(
 
     if (res != CURLE_OK) {
         std::string errMsg = std::string(curl_easy_strerror(res));
-        // Network errors are retryable
         throw closecrab::APIError(closecrab::APIErrorType::NETWORK_ERROR,
                                    static_cast<int>(httpCode), errMsg);
     }
@@ -245,51 +290,75 @@ void RemoteAPIClient::streamChat(
     const ModelConfig& config,
     StreamCallback callback
 ) {
-    // Fast-fail: no API key means no valid provider configured
     if (apiKey_.empty()) {
         throw APIError(APIErrorType::AUTH_ERROR, 0,
             "No API key configured. Use --api-key or set ANTHROPIC_AUTH_TOKEN.");
     }
 
-    auto body = buildRequestBody(messages, systemPrompt, config);
     std::string url = baseUrl_ + "/v1/messages";
-    std::string bodyStr = body.dump();
+    constexpr int MAX_RETRIES = 10;
+    constexpr int FALLBACK_THRESHOLD = 3;
+    int consecutive503 = 0;
+    std::string activeModel = model_;
 
-    spdlog::info("API request: {} bytes, {} tools, system_prompt={} chars, url={}",
-                 bodyStr.size(),
-                 config.tools.is_array() ? config.tools.size() : 0,
-                 systemPrompt.size(), url);
+    for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        auto body = buildRequestBody(messages, systemPrompt, config, activeModel);
+        std::string bodyStr = body.dump();
 
-    // Debug: dump request body to file if CLOSECRAB_DEBUG is set
-    if (const char* debugDir = std::getenv("CLOSECRAB_DEBUG_DIR")) {
-        std::string debugPath = std::string(debugDir) + "/last_request.json";
-        std::ofstream dbg(debugPath);
-        if (dbg.is_open()) { dbg << body.dump(2); dbg.close(); }
-    }
-
-    // Debug: dump first 500 chars of body
-    spdlog::debug("Request body (first 500): {}", bodyStr.substr(0, 500));
-
-    withRetry([&]() {
-        std::string currentToolName, currentToolId, currentToolJson;
-
-        StreamParser parser([&](const StreamParser::SSEEvent& event) {
-            handleSSEEvent(event, callback, currentToolName, currentToolId, currentToolJson);
-        });
-
-        CurlStreamCtx curlCtx{&parser};
-        try {
-            performCurlSSE(url, bodyStr, apiKey_, curlCtx);
-        } catch (const APIError& e) {
-            // Re-throw all errors — let withRetry handle retries with full tools
-            throw;
+        if (attempt == 1) {
+            spdlog::info("API request: {} bytes, {} tools, system_prompt={} chars, model={}, url={}",
+                         bodyStr.size(),
+                         config.tools.is_array() ? config.tools.size() : 0,
+                         systemPrompt.size(), activeModel, url);
         }
-        parser.finish();
-    }, 3);
+
+        if (const char* debugDir = std::getenv("CLOSECRAB_DEBUG_DIR")) {
+            std::string debugPath = std::string(debugDir) + "/last_request.json";
+            std::ofstream dbg(debugPath);
+            if (dbg.is_open()) { dbg << body.dump(2); dbg.close(); }
+        }
+
+        try {
+            std::string currentToolName, currentToolId, currentToolJson;
+            StreamParser parser([&](const StreamParser::SSEEvent& event) {
+                handleSSEEvent(event, callback, currentToolName, currentToolId, currentToolJson);
+            });
+            CurlStreamCtx curlCtx{&parser};
+            {
+                APIRequestGuard guard; // Serialize API requests
+                performCurlSSE(url, bodyStr, apiKey_, curlCtx);
+            }
+            parser.finish();
+            return; // Success
+        } catch (const APIError& e) {
+            if (!isRetryable(e.type)) throw;
+
+            consecutive503++;
+
+            // Model fallback: after N consecutive 503/529, switch to fallback model
+            if (consecutive503 >= FALLBACK_THRESHOLD && !fallbackModel_.empty() && activeModel != fallbackModel_) {
+                spdlog::warn("Model fallback triggered after {} consecutive errors: {} -> {}",
+                             consecutive503, activeModel, fallbackModel_);
+                activeModel = fallbackModel_;
+                consecutive503 = 0;
+            }
+
+            if (attempt >= MAX_RETRIES) throw;
+
+            // Exponential backoff with jitter: 3s, 6s, 12s, 24s, 32s...
+            int baseDelay = 3000 * (1 << (attempt - 1));
+            if (baseDelay > 32000) baseDelay = 32000;
+            int jitter = rand() % (baseDelay / 4 + 1);
+            int delayMs = baseDelay + jitter;
+
+            spdlog::warn("{} (attempt {}/{}), model={}, retrying in {}ms...",
+                         e.what(), attempt, MAX_RETRIES, activeModel, delayMs);
+            std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+        }
+    }
 }
 
 int RemoteAPIClient::countTokens(const std::string& text) const {
-    // Rough estimation: ~4 chars per token for English, ~2 for CJK
     return static_cast<int>(text.size() / 3);
 }
 
