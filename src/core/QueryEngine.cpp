@@ -146,21 +146,26 @@ ModelConfig QueryEngine::buildModelConfig() const {
                 }
             }
         } else {
-            // Main engine: send tools with empty schemas (to stay within proxy API limits)
-            // Encode required params into description so the model knows what to pass
+            // Main engine: only send CORE tools to stay within proxy limits
+            // JackProAi sends ~15 core tools, not all 49
+            static const std::set<std::string> CORE_TOOLS = {
+                "Read", "Write", "Edit", "Glob", "Grep", "Bash",
+                "AskUserQuestion", "Agent", "WebSearch", "WebFetch",
+                "TodoWrite", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList",
+                "SendMessage", "EnterPlanMode", "ExitPlanMode"
+            };
             bool planMode = config_.appState && config_.appState->planMode;
             for (Tool* t : config_.toolRegistry->getAllTools()) {
                 if (!t || !t->isEnabled() || t->isHidden()) continue;
                 if (planMode && !t->isReadOnly()) continue;
+                if (CORE_TOOLS.find(t->getName()) == CORE_TOOLS.end()) continue;
                 nlohmann::json def;
                 def["name"] = t->getName();
 
-                // Build description with parameter hints from schema
                 std::string desc = t->getDescription();
                 auto schema = t->getInputSchema();
                 if (schema.contains("properties") && schema["properties"].is_object()) {
                     desc += " Params:";
-                    std::string reqStr;
                     std::vector<std::string> requiredFields;
                     if (schema.contains("required") && schema["required"].is_array()) {
                         for (const auto& r : schema["required"]) {

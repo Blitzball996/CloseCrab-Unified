@@ -47,11 +47,10 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
 
     if (config.temperature >= 0 && config.tools.empty()) body["temperature"] = config.temperature;
 
-    // System prompt — use array format with cache_control for prompt caching
+    // System prompt
     if (!systemPrompt.empty()) {
         body["system"] = nlohmann::json::array({
-            {{"type", "text"}, {"text", systemPrompt},
-             {"cache_control", {{"type", "ephemeral"}}}}
+            {{"type", "text"}, {"text", systemPrompt}}
         });
     }
 
@@ -60,30 +59,11 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
     for (const auto& msg : messages) {
         msgs.push_back(msg.toApiJson());
     }
-
-    // Add cache_control to last user message for conversation prefix caching
-    if (!msgs.empty()) {
-        for (int i = (int)msgs.size() - 1; i >= 0; i--) {
-            if (msgs[i].value("role", "") == "user") {
-                // Add cache_control to the last content block of this message
-                if (msgs[i].contains("content") && msgs[i]["content"].is_array() && !msgs[i]["content"].empty()) {
-                    msgs[i]["content"].back()["cache_control"] = {{"type", "ephemeral"}};
-                }
-                break;
-            }
-        }
-    }
-
     body["messages"] = std::move(msgs);
 
-    // Tools — add cache_control on last tool for prompt caching
+    // Tools
     if (!config.tools.empty() && config.tools.is_array() && config.tools.size() > 0) {
-        nlohmann::json tools = config.tools;
-        // Add cache_control to last tool to enable caching of entire tools block
-        if (!tools.empty()) {
-            tools.back()["cache_control"] = {{"type", "ephemeral"}};
-        }
-        body["tools"] = tools;
+        body["tools"] = config.tools;
     }
 
     // Thinking
@@ -230,7 +210,6 @@ static void performCurlSSE(
     headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
     headers = curl_slist_append(headers, "content-type: application/json");
     headers = curl_slist_append(headers, "accept: text/event-stream");
-    headers = curl_slist_append(headers, "anthropic-beta: prompt-caching-2024-07-31");
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
