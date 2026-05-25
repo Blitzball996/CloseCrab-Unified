@@ -1,0 +1,12 @@
+G:\CMakePJ\CloseCrab-Unified\extensions\visualstudio\CloseCrab\obj\Release\net472\CloseCrab.csproj.AssemblyReference.cache
+G:\CMakePJ\CloseCrab-Unified\extensions\visualstudio\CloseCrab\obj\Release\net472\CloseCrab.GeneratedMSBuildEditorConfig.editorconfig
+G:\CMakePJ\CloseCrab-Unified\extensions\visualstudio\CloseCrab\obj\Release\net472\CloseCrab.AssemblyInfoInputs.cache
+G:\CMakePJ\CloseCrab-Unified\extensions\visualstudio\CloseCrab\obj\Release\net472\CloseCrab.AssemblyInfo.cs
+G:\CMakePJ\CloseCrab-Unified\extensions\visualstudio\CloseCrab\obj\Release\net472\CloseCrab.csproj.CoreCompileInputs.cache
+G:\CMakePJ\CloseCrab-Unified\extensions\visualstudio\CloseCrab\obj\Release\net472\CloseCrab.sourcelink.json
+G:\CMakePJ\CloseCrab-Unified\extensions\visualstudio\CloseCrab\bin\Release\net472\CloseCrab.dll
+G:\CMakePJ\CloseCrab-Unified\extensions\visualstudio\CloseCrab\bin\Release\net472\CloseCrab.pdb
+G:\CMakePJ\CloseCrab-Unified\extensions\visualstudio\CloseCrab\bin\Release\net472\Newtonsoft.Json.dll
+G:\CMakePJ\CloseCrab-Unified\extensions\visualstudio\CloseCrab\obj\Release\net472\CloseCrab.csproj.Up2Date
+G:\CMakePJ\CloseCrab-Unified\extensions\visualstudio\CloseCrab\obj\Release\net472\CloseCrab.dll
+G:\CMakePJ\CloseCrab-Unified\extensions\visualstudio\CloseCrab\obj\Release\net472\CloseCrab.pdb
