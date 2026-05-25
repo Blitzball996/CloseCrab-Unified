@@ -97,6 +97,10 @@ private:
     HistoryCompactor compactor_;
     BudgetTracker budgetTracker_;
 
+    // Real token usage from last API response (for accurate pre-flight checks)
+    int64_t lastKnownInputTokens_ = 0;
+    int lastKnownTokensAtMessageIndex_ = 0;
+
     // Cached system prompt (rebuilt only when needed)
     mutable std::string cachedSystemPrompt_;
     mutable bool systemPromptDirty_ = true;

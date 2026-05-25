@@ -377,24 +377,52 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
             compactor_.compactIfNeeded(messages_, config_.apiClient);
         }
 
-        // Pre-flight size check: estimate total request size and compact if too large
-        // This prevents 503 errors from oversized requests (especially after large tool results)
-        // Use conservative estimate: chars/3 (not chars/4) to account for CJK and code tokens
+        // Pre-flight size check: hybrid token estimation (like Claude Code/JackProAI)
+        // Strategy: use last known real input_tokens from API + rough estimate for new messages
         {
-            int estimatedTokens = 0;
-            for (const auto& msg : messages_) {
-                for (const auto& block : msg.content) {
-                    if (block.type == ContentBlockType::TEXT || block.type == ContentBlockType::TOOL_RESULT) {
-                        std::string text = block.text.empty() ?
-                            (block.toolResult.is_string() ? block.toolResult.get<std::string>() : block.toolResult.dump()) : block.text;
-                        estimatedTokens += (int)text.size() / 3;  // Conservative: 3 chars per token
+            int64_t estimatedTokens = 0;
+
+            if (lastKnownInputTokens_ > 0 && lastKnownTokensAtMessageIndex_ > 0) {
+                // Hybrid: real count + estimate for messages added since last API call
+                estimatedTokens = lastKnownInputTokens_;
+                for (size_t i = lastKnownTokensAtMessageIndex_; i < messages_.size(); i++) {
+                    for (const auto& block : messages_[i].content) {
+                        if (block.type == ContentBlockType::TEXT || block.type == ContentBlockType::TOOL_RESULT) {
+                            std::string text = block.text.empty() ?
+                                (block.toolResult.is_string() ? block.toolResult.get<std::string>() : block.toolResult.dump()) : block.text;
+                            estimatedTokens += (int64_t)text.size() / 4;  // Standard ratio for new messages
+                        } else if (block.type == ContentBlockType::TOOL_USE) {
+                            estimatedTokens += (int64_t)(block.toolName.size() + block.toolInput.dump().size()) / 4;
+                        }
+                    }
+                }
+            } else {
+                // No real data yet: conservative full estimate
+                for (const auto& msg : messages_) {
+                    for (const auto& block : msg.content) {
+                        if (block.type == ContentBlockType::TEXT || block.type == ContentBlockType::TOOL_RESULT) {
+                            std::string text = block.text.empty() ?
+                                (block.toolResult.is_string() ? block.toolResult.get<std::string>() : block.toolResult.dump()) : block.text;
+                            estimatedTokens += (int64_t)text.size() / 3;
+                        } else if (block.type == ContentBlockType::TOOL_USE) {
+                            estimatedTokens += (int64_t)(block.toolName.size() + block.toolInput.dump().size()) / 3;
+                        }
                     }
                 }
             }
-            // Compact aggressively: threshold at 80K tokens (well below 128K/200K context limits)
-            if (estimatedTokens > 80000) {
-                spdlog::warn("Pre-flight: estimated {} tokens (>80K), forcing compaction", estimatedTokens);
+
+            // Context window limits: Claude 3.5 = 200K, Claude 3 = 200K, most proxies = 128K
+            // Auto-compact threshold: context_window - 13K buffer (matches Claude Code)
+            const int64_t AUTOCOMPACT_THRESHOLD = 80000;   // Conservative for proxy APIs
+            const int64_t BLOCKING_LIMIT = 120000;         // Hard stop — never send above this
+
+            if (estimatedTokens > AUTOCOMPACT_THRESHOLD) {
+                spdlog::warn("Pre-flight: {} tokens (>{} threshold), auto-compacting...",
+                             estimatedTokens, AUTOCOMPACT_THRESHOLD);
                 compactor_.forceCompact(messages_, config_.apiClient);
+                lastKnownInputTokens_ = 0;  // Reset — compaction invalidates old count
+                lastKnownTokensAtMessageIndex_ = 0;
+
                 // Recalculate after compaction
                 estimatedTokens = 0;
                 for (const auto& msg : messages_) {
@@ -402,22 +430,23 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                         if (block.type == ContentBlockType::TEXT || block.type == ContentBlockType::TOOL_RESULT) {
                             std::string text = block.text.empty() ?
                                 (block.toolResult.is_string() ? block.toolResult.get<std::string>() : block.toolResult.dump()) : block.text;
-                            estimatedTokens += (int)text.size() / 3;
+                            estimatedTokens += (int64_t)text.size() / 3;
                         }
                     }
                 }
             }
-            // If still too large after compaction, aggressively truncate old tool results
-            if (estimatedTokens > 100000) {
-                spdlog::warn("Still {} tokens after compact, truncating old tool results", estimatedTokens);
-                for (size_t i = 0; i < messages_.size() - 4; i++) {
+
+            // Blocking limit: aggressively truncate if still too large
+            if (estimatedTokens > BLOCKING_LIMIT) {
+                spdlog::warn("BLOCKING: {} tokens (>{} limit), truncating all old tool results",
+                             estimatedTokens, BLOCKING_LIMIT);
+                for (size_t i = 0; i + 4 < messages_.size(); i++) {
                     for (auto& block : messages_[i].content) {
                         if (block.type == ContentBlockType::TOOL_RESULT) {
                             std::string text = block.toolResult.is_string() ?
                                 block.toolResult.get<std::string>() : block.toolResult.dump();
-                            if (text.size() > 500) {
-                                block.toolResult = nlohmann::json(text.substr(0, 300) +
-                                    "\n... [truncated, " + std::to_string(text.size()) + " chars total]");
+                            if (text.size() > 200) {
+                                block.toolResult = nlohmann::json(text.substr(0, 150) + "\n[truncated]");
                             }
                         }
                     }
@@ -471,6 +500,11 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                         break;
 
                     case StreamEvent::EVT_USAGE_UPDATE:
+                        // Store real token count for accurate pre-flight checks (like JackProAI)
+                        if (event.usage.inputTokens > 0) {
+                            lastKnownInputTokens_ = event.usage.inputTokens;
+                            lastKnownTokensAtMessageIndex_ = (int)messages_.size();
+                        }
                         if (config_.appState) {
                             config_.appState->trackUsage(
                                 config_.apiClient->getModelName(),
