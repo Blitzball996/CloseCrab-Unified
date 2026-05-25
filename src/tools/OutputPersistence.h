@@ -8,7 +8,7 @@ namespace closecrab {
 
 class OutputPersistence {
 public:
-    static constexpr size_t MAX_INLINE_SIZE = 30000;
+    static constexpr size_t MAX_INLINE_SIZE = 10000;  // ~2500 tokens — safe for proxy APIs
 
     /// If output exceeds MAX_INLINE_SIZE, save to disk and return a preview.
     /// On failure, returns the original output unchanged.
