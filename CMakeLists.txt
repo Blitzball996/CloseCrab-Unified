@@ -29,10 +29,13 @@ if(USE_CUDA)
 endif()
 
 # ============================================
-# vcpkg dependencies
+# vcpkg dependencies (CURL, ZLIB)
 # ============================================
 
-find_package(CURL CONFIG REQUIRED)
+find_package(CURL CONFIG QUIET)
+if(NOT CURL_FOUND)
+    find_package(CURL REQUIRED)
+endif()
 find_package(ZLIB REQUIRED)
 
 # ============================================

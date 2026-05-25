@@ -5,115 +5,50 @@ on:
     tags:
       - 'v*'
 
-env:
-  APP_NAME: closecrab-unified
-  BUILD_TYPE: Release
-
 permissions:
   contents: write
 
 jobs:
   create-release:
     runs-on: ubuntu-latest
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
-      version: ${{ steps.get_version.outputs.version }}
     steps:
-      - name: Get version from tag
-        id: get_version
-        run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Create Release
-        id: create_release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: "CloseCrab ${{ steps.get_version.outputs.version }}"
+          name: "CloseCrab ${{ github.ref_name }}"
           body: |
-            ## CloseCrab ${{ steps.get_version.outputs.version }}
+            ## CloseCrab ${{ github.ref_name }} — Team Mode Release
 
             ### Downloads
+
             | Platform | File | Notes |
             |----------|------|-------|
-            | Windows | `CloseCrab-Unified_Setup.exe` | Includes CUDA GPU acceleration |
-            | macOS | `CloseCrab-Unified.dmg` | Universal binary (Intel + Apple Silicon) |
-            | Linux | `CloseCrab-Unified.AppImage` | CPU-only, portable |
+            | Windows | `CloseCrab-Unified_Setup.exe` | CUDA GPU acceleration, Inno Setup installer |
+            | macOS | `CloseCrab-Unified.dmg` | Universal binary (Intel + Apple Silicon), CPU-only |
+            | Linux | `CloseCrab-Unified-linux-x86_64.tar.gz` | Portable binary, CPU-only |
 
-            ### What's New
-            - Team Mode: multi-client parallel inference with gamification
-            - Dashboard: Apple-style GUI control panel
-            - Shared Knowledge: team Q&A search across sessions
-            - Cross-platform packaging
+            ### What's New in v0.2.0
+            - **Team Mode**: Multiple developers connect to one server with independent conversations
+            - **Parallel Inference**: True parallel decode (API: concurrent HTTP, Local: llama.cpp n_parallel)
+            - **Gamification**: Leaderboard, achievements, coding stats
+            - **Dashboard**: Apple-style GUI to start/stop backend from your phone
+            - **Shared Knowledge**: Team Q&A indexed and searchable across sessions
+            - **Session Persistence**: Save and restore collaboration sessions
 
             ### Quick Start
             ```bash
             # Windows: download and run the installer
-            # macOS: mount DMG, drag to Applications
-            # Linux: chmod +x CloseCrab-Unified.AppImage && ./CloseCrab-Unified.AppImage
+            # macOS: mount DMG, drag to Applications, run from terminal
+            # Linux: tar xzf CloseCrab-Unified-linux-x86_64.tar.gz && ./closecrab-unified
             ```
 
-            See [User Guide](USER_GUIDE_EN.md) for detailed instructions.
+            ### Links
+            - [User Guide (English)](USER_GUIDE_EN.md)
+            - [用户指南 (中文)](USER_GUIDE.md)
+            - [Mobile Web UI](https://github.com/Blitzball996/CloseCrab-Web)
           draft: false
           prerelease: false
-
-  build-linux:
-    needs: create-release
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake libcurl4-openssl-dev zlib1g-dev libsqlite3-dev
-
-      - name: Configure CMake (CPU-only)
-        run: |
-          cmake -S . -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DUSE_CUDA=OFF \
-            -DUSE_ONNX_GPU=OFF \
-            -DBUILD_TESTS=OFF
-
-      - name: Build
-        run: cmake --build build --config Release -j $(nproc)
-
-      - name: Package AppImage
-        run: |
-          mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
-          cp build/closecrab-unified AppDir/usr/bin/
-          cp -r config AppDir/usr/share/closecrab/ 2>/dev/null || true
-          cat > AppDir/usr/share/applications/closecrab.desktop << 'DESKTOP'
-          [Desktop Entry]
-          Name=CloseCrab
-          Exec=closecrab-unified
-          Icon=closecrab
-          Type=Application
-          Categories=Development;
-          DESKTOP
-          cp icons/icon.png AppDir/usr/share/icons/hicolor/256x256/apps/closecrab.png 2>/dev/null || true
-          # Download linuxdeploy
-          wget -q "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
-          chmod +x linuxdeploy-x86_64.AppImage
-          ./linuxdeploy-x86_64.AppImage --appdir AppDir --output appimage || true
-          # Fallback: just tar the binary
-          if [ ! -f CloseCrab*.AppImage ]; then
-            tar czf CloseCrab-Unified-linux-x86_64.tar.gz -C build closecrab-unified
-          fi
-
-      - name: Upload Linux artifact
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          files: |
-            CloseCrab*.AppImage
-            CloseCrab-Unified-linux-x86_64.tar.gz
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # Windows and macOS builds require local packaging due to CUDA/ONNX/FAISS dependencies.
-  # Upload manually: gh release upload v0.2.0 CloseCrab-Unified_Setup.exe CloseCrab-Unified.dmg
