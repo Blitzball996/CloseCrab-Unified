@@ -16,10 +16,17 @@ if(MSVC)
 endif()
 
 # ============================================
-# CUDA
+# CUDA (optional — disabled on macOS/Linux CI)
 # ============================================
 
-find_package(CUDAToolkit REQUIRED)
+option(USE_CUDA "Enable CUDA GPU acceleration" ON)
+if(USE_CUDA)
+    find_package(CUDAToolkit QUIET)
+    if(NOT CUDAToolkit_FOUND)
+        message(WARNING "CUDA not found — building without GPU acceleration")
+        set(USE_CUDA OFF)
+    endif()
+endif()
 
 # ============================================
 # vcpkg dependencies
@@ -135,8 +142,12 @@ set_target_properties(faiss PROPERTIES
 )
 target_link_libraries(faiss INTERFACE
     "${FAISS_DIR}/lib/openblas.lib"
-    CUDA::cudart CUDA::cublas CUDA::cufft CUDA::curand
 )
+if(USE_CUDA)
+    target_link_libraries(faiss INTERFACE
+        CUDA::cudart CUDA::cublas CUDA::cufft CUDA::curand
+    )
+endif()
 
 # ============================================
 # llama.cpp (pre-built)
