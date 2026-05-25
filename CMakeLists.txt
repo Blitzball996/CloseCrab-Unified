@@ -79,9 +79,11 @@ FetchContent_MakeAvailable(json)
 
 # yaml-cpp
 set(YAML_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(yaml-cpp
     GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
     GIT_TAG 0.8.0)
+set(CMAKE_POLICY_DEFAULT_CMP0148 OLD CACHE STRING "" FORCE)
 FetchContent_MakeAvailable(yaml-cpp)
 
 # CLI11
