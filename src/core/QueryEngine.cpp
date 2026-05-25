@@ -379,6 +379,7 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
 
         // Pre-flight size check: estimate total request size and compact if too large
         // This prevents 503 errors from oversized requests (especially after large tool results)
+        // Use conservative estimate: chars/3 (not chars/4) to account for CJK and code tokens
         {
             int estimatedTokens = 0;
             for (const auto& msg : messages_) {
@@ -386,25 +387,36 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                     if (block.type == ContentBlockType::TEXT || block.type == ContentBlockType::TOOL_RESULT) {
                         std::string text = block.text.empty() ?
                             (block.toolResult.is_string() ? block.toolResult.get<std::string>() : block.toolResult.dump()) : block.text;
-                        estimatedTokens += (int)text.size() / 4;
+                        estimatedTokens += (int)text.size() / 3;  // Conservative: 3 chars per token
                     }
                 }
             }
-            // If estimated tokens > 150K, force compact before sending
-            if (estimatedTokens > 150000) {
-                spdlog::warn("Pre-flight: estimated {} tokens, forcing compaction", estimatedTokens);
+            // Compact aggressively: threshold at 80K tokens (well below 128K/200K context limits)
+            if (estimatedTokens > 80000) {
+                spdlog::warn("Pre-flight: estimated {} tokens (>80K), forcing compaction", estimatedTokens);
                 compactor_.forceCompact(messages_, config_.apiClient);
+                // Recalculate after compaction
+                estimatedTokens = 0;
+                for (const auto& msg : messages_) {
+                    for (const auto& block : msg.content) {
+                        if (block.type == ContentBlockType::TEXT || block.type == ContentBlockType::TOOL_RESULT) {
+                            std::string text = block.text.empty() ?
+                                (block.toolResult.is_string() ? block.toolResult.get<std::string>() : block.toolResult.dump()) : block.text;
+                            estimatedTokens += (int)text.size() / 3;
+                        }
+                    }
+                }
             }
-            // If still too large after compaction, truncate old tool results
-            if (estimatedTokens > 180000) {
-                spdlog::warn("Still too large after compact, truncating old tool results");
-                for (size_t i = 0; i < messages_.size() - 6; i++) {
+            // If still too large after compaction, aggressively truncate old tool results
+            if (estimatedTokens > 100000) {
+                spdlog::warn("Still {} tokens after compact, truncating old tool results", estimatedTokens);
+                for (size_t i = 0; i < messages_.size() - 4; i++) {
                     for (auto& block : messages_[i].content) {
                         if (block.type == ContentBlockType::TOOL_RESULT) {
                             std::string text = block.toolResult.is_string() ?
                                 block.toolResult.get<std::string>() : block.toolResult.dump();
-                            if (text.size() > 2000) {
-                                block.toolResult = nlohmann::json(text.substr(0, 500) +
+                            if (text.size() > 500) {
+                                block.toolResult = nlohmann::json(text.substr(0, 300) +
                                     "\n... [truncated, " + std::to_string(text.size()) + " chars total]");
                             }
                         }
@@ -484,35 +496,33 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
             // Handle 503/overloaded by compacting and retrying with backoff
             if (e.type == APIErrorType::OVERLOADED || e.type == APIErrorType::SERVER_ERROR) {
                 static int overloadRetries = 0;
-                if (overloadRetries < 2) {
+                if (overloadRetries < 3) {
                     overloadRetries++;
-                    // Wait with exponential backoff: 5s, 15s
-                    int waitSec = overloadRetries == 1 ? 5 : 15;
+                    int waitSec = overloadRetries * 3;  // 3s, 6s, 9s
                     spdlog::warn("503/overloaded (attempt {}), waiting {}s then compacting...",
                                  overloadRetries, waitSec);
                     if (callbacks.onError) {
                         callbacks.onError("API overloaded, retrying in " +
                             std::to_string(waitSec) + "s (attempt " +
-                            std::to_string(overloadRetries) + "/2)...");
+                            std::to_string(overloadRetries) + "/3)...");
                     }
                     std::this_thread::sleep_for(std::chrono::seconds(waitSec));
                     compactor_.forceCompact(messages_, config_.apiClient);
-                    // Truncate large tool results in history
-                    for (size_t i = 0; i + 6 < messages_.size(); i++) {
+                    // Aggressively truncate ALL old tool results (keep only last 4 messages intact)
+                    for (size_t i = 0; i + 4 < messages_.size(); i++) {
                         for (auto& block : messages_[i].content) {
                             if (block.type == ContentBlockType::TOOL_RESULT) {
                                 std::string text = block.toolResult.is_string() ?
                                     block.toolResult.get<std::string>() : block.toolResult.dump();
-                                if (text.size() > 5000) {
-                                    block.toolResult = nlohmann::json(text.substr(0, 1000) +
-                                        "\n... [truncated, was " + std::to_string(text.size()) + " chars]");
+                                if (text.size() > 300) {
+                                    block.toolResult = nlohmann::json(text.substr(0, 200) +
+                                        "\n... [truncated after 503]");
                                 }
                             }
                         }
                     }
                     continue; // Retry after wait
                 }
-                overloadRetries = 0;
                 overloadRetries = 0;
             }
             spdlog::error("API call failed: {}", e.what());
