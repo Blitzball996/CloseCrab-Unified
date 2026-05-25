@@ -276,9 +276,9 @@ static void performCurlSSE(
     if (httpCode >= 400) {
         auto errType = closecrab::classifyHttpStatus(httpCode);
         std::string errBody = curlCtx.rawResponse.substr(0, 500);
-        spdlog::error("HTTP {} response body: {}", httpCode, errBody);
+        spdlog::debug("HTTP {} response body: {}", httpCode, errBody);
         throw closecrab::APIError(errType, static_cast<int>(httpCode),
-                                   "HTTP " + std::to_string(httpCode) + ": " + errBody);
+                                   "HTTP " + std::to_string(httpCode));
     }
 }
 
@@ -337,7 +337,7 @@ void RemoteAPIClient::streamChat(
 
             // Model fallback: after N consecutive 503/529, switch to fallback model
             if (consecutive503 >= FALLBACK_THRESHOLD && !fallbackModel_.empty() && activeModel != fallbackModel_) {
-                spdlog::warn("Model fallback triggered after {} consecutive errors: {} -> {}",
+                spdlog::info("Model fallback triggered after {} consecutive errors: {} -> {}",
                              consecutive503, activeModel, fallbackModel_);
                 activeModel = fallbackModel_;
                 consecutive503 = 0;
@@ -351,8 +351,14 @@ void RemoteAPIClient::streamChat(
             int jitter = rand() % (baseDelay / 4 + 1);
             int delayMs = baseDelay + jitter;
 
-            spdlog::warn("{} (attempt {}/{}), model={}, retrying in {}ms...",
-                         e.what(), attempt, MAX_RETRIES, activeModel, delayMs);
+            // Silent for first 3 attempts (like JackProAi), then info level
+            if (attempt <= 3) {
+                spdlog::debug("Retry attempt {}/{}, model={}, waiting {}ms",
+                              attempt, MAX_RETRIES, activeModel, delayMs);
+            } else {
+                spdlog::info("Retrying... (attempt {}/{}), model={}",
+                             attempt, MAX_RETRIES, activeModel);
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
         }
     }

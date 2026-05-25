@@ -561,41 +561,14 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                     continue; // Retry the turn
                 }
             }
-            // Handle 503/overloaded by compacting and retrying with backoff
-            if (e.type == APIErrorType::OVERLOADED || e.type == APIErrorType::SERVER_ERROR) {
-                static int overloadRetries = 0;
-                if (overloadRetries < 3) {
-                    overloadRetries++;
-                    int waitSec = overloadRetries * 2;  // 2s, 4s, 6s
-                    spdlog::warn("503/overloaded (attempt {}), compacting + truncating...",
-                                 overloadRetries);
-                    if (callbacks.onError) {
-                        callbacks.onError("API overloaded, retrying (attempt " +
-                            std::to_string(overloadRetries) + "/3)...");
-                    }
-                    std::this_thread::sleep_for(std::chrono::seconds(waitSec));
-                    compactor_.forceCompact(messages_, config_.apiClient);
-                    lastKnownInputTokens_ = 0;
-                    lastKnownTokensAtMessageIndex_ = 0;
-                    // Aggressively truncate ALL tool results except last 2 messages
-                    for (size_t i = 0; i + 2 < messages_.size(); i++) {
-                        for (auto& block : messages_[i].content) {
-                            if (block.type == ContentBlockType::TOOL_RESULT) {
-                                std::string text = block.toolResult.is_string() ?
-                                    block.toolResult.get<std::string>() : block.toolResult.dump();
-                                if (text.size() > 100) {
-                                    block.toolResult = nlohmann::json(
-                                        text.substr(0, 80) + "\n[truncated]");
-                                }
-                            }
-                        }
-                    }
-                    continue;
+            spdlog::debug("API call failed: {}", e.what());
+            if (callbacks.onError) {
+                if (e.type == APIErrorType::OVERLOADED || e.type == APIErrorType::SERVER_ERROR) {
+                    callbacks.onError("API temporarily unavailable, please try again.");
+                } else {
+                    callbacks.onError(e.what());
                 }
-                overloadRetries = 0;
             }
-            spdlog::error("API call failed: {}", e.what());
-            if (callbacks.onError) callbacks.onError(e.what());
             apiCallFailed = true;
         } catch (const std::exception& e) {
             spdlog::error("Unexpected error during API call: {}", e.what());

@@ -44,11 +44,11 @@ public:
     void start(const std::string& message = "") {
         if (running_.load()) return;
         running_ = true;
-        message_ = message;
-        // When running under CloseCrab-Web, emit a marker the mobile UI parses
-        // into a single inline animation instead of spamming repeated text +
-        // static spinner glyphs. Format: <<<CCSPIN:START:message>>>
-        // Choose printable ASCII so it survives PTY/ANSI passthrough.
+        if (message.empty() || message == "Waiting for response...") {
+            message_ = getRandomVerb();
+        } else {
+            message_ = message;
+        }
         if (std::getenv("CLOSECRAB_WEB")) {
             std::cout << "<<<CCSPIN:START:" << message_ << ">>>\n" << std::flush;
             return;
@@ -68,6 +68,62 @@ public:
             std::cout << "\r" << std::string(message_.size() + 10, ' ') << "\r" << std::flush;
         });
     }
+
+private:
+    static std::string getRandomVerb() {
+        static const char* VERBS[] = {
+            "Accomplishing", "Actioning", "Actualizing", "Architecting",
+            "Baking", "Beaming", "Beboppin'", "Befuddling",
+            "Billowing", "Blanching", "Bloviating", "Boogieing",
+            "Boondoggling", "Booping", "Bootstrapping", "Brewing",
+            "Bunning", "Burrowing", "Calculating", "Canoodling",
+            "Caramelizing", "Cascading", "Catapulting", "Cerebrating",
+            "Channeling", "Channelling", "Choreographing", "Churning",
+            "Coalescing", "Cogitating", "Combobulating", "Composing",
+            "Computing", "Concocting", "Considering", "Contemplating",
+            "Cooking", "Crafting", "Creating", "Crunching",
+            "Crystallizing", "Cultivating", "Deciphering", "Deliberating",
+            "Determining", "Dilly-dallying", "Discombobulating", "Doing",
+            "Doodling", "Drizzling", "Ebbing", "Effecting",
+            "Elucidating", "Embellishing", "Enchanting", "Envisioning",
+            "Evaporating", "Fermenting", "Fiddle-faddling", "Finagling",
+            "Flibbertigibbeting", "Flowing", "Flummoxing", "Fluttering",
+            "Forging", "Forming", "Frolicking", "Frosting",
+            "Gallivanting", "Galloping", "Garnishing", "Generating",
+            "Gesticulating", "Germinating", "Grooving", "Gusting",
+            "Harmonizing", "Hashing", "Hatching", "Herding",
+            "Honking", "Hullaballooing", "Hyperspacing", "Ideating",
+            "Imagining", "Improvising", "Incubating", "Inferring",
+            "Infusing", "Ionizing", "Jitterbugging", "Julienning",
+            "Kneading", "Leavening", "Levitating", "Lollygagging",
+            "Manifesting", "Marinating", "Meandering", "Metamorphosing",
+            "Misting", "Moonwalking", "Moseying", "Mulling",
+            "Mustering", "Musing", "Nebulizing", "Nesting",
+            "Noodling", "Nucleating", "Orbiting", "Orchestrating",
+            "Osmosing", "Perambulating", "Percolating", "Perusing",
+            "Philosophising", "Photosynthesizing", "Pollinating", "Pondering",
+            "Pontificating", "Pouncing", "Precipitating", "Prestidigitating",
+            "Processing", "Proofing", "Propagating", "Puttering",
+            "Puzzling", "Quantumizing", "Razzle-dazzling", "Razzmatazzing",
+            "Recombobulating", "Reticulating", "Roosting", "Ruminating",
+            "Scampering", "Schlepping", "Scurrying", "Seasoning",
+            "Shenaniganing", "Shimmying", "Simmering", "Skedaddling",
+            "Sketching", "Slithering", "Smooshing", "Sock-hopping",
+            "Spelunking", "Spinning", "Sprouting", "Stewing",
+            "Sublimating", "Swirling", "Swooping", "Symbioting",
+            "Synthesizing", "Tempering", "Thinking", "Thundering",
+            "Tinkering", "Tomfoolering", "Topsy-turvying", "Transfiguring",
+            "Transmuting", "Twisting", "Undulating", "Unfurling",
+            "Unravelling", "Vibing", "Waddling", "Wandering",
+            "Warping", "Whatchamacalliting", "Whirlpooling", "Whirring",
+            "Whisking", "Wibbling", "Working", "Wrangling",
+            "Zesting", "Zigzagging"
+        };
+        static constexpr int VERB_COUNT = 168;
+        return VERBS[rand() % VERB_COUNT];
+    }
+
+public:
 
     void stop() {
         bool was_running = running_.exchange(false);
