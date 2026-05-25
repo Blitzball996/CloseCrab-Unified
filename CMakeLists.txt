@@ -175,6 +175,10 @@ add_executable(closecrab-unified
     src/core/QueryEngine.cpp
     src/core/Message.cpp
     src/core/SessionManager.cpp
+    src/core/SessionRouter.cpp
+
+    # Stats
+    src/stats/StatsEngine.cpp
 
     # API clients
     src/api/LocalLLMClient.cpp

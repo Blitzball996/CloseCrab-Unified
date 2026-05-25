@@ -25,6 +25,7 @@
 #include "core/QueryEngine.h"
 #include "core/AppState.h"
 #include "core/SessionManager.h"
+#include "core/SessionRouter.h"
 #include "core/ThreadPool.h"
 #include "memory/MemorySystem.h"
 #include "llm/LLMEngine.h"
@@ -781,6 +782,34 @@ When the user asks a question, answer directly.)";
     // Start WebSocket server for mobile remote control
     auto& mobileWs = closecrab::MobileWebSocket::getInstance();
     mobileWs.start(9002);
+
+    // === Team Mode: SessionRouter for multi-client parallel inference ===
+    closecrab::SessionRouter sessionRouter(qeConfig, 4);
+    sessionRouter.setClientCallback([&mobileWs](const std::string& clientId,
+                                                 const std::string& event,
+                                                 const nlohmann::json& data) {
+        nlohmann::json msg = data;
+        msg["type"] = event;
+        msg["clientId"] = clientId;
+        mobileWs.sendToClient(clientId, msg);
+    });
+
+    mobileWs.setMessageHandler([&sessionRouter](const std::string& clientId,
+                                                 const std::string& type,
+                                                 const nlohmann::json& data) {
+        if (type == "register") {
+            std::string username = data.value("username", "anonymous");
+            std::string cwd = data.value("cwd", "");
+            sessionRouter.registerClient(username, cwd);
+        } else if (type == "chat") {
+            std::string message = data.value("message", "");
+            if (!message.empty()) {
+                sessionRouter.submitRequest(clientId, message);
+            }
+        } else if (type == "abort") {
+            sessionRouter.abortClient(clientId);
+        }
+    });
 
     // Auto-start cloudflared tunnel for remote mobile access
     std::string tunnelUrl;

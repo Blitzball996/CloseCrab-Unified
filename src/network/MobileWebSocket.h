@@ -10,6 +10,7 @@
 
 #include <string>
 #include <vector>
+#include <map>
 #include <mutex>
 #include <memory>
 #include <functional>
@@ -22,7 +23,7 @@ namespace closecrab {
 
 class MobileWebSocket {
 public:
-    using MessageHandler = std::function<void(const std::string& type, const nlohmann::json& data)>;
+    using MessageHandler = std::function<void(const std::string& clientId, const std::string& type, const nlohmann::json& data)>;
 
     static MobileWebSocket& getInstance() {
         static MobileWebSocket instance;
@@ -37,14 +38,28 @@ public:
             ix::WebSocket& ws, const ix::WebSocketMessagePtr& msg) {
             if (msg->type == ix::WebSocketMessageType::Open) {
                 std::lock_guard<std::mutex> lock(mutex_);
+                std::string cid = std::to_string(reinterpret_cast<uintptr_t>(&ws));
                 clients_.push_back(&ws);
-                spdlog::info("Mobile client connected (total: {})", clients_.size());
+                clientIdMap_[cid] = &ws;
+                wsToClientId_[&ws] = cid;
+                spdlog::info("Mobile client connected: {} (total: {})", cid, clients_.size());
+                // Send client their ID
+                nlohmann::json welcome = {{"type", "connected"}, {"clientId", cid}};
+                ws.send(welcome.dump());
             } else if (msg->type == ix::WebSocketMessageType::Close) {
                 std::lock_guard<std::mutex> lock(mutex_);
+                std::string cid = wsToClientId_[&ws];
                 clients_.erase(std::remove(clients_.begin(), clients_.end(), &ws), clients_.end());
-                spdlog::info("Mobile client disconnected (total: {})", clients_.size());
+                clientIdMap_.erase(cid);
+                wsToClientId_.erase(&ws);
+                spdlog::info("Mobile client disconnected: {} (total: {})", cid, clients_.size());
             } else if (msg->type == ix::WebSocketMessageType::Message) {
-                handleIncoming(msg->str);
+                std::string cid;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    cid = wsToClientId_[&ws];
+                }
+                handleIncoming(cid, msg->str);
             }
         });
 
@@ -64,7 +79,32 @@ public:
         running_ = false;
     }
 
-    // Broadcast events to all connected mobile clients
+    // === Per-client send (Team Mode) ===
+    void sendToClient(const std::string& clientId, const nlohmann::json& msg) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = clientIdMap_.find(clientId);
+        if (it != clientIdMap_.end()) {
+            it->second->send(msg.dump());
+        }
+    }
+
+    void sendTextToClient(const std::string& clientId, const std::string& text) {
+        sendToClient(clientId, {{"type", "text"}, {"content", text}});
+    }
+
+    void sendToolUseToClient(const std::string& clientId, const std::string& toolName, const std::string& desc) {
+        sendToClient(clientId, {{"type", "tool_use"}, {"tool", toolName}, {"description", desc}});
+    }
+
+    void sendCompleteToClient(const std::string& clientId) {
+        sendToClient(clientId, {{"type", "complete"}});
+    }
+
+    void sendErrorToClient(const std::string& clientId, const std::string& error) {
+        sendToClient(clientId, {{"type", "error"}, {"content", error}});
+    }
+
+    // === Broadcast (legacy, still works for single-user mode) ===
     void sendText(const std::string& text) {
         broadcast({{"type", "text"}, {"content", text}});
     }
@@ -89,7 +129,6 @@ public:
         broadcast({{"type", "complete"}});
     }
 
-    // Set handler for incoming messages from mobile
     void setMessageHandler(MessageHandler handler) {
         messageHandler_ = handler;
     }
@@ -104,6 +143,12 @@ public:
         return (int)clients_.size();
     }
 
+    std::string getClientId(ix::WebSocket* ws) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = wsToClientId_.find(ws);
+        return it != wsToClientId_.end() ? it->second : "";
+    }
+
 private:
     MobileWebSocket() = default;
 
@@ -115,12 +160,12 @@ private:
         }
     }
 
-    void handleIncoming(const std::string& raw) {
+    void handleIncoming(const std::string& clientId, const std::string& raw) {
         try {
             auto msg = nlohmann::json::parse(raw);
             std::string type = msg.value("type", "");
             if (messageHandler_) {
-                messageHandler_(type, msg);
+                messageHandler_(clientId, type, msg);
             }
         } catch (...) {}
     }
@@ -128,6 +173,8 @@ private:
     mutable std::mutex mutex_;
     std::unique_ptr<ix::WebSocketServer> server_;
     std::vector<ix::WebSocket*> clients_;
+    std::map<std::string, ix::WebSocket*> clientIdMap_;  // clientId → ws
+    std::map<ix::WebSocket*, std::string> wsToClientId_; // ws → clientId
     MessageHandler messageHandler_;
     bool running_ = false;
 };

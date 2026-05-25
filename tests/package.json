@@ -1,0 +1,14 @@
+{
+  "name": "closecrab-stress-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Stress tests for CloseCrab Team Mode WebSocket server",
+  "scripts": {
+    "stress": "node stress_test.js",
+    "stress:16": "node stress_test.js 16",
+    "stress:32": "node stress_test.js 32"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
