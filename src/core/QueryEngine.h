@@ -3,6 +3,7 @@
 #include "Message.h"
 #include "AppState.h"
 #include "HistoryCompactor.h"
+#include "ContextCollapse.h"
 #include "BudgetTracker.h"
 #include "ErrorRecovery.h"
 #include "../api/APIClient.h"
@@ -95,6 +96,7 @@ private:
     std::string sessionId_;
     std::atomic<bool> interrupted_{false};
     HistoryCompactor compactor_;
+    ContextCollapse contextCollapse_;
     BudgetTracker budgetTracker_;
 
     // Real token usage from last API response (for accurate pre-flight checks)

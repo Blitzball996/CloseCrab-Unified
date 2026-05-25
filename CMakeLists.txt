@@ -301,6 +301,8 @@ add_executable(closecrab-unified
     src/core/Message.cpp
     src/core/SessionManager.cpp
     src/core/SessionRouter.cpp
+    src/core/ContextCollapse.cpp
+    src/core/MessageSnip.cpp
     src/stats/StatsEngine.cpp
     src/knowledge/SharedKnowledge.cpp
     src/api/LocalLLMClient.cpp

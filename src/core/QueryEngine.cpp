@@ -6,6 +6,8 @@
 #include "../tools/OutputPersistence.h"
 #include "../memory/FileMemoryManager.h"
 #include "ErrorRecovery.h"
+#include "ContextCollapse.h"
+#include "MessageSnip.h"
 #include <spdlog/spdlog.h>
 #include <fstream>
 #include <filesystem>
@@ -420,36 +422,65 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
             const int64_t BLOCKING_LIMIT = 50000;          // Hard stop at 50K
 
             if (estimatedTokens > AUTOCOMPACT_THRESHOLD) {
-                spdlog::warn("Pre-flight: {} tokens (>{} threshold), auto-compacting...",
+                spdlog::warn("Pre-flight: {} tokens (>{} threshold), applying layered context management...",
                              estimatedTokens, AUTOCOMPACT_THRESHOLD);
-                compactor_.forceCompact(messages_, config_.apiClient);
-                lastKnownInputTokens_ = 0;  // Reset — compaction invalidates old count
-                lastKnownTokensAtMessageIndex_ = 0;
 
-                // Recalculate after compaction
-                estimatedTokens = 0;
-                for (const auto& msg : messages_) {
-                    for (const auto& block : msg.content) {
-                        if (block.type == ContentBlockType::TEXT || block.type == ContentBlockType::TOOL_RESULT) {
-                            std::string text = block.text.empty() ?
-                                (block.toolResult.is_string() ? block.toolResult.get<std::string>() : block.toolResult.dump()) : block.text;
-                            estimatedTokens += (int64_t)text.size() / 3;
+                // Layer 1: Context Collapse (cheapest — preserves info in side map)
+                int64_t collapseSavings = contextCollapse_.collapseOldMessages(messages_, 6);
+                if (collapseSavings > 0) {
+                    estimatedTokens -= collapseSavings;
+                    spdlog::info("Pre-flight Layer 1 (Collapse): saved ~{} tokens, now ~{}",
+                                 collapseSavings, estimatedTokens);
+                }
+
+                // Layer 2: Snip (medium — removes large blocks surgically)
+                if (estimatedTokens > AUTOCOMPACT_THRESHOLD) {
+                    int64_t snipTarget = estimatedTokens - static_cast<int64_t>(AUTOCOMPACT_THRESHOLD * 0.8);
+                    auto snipResult = MessageSnip::snipLargest(messages_, snipTarget, 4);
+                    if (snipResult.tokensFreed > 0) {
+                        estimatedTokens -= snipResult.tokensFreed;
+                        spdlog::info("Pre-flight Layer 2 (Snip): freed ~{} tokens, now ~{}",
+                                     snipResult.tokensFreed, estimatedTokens);
+                    }
+                }
+
+                // Layer 3: Force compact (expensive — summarizes everything via LLM)
+                if (estimatedTokens > AUTOCOMPACT_THRESHOLD) {
+                    spdlog::warn("Pre-flight Layer 3 (Compact): still at {} tokens, force compacting...",
+                                 estimatedTokens);
+                    compactor_.forceCompact(messages_, config_.apiClient);
+                    contextCollapse_.reset();  // Compaction invalidates collapsed entries
+                    lastKnownInputTokens_ = 0;
+                    lastKnownTokensAtMessageIndex_ = 0;
+
+                    // Recalculate after compaction
+                    estimatedTokens = 0;
+                    for (const auto& msg : messages_) {
+                        for (const auto& block : msg.content) {
+                            if (block.type == ContentBlockType::TEXT || block.type == ContentBlockType::TOOL_RESULT) {
+                                std::string text = block.text.empty() ?
+                                    (block.toolResult.is_string() ? block.toolResult.get<std::string>() : block.toolResult.dump()) : block.text;
+                                estimatedTokens += (int64_t)text.size() / 3;
+                            }
                         }
                     }
                 }
             }
 
-            // Blocking limit: aggressively truncate if still too large
+            // Layer 4: Blocking limit — aggressively truncate if still too large (last resort)
             if (estimatedTokens > BLOCKING_LIMIT) {
-                spdlog::warn("BLOCKING: {} tokens (>{} limit), truncating all old tool results",
+                spdlog::warn("Pre-flight Layer 4 (Truncate): {} tokens (>{} limit), hard truncating old tool results",
                              estimatedTokens, BLOCKING_LIMIT);
-                for (size_t i = 0; i + 4 < messages_.size(); i++) {
-                    for (auto& block : messages_[i].content) {
-                        if (block.type == ContentBlockType::TOOL_RESULT) {
-                            std::string text = block.toolResult.is_string() ?
-                                block.toolResult.get<std::string>() : block.toolResult.dump();
-                            if (text.size() > 200) {
-                                block.toolResult = nlohmann::json(text.substr(0, 150) + "\n[truncated]");
+                auto truncResult = MessageSnip::snipOldToolResults(messages_, 4, 200);
+                if (truncResult.tokensFreed > 0) {
+                    estimatedTokens -= truncResult.tokensFreed;
+                }
+                // If still over, brute-force truncate remaining large text blocks
+                if (estimatedTokens > BLOCKING_LIMIT) {
+                    for (size_t i = 0; i + 4 < messages_.size(); i++) {
+                        for (auto& block : messages_[i].content) {
+                            if (block.type == ContentBlockType::TEXT && block.text.size() > 200) {
+                                block.text = block.text.substr(0, 150) + "\n[truncated]";
                             }
                         }
                     }
