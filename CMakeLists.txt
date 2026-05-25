@@ -180,6 +180,9 @@ add_executable(closecrab-unified
     # Stats
     src/stats/StatsEngine.cpp
 
+    # Knowledge
+    src/knowledge/SharedKnowledge.cpp
+
     # API clients
     src/api/LocalLLMClient.cpp
     src/api/RemoteAPIClient.cpp
