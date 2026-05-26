@@ -61,9 +61,8 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
     }
 
     // API Microcompact: clear old tool_result content to keep requests under proxy limit
-    // JackProAi uses server-side apiMicrocompact (ant-only), we do it client-side
-    // Proxy yikoulian.cc rejects requests >~15KB, so we target 10KB max
-    constexpr size_t MAX_MESSAGES_SIZE = 10000;
+    // Proxy accepts 8KB+ via curl but CloseCrab's streaming requests fail above ~6KB
+    constexpr size_t MAX_MESSAGES_SIZE = 6000;
     std::string msgsStr = msgs.dump();
     if (msgsStr.size() > MAX_MESSAGES_SIZE && msgs.size() > 2) {
         for (size_t i = 0; i + 2 < msgs.size(); i++) {
@@ -263,12 +262,13 @@ static void performCurlSSE(
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
     curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
 
-    // Timeouts
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
+    // Timeouts (JackProAi uses 600s / 10 minutes)
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
 
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
+    // HTTP/1.1 (system libcurl doesn't support HTTP/2)
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
 
     CURLcode res = curl_easy_perform(curl);
@@ -335,10 +335,7 @@ void RemoteAPIClient::streamChat(
                 handleSSEEvent(event, callback, currentToolName, currentToolId, currentToolJson);
             });
             CurlStreamCtx curlCtx{&parser};
-            {
-                APIRequestGuard guard; // Serialize API requests
-                performCurlSSE(url, bodyStr, apiKey_, curlCtx);
-            }
+            performCurlSSE(url, bodyStr, apiKey_, curlCtx);
             parser.finish();
             return; // Success
         } catch (const APIError& e) {
