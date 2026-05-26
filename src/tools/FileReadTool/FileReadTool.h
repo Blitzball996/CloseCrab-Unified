@@ -43,8 +43,8 @@ public:
         }
 
         auto fileSize = fs::file_size(path);
-        if (fileSize > 1024 * 1024 * 100) { // 100MB limit
-            return ToolResult::fail("File too large: " + std::to_string(fileSize) + " bytes");
+        if (fileSize > 256 * 1024) { // 256KB limit (aligned with JackProAi)
+            return ToolResult::fail("File too large (" + std::to_string(fileSize / 1024) + "KB). Use offset+limit to read sections.");
         }
 
         std::ifstream file(path);
@@ -53,7 +53,7 @@ public:
         }
 
         int offset = input.value("offset", 0);
-        int limit = input.value("limit", 2000);
+        int limit = input.value("limit", 500);
 
         std::string result;
         std::string line;
