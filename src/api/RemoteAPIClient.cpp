@@ -15,7 +15,7 @@
 // Serialization prevents simultaneous requests from parallel agents.
 static std::mutex g_rateMutex;
 static std::chrono::steady_clock::time_point g_lastRequestTime;
-static constexpr int MIN_REQUEST_INTERVAL_MS = 8000;  // 8s between requests = 7.5 RPM (proxy limit ~10 RPM for opus)
+static constexpr int MIN_REQUEST_INTERVAL_MS = 3000;  // 3s between requests - cached requests are cheap
 
 struct APIRequestGuard {
     APIRequestGuard() {
@@ -52,10 +52,11 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
 
     if (config.temperature >= 0 && config.tools.empty()) body["temperature"] = config.temperature;
 
-    // System prompt
+    // System prompt with cache_control (like JackProAi)
+    // Prompt caching makes subsequent requests cheap — proxy won't rate-limit cached requests
     if (!systemPrompt.empty()) {
         body["system"] = nlohmann::json::array({
-            {{"type", "text"}, {"text", systemPrompt}}
+            {{"type", "text"}, {"text", systemPrompt}, {"cache_control", {{"type", "ephemeral"}}}}
         });
     }
 
@@ -103,9 +104,13 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
 
     body["messages"] = std::move(msgs);
 
-    // Tools
+    // Tools with cache_control on last tool (creates cache breakpoint)
     if (!config.tools.empty() && config.tools.is_array() && config.tools.size() > 0) {
-        body["tools"] = config.tools;
+        nlohmann::json tools = config.tools;
+        if (!tools.empty()) {
+            tools.back()["cache_control"] = {{"type", "ephemeral"}};
+        }
+        body["tools"] = std::move(tools);
     }
 
     // Thinking
