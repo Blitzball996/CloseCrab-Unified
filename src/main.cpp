@@ -589,8 +589,11 @@ int main(int argc, char* argv[]) {
     qeConfig.permissionEngine = &permEngine;
     qeConfig.memorySystem = &memory;
     qeConfig.appState = &appState;
-    qeConfig.systemPrompt = R"(You are CloseCrab, a local AI coding assistant. Respond in the user's language. Be concise.
-Use tools to read/write files and run commands. For complex tasks, use Agent tool to explore in parallel.)";
+    qeConfig.systemPrompt = R"(You are CloseCrab, a powerful AI coding assistant. Respond in the user's language.
+You have tools: Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch, TodoWrite.
+IMPORTANT: When given a task, START WORKING IMMEDIATELY using tools. Do NOT just describe what you would do.
+Do NOT spawn Agent tools. Handle everything yourself step by step.
+For large tasks: use Glob/Grep to explore, Read to understand, Write/Edit to create files, Bash to run commands.)";
     qeConfig.maxTurns = 50;
     qeConfig.verbose = verbose;
 

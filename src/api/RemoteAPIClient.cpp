@@ -11,11 +11,11 @@
 #include <thread>
 
 // Global rate limiter: serializes ALL API requests and enforces minimum interval.
-// The proxy (yikoulian.cc) has a strict RPM limit (~4-5 requests per 15s).
-// Without serialization, parallel agents fire simultaneously and get 503.
+// The proxy (yikoulian.cc) can handle ~20 RPM (JackProAi does 21.6 RPM / 324 calls in 15min).
+// Serialization prevents simultaneous requests from parallel agents.
 static std::mutex g_rateMutex;
 static std::chrono::steady_clock::time_point g_lastRequestTime;
-static constexpr int MIN_REQUEST_INTERVAL_MS = 5000;  // 5s between requests = 12 RPM max
+static constexpr int MIN_REQUEST_INTERVAL_MS = 8000;  // 8s between requests = 7.5 RPM (proxy limit ~10 RPM for opus)
 
 struct APIRequestGuard {
     APIRequestGuard() {
@@ -365,9 +365,10 @@ void RemoteAPIClient::streamChat(
 
             if (attempt >= MAX_RETRIES) throw;
 
-            // Exponential backoff: 15s, 30s, 32s... (proxy has ~4 RPM limit, need longer waits)
-            int baseDelay = 15000 * (1 << (attempt - 1));
-            if (baseDelay > 60000) baseDelay = 60000;
+            // Short exponential backoff like JackProAi SDK: 3s, 6s, 12s, 24s, 30s cap
+            // The proxy returns transient 503 when upstream is busy — retries quickly succeed
+            int baseDelay = 3000 * (1 << (attempt - 1));
+            if (baseDelay > 30000) baseDelay = 30000;
             int jitter = rand() % (baseDelay / 4 + 1);
             int delayMs = baseDelay + jitter;
 
