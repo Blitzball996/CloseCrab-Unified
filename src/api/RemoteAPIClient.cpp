@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <mutex>
 #include <condition_variable>
+#include <chrono>
+#include <thread>
 
 // Global API request semaphore: limits concurrent requests to avoid overwhelming proxy
 static std::mutex g_apiMutex;
@@ -26,6 +28,21 @@ struct APIRequestGuard {
         g_apiCv.notify_one();
     }
 };
+
+// Global rate limiter: ensure minimum interval between API requests (proxy RPM limit)
+static std::mutex g_rateMutex;
+static std::chrono::steady_clock::time_point g_lastRequestTime;
+static constexpr int MIN_REQUEST_INTERVAL_MS = 2000;
+
+static void waitForRateLimit() {
+    std::lock_guard<std::mutex> lock(g_rateMutex);
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastRequestTime).count();
+    if (elapsed < MIN_REQUEST_INTERVAL_MS) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(MIN_REQUEST_INTERVAL_MS - elapsed));
+    }
+    g_lastRequestTime = std::chrono::steady_clock::now();
+}
 
 namespace closecrab {
 
@@ -335,6 +352,7 @@ void RemoteAPIClient::streamChat(
                 handleSSEEvent(event, callback, currentToolName, currentToolId, currentToolJson);
             });
             CurlStreamCtx curlCtx{&parser};
+            waitForRateLimit();
             performCurlSSE(url, bodyStr, apiKey_, curlCtx);
             parser.finish();
             return; // Success
@@ -353,9 +371,9 @@ void RemoteAPIClient::streamChat(
 
             if (attempt >= MAX_RETRIES) throw;
 
-            // Exponential backoff with jitter: 3s, 6s, 12s, 24s, 32s...
-            int baseDelay = 3000 * (1 << (attempt - 1));
-            if (baseDelay > 32000) baseDelay = 32000;
+            // Exponential backoff: 15s, 30s, 32s... (proxy has ~4 RPM limit, need longer waits)
+            int baseDelay = 15000 * (1 << (attempt - 1));
+            if (baseDelay > 60000) baseDelay = 60000;
             int jitter = rand() % (baseDelay / 4 + 1);
             int delayMs = baseDelay + jitter;
 
