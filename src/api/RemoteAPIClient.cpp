@@ -60,12 +60,12 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
         msgs.push_back(msg.toApiJson());
     }
 
-    // API Microcompact: if messages are too large, clear old tool_result content
-    // (same as JackProAi's apiMicrocompact - MAX_TOOL_RESULTS_PER_MESSAGE_CHARS = 200,000)
-    constexpr size_t MAX_MESSAGES_SIZE = 200000;
+    // API Microcompact: clear old tool_result content to keep requests under proxy limit
+    // JackProAi uses server-side apiMicrocompact (ant-only), we do it client-side
+    // Proxy yikoulian.cc rejects requests >~15KB, so we target 10KB max
+    constexpr size_t MAX_MESSAGES_SIZE = 10000;
     std::string msgsStr = msgs.dump();
     if (msgsStr.size() > MAX_MESSAGES_SIZE && msgs.size() > 2) {
-        // Clear tool_result content from all but the last 2 messages
         for (size_t i = 0; i + 2 < msgs.size(); i++) {
             if (msgs[i].value("role", "") == "user" && msgs[i].contains("content") && msgs[i]["content"].is_array()) {
                 for (auto& block : msgs[i]["content"]) {

@@ -50,7 +50,7 @@ public:
         // Wait for result
         auto result = mgr.getResult(agentId, true);
         if (result.status == AgentStatus::COMPLETED) {
-            // Like JackProAi: persist large agent output to disk, return summary
+            // Like JackProAi toolResultStorage: persist large output, return preview
             std::string output = result.output;
             if (output.size() > 2000) {
                 namespace fs = std::filesystem;
@@ -59,10 +59,12 @@ public:
                 fs::path filePath = dir / (agentId + ".txt");
                 std::ofstream ofs(filePath);
                 if (ofs) { ofs << output; ofs.close(); }
-                // Return only first 1500 chars as summary
-                output = output.substr(0, 1500) + "\n\n[Full output: " +
-                         std::to_string(result.output.size()) + " bytes saved to " +
-                         filePath.string() + "]";
+                // JackProAi format: <persisted-output> with 2KB preview
+                std::string preview = output.substr(0, 2000);
+                output = "<persisted-output>\nOutput too large (" +
+                         std::to_string(output.size() / 1024) + " KB). Full output saved to: " +
+                         filePath.string() + "\n\nPreview (first 2 KB):\n" +
+                         preview + "\n...\n</persisted-output>";
             }
             return ToolResult::ok(output);
         }
