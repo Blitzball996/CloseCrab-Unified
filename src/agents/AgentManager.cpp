@@ -50,7 +50,9 @@ std::string AgentManager::spawnAgent(const AgentConfig& config, APIClient* apiCl
         "Complete the task described below. Be thorough and report your findings.";
 
     if (config.type == AgentType::EXPLORE) {
-        systemPrompt += " You have read-only access. Use Glob, Grep, and Read to explore the codebase.";
+        systemPrompt += " You have read-only access. Use Glob, Grep, and Read to explore the codebase."
+                        " IMPORTANT: Keep responses concise. Only read first 50 lines of files (use limit parameter)."
+                        " Summarize findings in 200 words or less.";
     } else if (config.type == AgentType::PLAN) {
         systemPrompt += " Design an implementation plan. Do NOT write or edit files.";
     }
@@ -68,8 +70,10 @@ std::string AgentManager::spawnAgent(const AgentConfig& config, APIClient* apiCl
                 qeConfig.permissionEngine = &PermissionEngine::getInstance();
                 qeConfig.appState = appState;
                 qeConfig.systemPrompt = systemPrompt;
-                qeConfig.maxTurns = config.maxTurns;
-                qeConfig.allowedTools = allowedTools; // Filter tools by agent type
+                // Limit agent turns to prevent context bloat (proxy rejects >30KB)
+                qeConfig.maxTurns = (config.type == AgentType::EXPLORE) ? 3 : config.maxTurns;
+                qeConfig.allowedTools = allowedTools;
+                qeConfig.tokenBudget.toolResultBudget = 800;
 
                 QueryEngine subEngine(qeConfig);
 

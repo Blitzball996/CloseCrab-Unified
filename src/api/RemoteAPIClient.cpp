@@ -12,7 +12,7 @@
 static std::mutex g_apiMutex;
 static std::condition_variable g_apiCv;
 static int g_activeRequests = 0;
-static constexpr int MAX_CONCURRENT_REQUESTS = 2;
+static constexpr int MAX_CONCURRENT_REQUESTS = 1;
 
 struct APIRequestGuard {
     APIRequestGuard() {
