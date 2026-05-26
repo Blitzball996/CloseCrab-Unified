@@ -59,6 +59,38 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
     for (const auto& msg : messages) {
         msgs.push_back(msg.toApiJson());
     }
+
+    // API Microcompact: if messages are too large, clear old tool_result content
+    // (like JackProAi's apiMicrocompact - clears Bash/Glob/Grep/Read results)
+    constexpr size_t MAX_MESSAGES_SIZE = 8000;
+    std::string msgsStr = msgs.dump();
+    if (msgsStr.size() > MAX_MESSAGES_SIZE && msgs.size() > 2) {
+        // Clear tool_result content from all but the last 2 messages
+        for (size_t i = 0; i + 2 < msgs.size(); i++) {
+            if (msgs[i].value("role", "") == "user" && msgs[i].contains("content") && msgs[i]["content"].is_array()) {
+                for (auto& block : msgs[i]["content"]) {
+                    if (block.value("type", "") == "tool_result") {
+                        if (block.contains("content") && block["content"].is_string()) {
+                            std::string content = block["content"].get<std::string>();
+                            if (content.size() > 200) {
+                                block["content"] = content.substr(0, 150) + "\n[cleared for context limit]";
+                            }
+                        } else if (block.contains("content") && block["content"].is_array()) {
+                            for (auto& sub : block["content"]) {
+                                if (sub.value("type", "") == "text") {
+                                    std::string text = sub.value("text", "");
+                                    if (text.size() > 200) {
+                                        sub["text"] = text.substr(0, 150) + "\n[cleared for context limit]";
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     body["messages"] = std::move(msgs);
 
     // Tools
