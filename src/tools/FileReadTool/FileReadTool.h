@@ -53,7 +53,7 @@ public:
         }
 
         int offset = input.value("offset", 0);
-        int limit = input.value("limit", 500);
+        int limit = input.value("limit", 2000);
 
         std::string result;
         std::string line;

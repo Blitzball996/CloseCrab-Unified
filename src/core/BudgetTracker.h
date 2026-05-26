@@ -10,7 +10,7 @@ namespace closecrab {
 struct TokenBudget {
     int queryBudget = 0;       // Max tokens for this query (0 = unlimited)
     int taskBudget = 0;        // Max tokens for the entire task/session
-    int toolResultBudget = 2000; // Max tokens per tool result (~8KB) — proxy safe
+    int toolResultBudget = 100000; // Max tokens per tool result (same as JackProAi MAX_TOOL_RESULT_TOKENS)
 };
 
 class BudgetTracker {

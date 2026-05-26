@@ -8,7 +8,7 @@ namespace closecrab {
 
 class OutputPersistence {
 public:
-    static constexpr size_t MAX_INLINE_SIZE = 5000;  // ~1250 tokens — proxy safe (JackProAi uses 50K but our proxy is stricter)
+    static constexpr size_t MAX_INLINE_SIZE = 50000;  // 50,000 chars (same as JackProAi DEFAULT_MAX_RESULT_SIZE_CHARS)
 
     /// If output exceeds MAX_INLINE_SIZE, save to disk and return a preview.
     /// On failure, returns the original output unchanged.
@@ -31,10 +31,8 @@ public:
                 ofs.write(output.data(), static_cast<std::streamsize>(output.size()));
             }
 
-            // Build preview: first 500 + ... + last 500
-            std::string preview = output.substr(0, 500)
-                + "\n...\n"
-                + output.substr(output.size() - 500);
+            // Build preview: first 2000 bytes (same as JackProAi PREVIEW_SIZE_BYTES)
+            std::string preview = output.substr(0, 2000);
 
             return preview
                 + "\n\n[Full output saved to: " + filePath.string()
