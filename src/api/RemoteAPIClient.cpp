@@ -61,8 +61,8 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
     }
 
     // API Microcompact: if messages are too large, clear old tool_result content
-    // (like JackProAi's apiMicrocompact - clears Bash/Glob/Grep/Read results)
-    constexpr size_t MAX_MESSAGES_SIZE = 8000;
+    // (same as JackProAi's apiMicrocompact - MAX_TOOL_RESULTS_PER_MESSAGE_CHARS = 200,000)
+    constexpr size_t MAX_MESSAGES_SIZE = 200000;
     std::string msgsStr = msgs.dump();
     if (msgsStr.size() > MAX_MESSAGES_SIZE && msgs.size() > 2) {
         // Clear tool_result content from all but the last 2 messages

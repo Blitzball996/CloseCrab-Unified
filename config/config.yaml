@@ -21,7 +21,7 @@ provider: "local"
 api:
   base_url: ""
   api_key: ""
-  model: "claude-opus-4-20250514"
+  model: "claude-opus-4-7"
   fallback_model: ""
 
 # ============================================

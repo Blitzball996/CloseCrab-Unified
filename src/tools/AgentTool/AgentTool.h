@@ -2,6 +2,8 @@
 
 #include "../Tool.h"
 #include "../../agents/AgentManager.h"
+#include <fstream>
+#include <filesystem>
 
 namespace closecrab {
 
@@ -48,7 +50,21 @@ public:
         // Wait for result
         auto result = mgr.getResult(agentId, true);
         if (result.status == AgentStatus::COMPLETED) {
-            return ToolResult::ok(result.output);
+            // Like JackProAi: persist large agent output to disk, return summary
+            std::string output = result.output;
+            if (output.size() > 2000) {
+                namespace fs = std::filesystem;
+                fs::path dir = "data/tool-results";
+                fs::create_directories(dir);
+                fs::path filePath = dir / (agentId + ".txt");
+                std::ofstream ofs(filePath);
+                if (ofs) { ofs << output; ofs.close(); }
+                // Return only first 1500 chars as summary
+                output = output.substr(0, 1500) + "\n\n[Full output: " +
+                         std::to_string(result.output.size()) + " bytes saved to " +
+                         filePath.string() + "]";
+            }
+            return ToolResult::ok(output);
         }
         return ToolResult::fail("Agent failed: " + result.error);
     }
