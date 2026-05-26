@@ -10,39 +10,27 @@
 #include <chrono>
 #include <thread>
 
-// Global API request semaphore: limits concurrent requests to avoid overwhelming proxy
-static std::mutex g_apiMutex;
-static std::condition_variable g_apiCv;
-static int g_activeRequests = 0;
-static constexpr int MAX_CONCURRENT_REQUESTS = 1;
+// Global rate limiter: serializes ALL API requests and enforces minimum interval.
+// The proxy (yikoulian.cc) has a strict RPM limit (~4-5 requests per 15s).
+// Without serialization, parallel agents fire simultaneously and get 503.
+static std::mutex g_rateMutex;
+static std::chrono::steady_clock::time_point g_lastRequestTime;
+static constexpr int MIN_REQUEST_INTERVAL_MS = 5000;  // 5s between requests = 12 RPM max
 
 struct APIRequestGuard {
     APIRequestGuard() {
-        std::unique_lock<std::mutex> lock(g_apiMutex);
-        g_apiCv.wait(lock, [] { return g_activeRequests < MAX_CONCURRENT_REQUESTS; });
-        g_activeRequests++;
+        g_rateMutex.lock();
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastRequestTime).count();
+        if (elapsed < MIN_REQUEST_INTERVAL_MS) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(MIN_REQUEST_INTERVAL_MS - elapsed));
+        }
     }
     ~APIRequestGuard() {
-        std::lock_guard<std::mutex> lock(g_apiMutex);
-        g_activeRequests--;
-        g_apiCv.notify_one();
+        g_lastRequestTime = std::chrono::steady_clock::now();
+        g_rateMutex.unlock();
     }
 };
-
-// Global rate limiter: ensure minimum interval between API requests (proxy RPM limit)
-static std::mutex g_rateMutex;
-static std::chrono::steady_clock::time_point g_lastRequestTime;
-static constexpr int MIN_REQUEST_INTERVAL_MS = 2000;
-
-static void waitForRateLimit() {
-    std::lock_guard<std::mutex> lock(g_rateMutex);
-    auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastRequestTime).count();
-    if (elapsed < MIN_REQUEST_INTERVAL_MS) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(MIN_REQUEST_INTERVAL_MS - elapsed));
-    }
-    g_lastRequestTime = std::chrono::steady_clock::now();
-}
 
 namespace closecrab {
 
@@ -77,26 +65,29 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
         msgs.push_back(msg.toApiJson());
     }
 
-    // API Microcompact: clear old tool_result content to keep requests under proxy limit
-    // Proxy accepts 8KB+ via curl but CloseCrab's streaming requests fail above ~6KB
-    constexpr size_t MAX_MESSAGES_SIZE = 6000;
+    // API Microcompact: clear old tool_result content when context is too large.
+    // JackProAi sends up to 243KB per request to the same proxy without 503.
+    // Only compact when messages exceed 200KB (JackProAi MAX_TOOL_RESULTS_PER_MESSAGE_CHARS).
+    // The QueryEngine pre-flight check (30K tokens ≈ 120KB) is the primary defense.
+    constexpr size_t MAX_MESSAGES_SIZE = 200000;
     std::string msgsStr = msgs.dump();
-    if (msgsStr.size() > MAX_MESSAGES_SIZE && msgs.size() > 2) {
-        for (size_t i = 0; i + 2 < msgs.size(); i++) {
+    if (msgsStr.size() > MAX_MESSAGES_SIZE && msgs.size() > 4) {
+        // Clear oldest tool_results first (keep last 4 messages intact)
+        for (size_t i = 0; i + 4 < msgs.size(); i++) {
             if (msgs[i].value("role", "") == "user" && msgs[i].contains("content") && msgs[i]["content"].is_array()) {
                 for (auto& block : msgs[i]["content"]) {
                     if (block.value("type", "") == "tool_result") {
                         if (block.contains("content") && block["content"].is_string()) {
                             std::string content = block["content"].get<std::string>();
-                            if (content.size() > 200) {
-                                block["content"] = content.substr(0, 150) + "\n[cleared for context limit]";
+                            if (content.size() > 500) {
+                                block["content"] = content.substr(0, 400) + "\n[cleared for context limit]";
                             }
                         } else if (block.contains("content") && block["content"].is_array()) {
                             for (auto& sub : block["content"]) {
                                 if (sub.value("type", "") == "text") {
                                     std::string text = sub.value("text", "");
-                                    if (text.size() > 200) {
-                                        sub["text"] = text.substr(0, 150) + "\n[cleared for context limit]";
+                                    if (text.size() > 500) {
+                                        sub["text"] = text.substr(0, 400) + "\n[cleared for context limit]";
                                     }
                                 }
                             }
@@ -104,6 +95,9 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
                     }
                 }
             }
+            // Re-check after each message cleared
+            msgsStr = msgs.dump();
+            if (msgsStr.size() <= MAX_MESSAGES_SIZE) break;
         }
     }
 
@@ -352,7 +346,7 @@ void RemoteAPIClient::streamChat(
                 handleSSEEvent(event, callback, currentToolName, currentToolId, currentToolJson);
             });
             CurlStreamCtx curlCtx{&parser};
-            waitForRateLimit();
+            APIRequestGuard guard;  // Serializes + rate-limits all API calls
             performCurlSSE(url, bodyStr, apiKey_, curlCtx);
             parser.finish();
             return; // Success
