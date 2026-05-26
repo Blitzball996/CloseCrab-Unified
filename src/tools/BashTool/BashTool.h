@@ -84,7 +84,7 @@ private:
         std::thread([cmd, taskId]() {
             std::string output;
 #ifdef _WIN32
-            std::string fullCmd = "bash -c \"" + cmd + "\" 2>&1";
+            std::string fullCmd = "\"C:/Program Files/Git/bin/bash.exe\" -c \"" + cmd + "\" 2>&1";
             std::unique_ptr<FILE, decltype(&_pclose)> pipe(_popen(fullCmd.c_str(), "r"), _pclose);
 #else
             std::string fullCmd = cmd + " 2>&1";
@@ -135,8 +135,8 @@ private:
         }
         SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
 
-        // Build command line — use bash for Unix command compatibility
-        std::string fullCmd = "bash -c \"" + cmd + "\"";
+        // Build command line — use Git Bash for Unix command compatibility
+        std::string fullCmd = "\"C:/Program Files/Git/bin/bash.exe\" -c \"" + cmd + "\"";
         std::vector<char> cmdBuf(fullCmd.begin(), fullCmd.end());
         cmdBuf.push_back('\0');
 
