@@ -71,7 +71,7 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
     // Only compact when messages exceed 200KB (JackProAi MAX_TOOL_RESULTS_PER_MESSAGE_CHARS).
     // The QueryEngine pre-flight check (30K tokens ≈ 120KB) is the primary defense.
     constexpr size_t MAX_MESSAGES_SIZE = 200000;
-    std::string msgsStr = msgs.dump();
+    std::string msgsStr = msgs.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
     if (msgsStr.size() > MAX_MESSAGES_SIZE && msgs.size() > 4) {
         // Clear oldest tool_results first (keep last 4 messages intact)
         for (size_t i = 0; i + 4 < msgs.size(); i++) {
@@ -97,7 +97,7 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
                 }
             }
             // Re-check after each message cleared
-            msgsStr = msgs.dump();
+            msgsStr = msgs.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
             if (msgsStr.size() <= MAX_MESSAGES_SIZE) break;
         }
     }
@@ -340,7 +340,8 @@ void RemoteAPIClient::streamChat(
 
     for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         auto body = buildRequestBody(messages, systemPrompt, config, activeModel);
-        std::string bodyStr = body.dump();
+        // Use error_handler_t::replace to handle invalid UTF-8 (Chinese chars, tool output)
+        std::string bodyStr = body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 
         if (attempt == 1) {
             spdlog::info("API request: {} bytes, {} tools, system_prompt={} chars, model={}, url={}",
@@ -352,7 +353,7 @@ void RemoteAPIClient::streamChat(
         if (const char* debugDir = std::getenv("CLOSECRAB_DEBUG_DIR")) {
             std::string debugPath = std::string(debugDir) + "/last_request.json";
             std::ofstream dbg(debugPath);
-            if (dbg.is_open()) { dbg << body.dump(2); dbg.close(); }
+            if (dbg.is_open()) { dbg << body.dump(2, ' ', false, nlohmann::json::error_handler_t::replace); dbg.close(); }
         }
 
         try {
