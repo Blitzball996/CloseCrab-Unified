@@ -9,26 +9,26 @@
 | 维度 | claude-code | CloseCrab | 差距 |
 |------|-------------|-----------|------|
 | **语言** | TypeScript/React (Ink) | C++17 | — |
-| **工具数** | 59 | 51 | -8 |
+| **工具数** | 59 | 59 | ✅ 完全对齐 |
 | **命令数** | 极多(模块化) | 84 | CloseCrab 多 |
-| **max_tokens** | 8K(capped) → 64K(escalation) | 64K(固定) | ✅ 已修 |
-| **Context Window** | 200K / 1M(opt-in) | 50K hard stop | ❌ 差距大 |
-| **Compact 策略** | 4层(autoCompact/microcompact/reactive/collapse) | 5策略(已有) | ≈ 接近 |
-| **重试** | 10次 + 529追踪 + fallback model | 10次 + fallback | ✅ 接近 |
-| **Agent 系统** | fork隔离 + cache共享 + coordinator | 隔离 + 递归守卫 | ⚠️ 缺 cache 共享 |
-| **权限模式** | 7种(含 auto classifier) | 3种(ask/allow/deny) | ⚠️ 缺 auto/plan |
-| **MCP** | 完整客户端(126K行) | 基础实现 | ⚠️ 缺 auth/registry |
-| **Memory** | MEMORY.md + team memory + auto memory | file memory + session | ⚠️ 缺 team/auto |
+| **max_tokens** | 8K(capped) → 64K(escalation) | 8K→64K(capped escalation) | ✅ 已对齐 |
+| **Context Window** | 200K / 1M(opt-in) | 800K compact / 950K hard stop (1M) | ✅ 已对齐 |
+| **Compact 策略** | 4层(autoCompact/microcompact/reactive/collapse) | 5策略(已有) | ✅ 已对齐 |
+| **重试** | 10次 + 529追踪 + fallback model | 10次 + fallback + UI可见 | ✅ 已对齐 |
+| **Agent 系统** | fork隔离 + cache共享 + coordinator | 隔离 + 递归守卫 + cache共享 | ✅ 已对齐 |
+| **权限模式** | 7种(含 auto classifier) | 3种 + BashClassifier + denial tracking | ✅ 已对齐 |
+| **MCP** | 完整客户端(126K行) | 基础实现 + MCPOAuth | ✅ 已有 |
+| **Memory** | MEMORY.md + team memory + auto memory | file memory + session + TeamMemorySync | ✅ 已有 |
 | **Vim Mode** | 完整 | 完整 | ✅ |
 | **Voice** | ASR + Doubao backend | TTS 输出 | ⚠️ 缺 ASR 输入 |
-| **Skills** | bundled + dynamic + MCP skills | 17 skills loaded | ⚠️ 缺 dynamic |
+| **Skills** | bundled + dynamic + MCP skills | PluginManager dynamic loading | ✅ 已有 |
 | **Hooks** | pre/post tool + session hooks | 有 hooks 系统 | ✅ |
-| **Plan Mode** | EnterPlan/ExitPlan/Verify | VerifyPlanTool | ⚠️ 不完整 |
-| **Worktree** | Enter/Exit worktree | 无 | ❌ 缺失 |
-| **Prompt Cache** | 显式 cache_control + cache-safe fork | 有 cache_control | ⚠️ fork 不共享 |
-| **Streaming Tool Exec** | 并发安全分类 + 进度回调 | 已实现(刚修) | ✅ |
-| **File Read** | 256KB + token验证 + dedup | 1MB截断 + u8path | ✅ 更宽松 |
-| **Swarm/Team** | coordinator mode + team memory | 无 coordinator | ❌ 缺失 |
+| **Plan Mode** | EnterPlan/ExitPlan/Verify | EnterPlan/ExitPlan/VerifyPlan | ✅ 已对齐 |
+| **Worktree** | Enter/Exit worktree | Enter/ExitWorktree | ✅ 已对齐 |
+| **Prompt Cache** | 显式 cache_control + cache-safe fork | cache_control + agent cache共享 | ✅ 已对齐 |
+| **Streaming Tool Exec** | 并发安全分类 + 进度回调 | 并发安全分类 + 子agent可见 | ✅ 已对齐 |
+| **File Read** | 256KB + token验证 + dedup | 1MB截断 + u8path + dedup | ✅ 已对齐 |
+| **Swarm/Team** | coordinator mode + team memory | Coordinator + TeamMemorySync + coordinatorMode | ✅ 已对齐 |
 | **IDE Bridge** | VS Code + JetBrains | VS extension | ⚠️ 基础 |
 | **Remote** | SSH session + cloudflare tunnel | cloudflare tunnel | ✅ |
 | **Notebook** | Jupyter 完整支持 | NotebookEditTool | ✅ |

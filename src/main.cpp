@@ -75,6 +75,7 @@
 #include "tools/ImageInputTool/ImageInputTool.h"
 #include "tools/DebuggerTool/DebuggerTool.h"
 #include "tools/SystemInfoTool/SystemInfoTool.h"
+#include "tools/ExtraTools/ExtraTools.h"
 #include "mcp/MCPClient.h"
 #include "plugins/PluginManager.h"
 #include "core/CostTracker.h"
@@ -562,6 +563,15 @@ int main(int argc, char* argv[]) {
     toolRegistry.registerTool(std::make_unique<ImageInputTool>());
     toolRegistry.registerTool(std::make_unique<DebuggerTool>());
     toolRegistry.registerTool(std::make_unique<SystemInfoTool>());
+    // P3 tools (claude-code parity)
+    toolRegistry.registerTool(std::make_unique<CtxInspectTool>());
+    toolRegistry.registerTool(std::make_unique<ListPeersTool>());
+    toolRegistry.registerTool(std::make_unique<LocalMemoryRecallTool>());
+    toolRegistry.registerTool(std::make_unique<PushNotificationTool>());
+    toolRegistry.registerTool(std::make_unique<ReviewArtifactTool>());
+    toolRegistry.registerTool(std::make_unique<SendUserFileTool>());
+    toolRegistry.registerTool(std::make_unique<SubscribePRTool>());
+    toolRegistry.registerTool(std::make_unique<VaultHttpFetchTool>());
     spdlog::info("Registered {} tools", toolRegistry.getToolNames().size());
 
     // Load MCP servers from settings
