@@ -73,11 +73,17 @@ public:
                            ToolRegistry* parentToolRegistry, AppState* appState,
                            const std::string& cwd);
 
-    // Get agent result (blocks if still running and block=true)
+    // Get agent result (blocks if still running and block=true, with 300s timeout)
     AgentResult getResult(const std::string& agentId, bool block = true);
 
     // Kill a running agent
     void killAgent(const std::string& agentId);
+
+    // Cancel agent (external abort)
+    void cancelAgent(const std::string& agentId);
+
+    // Cleanup all agents on shutdown
+    void cleanup();
 
     // List all agents
     std::vector<std::pair<std::string, AgentStatus>> listAgents() const;

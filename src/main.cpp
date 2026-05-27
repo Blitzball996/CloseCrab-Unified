@@ -52,7 +52,9 @@
 #include "tools/WebTools/WebTools.h"
 #include "tools/MiscTools/MiscTools.h"
 #include "tools/AgentTool/AgentTool.h"
+#include "tools/ToolSearchTool/ToolSearchTool.h"
 #include "agents/AgentManager.h"
+#include "services/AgentProgress.h"
 #include "tools/WorkflowTools/WorkflowTools.h"
 #include "tools/CronTools/CronTools.h"
 #include "tools/MCPTools/MCPTools.h"
@@ -91,6 +93,7 @@
 // Commands
 #include "commands/GitCommands.h"
 #include "commands/SessionCommands.h"
+#include "services/SessionAutoSave.h"
 #include "commands/AdvancedCommands.h"
 #include "commands/ExtendedCommands.h"
 
@@ -524,6 +527,7 @@ int main(int argc, char* argv[]) {
     toolRegistry.registerTool(std::make_unique<SleepTool>());
     toolRegistry.registerTool(std::make_unique<SendMessageTool>());
     toolRegistry.registerTool(std::make_unique<AgentTool>());
+    toolRegistry.registerTool(std::make_unique<ToolSearchTool>());
     toolRegistry.registerTool(std::make_unique<EnterPlanModeTool>());
     toolRegistry.registerTool(std::make_unique<ExitPlanModeTool>());
     toolRegistry.registerTool(std::make_unique<EnterWorktreeTool>());
@@ -546,7 +550,7 @@ int main(int argc, char* argv[]) {
     toolRegistry.registerTool(std::make_unique<TaskStopTool>());
     toolRegistry.registerTool(std::make_unique<TaskOutputTool>());
     toolRegistry.registerTool(std::make_unique<RemoteTriggerTool>());
-    toolRegistry.registerTool(std::make_unique<ToolSearchTool>());
+    // ToolSearchTool already registered above (defer/discover version)
     toolRegistry.registerTool(std::make_unique<McpAuthTool>());
     toolRegistry.registerTool(std::make_unique<BriefTool>());
     toolRegistry.registerTool(std::make_unique<SyntheticOutputTool>());
@@ -612,6 +616,21 @@ Then work step by step using your tools to complete the task.)";
     Spinner spinner;
     InputHistory inputHistory;
     VimInput vimInput;
+
+    // Sub-agent activity sink (task B): print what each sub-agent is doing,
+    // prefixed with its id, so multi-agent work isn't an opaque spinner.
+    // Serialized by its own mutex; sub-agents run on worker threads.
+    AgentActivitySink::getInstance().setHandler(
+        [](const std::string& agentId, const std::string& line) {
+            static std::mutex sinkMutex;
+            std::lock_guard<std::mutex> lock(sinkMutex);
+            // Clear the current spinner line, then print the agent activity.
+            std::cout << "\r" << std::string(60, ' ') << "\r"
+                      << ansi::cyan() << "  [" << agentId << "]" << ansi::reset()
+                      << " " << ansi::dim() << line << ansi::reset() << "\n" << std::flush;
+            closecrab::MobileWebSocket::getInstance().sendText(
+                "[" + agentId + "] " + line + "\n");
+        });
 
     // ---- Main loop ----
     CommandContext cmdCtx;
@@ -683,18 +702,68 @@ Then work step by step using your tools to complete the task.)";
             std::cout << ansi::dim() << input.value("pattern", "") << ansi::reset();
         }
         std::cout << std::flush;
-        spinner.start(name);
+        // For Agent, don't run the opaque spinner — the sub-agent streams its own
+        // activity lines (task B), which the spinner would otherwise clobber.
+        if (name != "Agent") {
+            spinner.start(name);
+        } else {
+            std::cout << "\n";
+        }
         closecrab::MobileWebSocket::getInstance().sendToolUse(name, input.value("command", input.value("file_path", "")));
     };
     callbacks.onToolResult = [&spinner, &streamState](const std::string& name, const ToolResult& result) {
         spinner.stop();
         streamState = StreamState::WAITING;
         if (result.success) {
+            // Per-tool result display (JackProAi: renderToolResultMessage per tool)
+            std::string summary;
+            if (name == "Read") {
+                std::string path = result.data.is_object() ? result.data.value("filePath", "") : "";
+                int lines = result.data.is_object() ? result.data.value("numLines", 0) : 0;
+                // Extract basename by raw string scan — std::filesystem::path(path)
+                // round-trips through the ANSI code page and THROWS on CJK paths
+                // (e.g. "需求.txt"), which previously crashed the whole turn.
+                std::string fname;
+                if (!path.empty()) {
+                    size_t slash = path.find_last_of("/\\");
+                    fname = (slash == std::string::npos) ? path : path.substr(slash + 1);
+                }
+                summary = fname + " (" + std::to_string(lines) + " lines)";
+            } else if (name == "Write") {
+                // content format: "File written: path (N bytes)"
+                summary = result.content;
+            } else if (name == "Edit") {
+                summary = result.content;
+            } else if (name == "Glob") {
+                int count = result.data.is_object() ? result.data.value("numFiles", 0) : 0;
+                if (count > 0) summary = std::to_string(count) + " files matched";
+                else summary = result.content.substr(0, std::min((size_t)80, result.content.size()));
+            } else if (name == "Grep") {
+                int matches = result.data.is_object() ? result.data.value("numMatches", 0) : 0;
+                int files = result.data.is_object() ? result.data.value("numFiles", 0) : 0;
+                if (matches > 0) summary = std::to_string(matches) + " matches in " + std::to_string(files) + " files";
+                else summary = result.content.substr(0, std::min((size_t)80, result.content.size()));
+            } else if (name == "WebSearch") {
+                summary = result.content.substr(0, std::min((size_t)80, result.content.size()));
+            } else if (name == "WebFetch") {
+                summary = result.content.substr(0, std::min((size_t)80, result.content.size()));
+            } else if (name == "Agent") {
+                summary = result.content.substr(0, std::min((size_t)60, result.content.size()));
+            } else if (name == "Bash" || name == "PowerShell") {
+                // Keep existing collapsed output logic
+                summary = "";
+            } else {
+                summary = result.content.substr(0, std::min((size_t)80, result.content.size()));
+            }
+
             std::cout << " " << ansi::green() << "OK" << ansi::reset();
+            if (!summary.empty()) {
+                std::cout << " " << ansi::dim() << summary << ansi::reset();
+            }
             if (result.elapsedSeconds > 0.1) {
                 std::cout << ansi::dim() << " (" << std::fixed << std::setprecision(1) << result.elapsedSeconds << "s)" << ansi::reset();
             }
-            // Show collapsed output for execution tools so user can see progress
+            // Show collapsed output for execution tools
             if ((name == "Bash" || name == "PowerShell") && !result.content.empty()) {
                 auto collapsed = OutputCollapse::collapse(result.content);
                 std::cout << "\n" << ansi::dim() << collapsed.display << ansi::reset();
@@ -714,7 +783,7 @@ Then work step by step using your tools to complete the task.)";
         closecrab::MobileWebSocket::getInstance().sendToolResult(name, result.success, result.elapsedSeconds);
         spinner.start("Waiting for response...");
     };
-    callbacks.onComplete = [&spinner, &voiceAccumulator, &streamState, &firstToken]() {
+    callbacks.onComplete = [&spinner, &voiceAccumulator, &streamState, &firstToken, &sessionMgr, &sessionId]() {
         spinner.stop();
         streamState = StreamState::WAITING;
         firstToken = true;
@@ -724,6 +793,14 @@ Then work step by step using your tools to complete the task.)";
             VoiceEngine::getInstance().speak(voiceAccumulator);
         }
         voiceAccumulator.clear();
+        // JackProAi: persistSession → recordTranscript(messages) after each turn
+        try {
+            if (g_queryEngine) {
+                SessionAutoSave::save(&sessionMgr, sessionId, g_queryEngine->getMessages());
+            }
+        } catch (...) {
+            spdlog::warn("SessionAutoSave failed (non-fatal)");
+        }
     };
     callbacks.onError = [&spinner, &streamState, &firstToken](const std::string& err) {
         spinner.stop();
@@ -731,6 +808,16 @@ Then work step by step using your tools to complete the task.)";
         firstToken = true;
         std::cerr << ansi::red() << "Error: " << err << ansi::reset() << "\n";
         closecrab::MobileWebSocket::getInstance().sendError(err);
+    };
+    // Retry status (task C): update the spinner so the user sees progress
+    // instead of a frozen wheel during 503/network retries.
+    callbacks.onRetry = [&spinner](int attempt, int maxAttempts, int delayMs, const std::string& reason) {
+        double secs = delayMs / 1000.0;
+        std::ostringstream msg;
+        msg << "Retrying " << attempt << "/" << maxAttempts << " in "
+            << std::fixed << std::setprecision(1) << secs << "s (" << reason << ")";
+        spinner.setMessage(msg.str());
+        closecrab::MobileWebSocket::getInstance().sendText("[" + msg.str() + "]\n");
     };
     // Track session-level permission grants
     bool autoApproveSession = false;

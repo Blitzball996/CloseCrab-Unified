@@ -35,52 +35,82 @@ public:
         namespace fs = std::filesystem;
         std::string path = input["file_path"].get<std::string>();
 
-        if (!fs::exists(path)) {
+        // Unicode-safe path: interpret the incoming string as UTF-8 and build a
+        // native (wide on Windows) path. A narrow std::string path goes through
+        // the ANSI code page on MSVC, which throws on CJK filenames ("需求.txt").
+        fs::path fsPath;
+        try {
+            fsPath = fs::u8path(path);
+        } catch (...) {
+            fsPath = fs::path(path);
+        }
+
+        std::error_code ec;
+        if (!fs::exists(fsPath, ec) || ec) {
             return ToolResult::fail("File not found: " + path);
         }
-        if (fs::is_directory(path)) {
+        if (fs::is_directory(fsPath, ec)) {
             return ToolResult::fail("Path is a directory, not a file: " + path);
         }
 
-        auto fileSize = fs::file_size(path);
-        if (fileSize > 256 * 1024) { // 256KB limit (aligned with JackProAi)
-            return ToolResult::fail("File too large (" + std::to_string(fileSize / 1024) + "KB). Use offset+limit to read sections.");
-        }
+        // Whether the model explicitly scoped the read. JackProAi only applies a
+        // size cap when reading the WHOLE file (no limit); an explicit limit reads
+        // that range regardless of file size.
+        bool hasExplicitLimit = input.contains("limit") && !input["limit"].is_null();
+        int offset = input.value("offset", 0);
+        int limit = input.value("limit", 2000);
+        if (limit <= 0) limit = 2000;
 
-        std::ifstream file(path);
+        // Byte safety cap so an unbounded read of a huge file can't blow up memory.
+        // Only applies when no explicit limit was requested.
+        constexpr size_t BYTE_CAP = 1024 * 1024; // 1MB of returned text
+
+        std::ifstream file(fsPath, std::ios::binary);
         if (!file.is_open()) {
             return ToolResult::fail("Cannot open file: " + path);
         }
-
-        int offset = input.value("offset", 0);
-        int limit = input.value("limit", 2000);
 
         std::string result;
         std::string line;
         int lineNum = 0;
         int linesRead = 0;
-        int totalLines = 0;
+        bool truncatedByBytes = false;
 
-        // Count total lines first (for metadata)
-        while (std::getline(file, line)) totalLines++;
-        file.clear();
-        file.seekg(0);
-
-        // Read with offset and limit
         while (std::getline(file, line)) {
+            // Strip a trailing CR so CRLF files don't leave stray \r in output.
+            if (!line.empty() && line.back() == '\r') line.pop_back();
             if (lineNum >= offset && linesRead < limit) {
                 result += std::to_string(lineNum + 1) + "\t" + line + "\n";
                 linesRead++;
+                if (!hasExplicitLimit && result.size() > BYTE_CAP) {
+                    truncatedByBytes = true;
+                    lineNum++;
+                    break;
+                }
             }
             lineNum++;
-            if (linesRead >= limit) break;
+            // Stop scanning for total-line count once we've read our window plus a
+            // small lookahead — avoids walking the rest of a multi-GB file.
+            if (linesRead >= limit && lineNum > offset + limit + 1000) break;
+        }
+        int totalLines = lineNum;
+
+        // Append a truncation note so the model knows there's more and how to get it.
+        bool truncated = truncatedByBytes || (linesRead >= limit && totalLines > offset + linesRead);
+        if (truncated) {
+            int nextOffset = offset + linesRead;
+            result += "\n[Truncated: showed lines " + std::to_string(offset + 1) + "-" +
+                      std::to_string(offset + linesRead) + ". File has more content. " +
+                      "Read more with offset=" + std::to_string(nextOffset) +
+                      (truncatedByBytes ? " (stopped at 1MB)." : ".") + "]\n";
         }
 
         nlohmann::json data = {
             {"filePath", path},
             {"numLines", linesRead},
             {"startLine", offset + 1},
-            {"totalLines", totalLines}
+            {"totalLines", totalLines},
+            {"truncated", truncated}
         };
 
         return ToolResult::ok(ensureUtf8(result), data);

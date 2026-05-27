@@ -40,6 +40,11 @@ struct QueryEngineConfig {
 
     // Tool filter: if non-empty, only these tools are available (for sub-agents)
     std::vector<std::string> allowedTools;
+
+    // Recursive-spawn guard: sub-agents set this false so they cannot launch
+    // their own Agent sub-agents (mirrors JackProAi's fork recursion guard).
+    // Prevents unbounded thread explosion that crashed the process.
+    bool allowSubagents = true;
 };
 
 // Callbacks for UI integration
@@ -52,6 +57,10 @@ struct QueryCallbacks {
     std::function<void(const std::string&)> onError;
     // Permission prompt: return true to allow, false to deny
     std::function<bool(const std::string& toolName, const std::string& description)> onAskPermission;
+    // Retry status: surfaced to UI so the user sees "retrying N/M in Xs" instead
+    // of a frozen spinner. attempt/maxAttempts are 1-based; reason is short.
+    // Kept last so existing positional brace-initializers stay valid.
+    std::function<void(int attempt, int maxAttempts, int delayMs, const std::string& reason)> onRetry;
 };
 
 class QueryEngine {

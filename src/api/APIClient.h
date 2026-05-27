@@ -20,16 +20,20 @@ struct StreamEvent {
         EVT_THINKING,       // Extended thinking content
         EVT_STOP,           // Generation stopped
         EVT_ERROR,          // Error occurred
-        EVT_USAGE_UPDATE    // Token usage update
+        EVT_USAGE_UPDATE,   // Token usage update
+        EVT_RETRY           // Retryable failure — about to retry (surfaced to UI)
     };
 
     Type type = EVT_TEXT;
-    std::string content;        // TEXT / THINKING / ERROR
+    std::string content;        // TEXT / THINKING / ERROR / RETRY (reason)
     std::string toolName;       // TOOL_USE
     std::string toolUseId;      // TOOL_USE
     nlohmann::json toolInput;   // TOOL_USE
     std::string stopReason;     // STOP: "end_turn", "tool_use", "max_tokens"
     TokenUsage usage;           // USAGE_UPDATE
+    int retryAttempt = 0;       // RETRY: 1-based attempt number
+    int retryMax = 0;           // RETRY: max attempts
+    int retryDelayMs = 0;       // RETRY: delay before next attempt
 
     // Convenience constructors
     StreamEvent() = default;

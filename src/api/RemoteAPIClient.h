@@ -11,7 +11,7 @@ class RemoteAPIClient : public APIClient {
 public:
     RemoteAPIClient(const std::string& apiKey,
                     const std::string& baseUrl = "https://api.anthropic.com",
-                    const std::string& model = "claude-sonnet-4-20250514");
+                    const std::string& model = "claude-opus-4-7");
 
     void streamChat(
         const std::vector<Message>& messages,

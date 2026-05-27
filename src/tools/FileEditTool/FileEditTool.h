@@ -2,6 +2,7 @@
 
 #include "../Tool.h"
 #include "../../core/FileStateCache.h"
+#include "../../utils/StringUtils.h"
 #include <fstream>
 #include <sstream>
 #include <filesystem>
@@ -58,12 +59,16 @@ public:
         std::string path = input["file_path"].get<std::string>();
         std::string newStr = input["new_string"].get<std::string>();
 
-        if (!fs::exists(path)) {
+        // UTF-8-safe path (handles CJK filenames like "需求.txt" on Windows)
+        fs::path fsPath = utf8Path(path);
+
+        std::error_code ec;
+        if (!fs::exists(fsPath, ec) || ec) {
             return ToolResult::fail("File not found: " + path);
         }
 
         // Read file
-        std::ifstream inFile(path, std::ios::binary);
+        std::ifstream inFile(fsPath, std::ios::binary);
         if (!inFile.is_open()) {
             return ToolResult::fail("Cannot open file: " + path);
         }
@@ -97,7 +102,7 @@ public:
                 }
             }
 
-            std::ofstream outFile(path, std::ios::binary);
+            std::ofstream outFile(fsPath, std::ios::binary);
             if (!outFile.is_open()) {
                 return ToolResult::fail("Cannot write to file: " + path);
             }
@@ -158,16 +163,52 @@ public:
         }
 
         // Write back
-        std::ofstream outFile(path, std::ios::binary);
+        std::ofstream outFile(fsPath, std::ios::binary);
         if (!outFile.is_open()) {
             return ToolResult::fail("Cannot write to file: " + path);
         }
         outFile << modified;
         outFile.close();
 
+        // Build diff preview (JackProAi shows old/new lines)
         std::string msg = replaceAll
             ? "Replaced " + std::to_string(count) + " occurrences in " + path
             : "Replaced 1 occurrence in " + path;
+
+        auto getFirstLines = [](const std::string& s, int n) -> std::string {
+            std::string result;
+            std::istringstream iss(s);
+            std::string line;
+            int i = 0;
+            while (std::getline(iss, line) && i < n) {
+                if (line.size() > 100) line = line.substr(0, 100) + "...";
+                result += line + "\n";
+                i++;
+            }
+            return result;
+        };
+
+        std::string diffPreview;
+        std::string oldPreview = getFirstLines(oldStr, 3);
+        std::string newPreview = getFirstLines(newStr, 3);
+        if (!oldPreview.empty()) {
+            for (auto& c : oldPreview) { /* just use as-is */ }
+            std::istringstream oldStream(oldPreview);
+            std::string l;
+            while (std::getline(oldStream, l)) {
+                diffPreview += "  - " + l + "\n";
+            }
+        }
+        if (!newPreview.empty()) {
+            std::istringstream newStream(newPreview);
+            std::string l;
+            while (std::getline(newStream, l)) {
+                diffPreview += "  + " + l + "\n";
+            }
+        }
+        if (!diffPreview.empty()) {
+            msg += "\n" + diffPreview;
+        }
 
         FileStateCache::getInstance().invalidate(path);
         return ToolResult::ok(msg);

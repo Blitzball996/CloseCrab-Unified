@@ -43,51 +43,9 @@ public:
     }
 };
 
-// ToolSearchTool — search for tools by name or description (deferred loading)
-class ToolSearchTool : public Tool {
-public:
-    std::string getName() const override { return "ToolSearch"; }
-    std::string getDescription() const override {
-        return "Search for available tools by name or description keyword.";
-    }
-    std::string getCategory() const override { return "system"; }
-    bool isReadOnly() const override { return true; }
-    bool isHidden() const override { return true; } // Internal use
+// ToolSearchTool moved to tools/ToolSearchTool/ToolSearchTool.h (JackProAi-style defer/discover)
 
-    nlohmann::json getInputSchema() const override {
-        return {{"type","object"},{"properties",{
-            {"query",{{"type","string"},{"description","Search keyword"}}}
-        }},{"required",{"query"}}};
-    }
 
-    ToolResult call(ToolContext& ctx, const nlohmann::json& input) override {
-        std::string query = input["query"].get<std::string>();
-        std::string queryLower = query;
-        std::transform(queryLower.begin(), queryLower.end(), queryLower.begin(), ::tolower);
-
-        auto& registry = ToolRegistry::getInstance();
-        auto allTools = registry.getAllTools();
-
-        std::string result;
-        int count = 0;
-        for (const auto* tool : allTools) {
-            std::string name = tool->getName();
-            std::string desc = tool->getDescription();
-            std::string nameLower = name, descLower = desc;
-            std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(), ::tolower);
-            std::transform(descLower.begin(), descLower.end(), descLower.begin(), ::tolower);
-
-            if (nameLower.find(queryLower) != std::string::npos ||
-                descLower.find(queryLower) != std::string::npos) {
-                result += name + " — " + desc + "\n";
-                count++;
-            }
-        }
-
-        if (count == 0) return ToolResult::ok("No tools matching: " + query);
-        return ToolResult::ok(std::to_string(count) + " tools found:\n" + result);
-    }
-};
 
 // McpAuthTool — authenticate with an MCP server (OAuth)
 class McpAuthTool : public Tool {

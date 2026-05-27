@@ -5,32 +5,11 @@
 #include <spdlog/spdlog.h>
 #include <fstream>
 #include <cstdlib>
-#include <mutex>
-#include <condition_variable>
 #include <chrono>
 #include <thread>
 
-// Global rate limiter: minimal serialization to prevent truly simultaneous requests.
-// JackProAi has NO explicit rate limiting — relies on server-side limits + fast retry (500ms base).
-// We keep a 500ms minimum gap just to prevent curl connection issues on Windows.
-static std::mutex g_rateMutex;
-static std::chrono::steady_clock::time_point g_lastRequestTime;
-static constexpr int MIN_REQUEST_INTERVAL_MS = 500;  // JackProAi: no limit, 500ms BASE_DELAY_MS
-
-struct APIRequestGuard {
-    APIRequestGuard() {
-        g_rateMutex.lock();
-        auto now = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastRequestTime).count();
-        if (elapsed < MIN_REQUEST_INTERVAL_MS) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(MIN_REQUEST_INTERVAL_MS - elapsed));
-        }
-    }
-    ~APIRequestGuard() {
-        g_lastRequestTime = std::chrono::steady_clock::now();
-        g_rateMutex.unlock();
-    }
-};
+// JackProAi has NO explicit rate limiting — relies on server-side limits + fast retry.
+// Removed global mutex serialization that was blocking concurrent agent requests.
 
 namespace closecrab {
 
@@ -337,8 +316,11 @@ void RemoteAPIClient::streamChat(
             "No API key configured. Use --api-key or set ANTHROPIC_AUTH_TOKEN.");
     }
 
-    std::string url = baseUrl_ + "/v1/messages";
-    constexpr int MAX_RETRIES = 3;
+    // Strip trailing slash from baseUrl to avoid double-slash in URL
+    std::string base = baseUrl_;
+    while (!base.empty() && base.back() == '/') base.pop_back();
+    std::string url = base + "/v1/messages";
+    constexpr int MAX_RETRIES = 10;
     constexpr int FALLBACK_THRESHOLD = 3;
     int consecutive503 = 0;
     std::string activeModel = model_;
@@ -367,10 +349,7 @@ void RemoteAPIClient::streamChat(
                 handleSSEEvent(event, callback, currentToolName, currentToolId, currentToolJson);
             });
             CurlStreamCtx curlCtx{&parser};
-            {
-                APIRequestGuard guard;  // Only protect the curl call, NOT the sleep
-                performCurlSSE(url, bodyStr, apiKey_, curlCtx);
-            }  // Mutex released here - before parser.finish() and before any sleep
+            performCurlSSE(url, bodyStr, apiKey_, curlCtx);
             parser.finish();
             return; // Success
         } catch (const APIError& e) {
@@ -380,21 +359,33 @@ void RemoteAPIClient::streamChat(
 
             // Model fallback: after N consecutive 503/529, switch to fallback model
             if (consecutive503 >= FALLBACK_THRESHOLD && !fallbackModel_.empty() && activeModel != fallbackModel_) {
-                spdlog::debug("Model fallback: {} -> {}", activeModel, fallbackModel_);
+                spdlog::warn("Model fallback: {} -> {}", activeModel, fallbackModel_);
                 activeModel = fallbackModel_;
                 consecutive503 = 0;
             }
 
             if (attempt >= MAX_RETRIES) throw;
 
-            // Fast retry: 1s, 2s, 4s max (total <10s). JackProAi MAX_529_RETRIES=3
-            int baseDelay = 1000 * (1 << (attempt - 1));  // 1000, 2000, 4000
-            if (baseDelay > 5000) baseDelay = 5000;
+            // Exponential backoff: 500ms base, cap 30s (JackProAi: POST_BASE_DELAY_MS=500, pow(2,attempt-1))
+            int baseDelay = 500 * (1 << (attempt - 1));  // 500, 1000, 2000, 4000, 8000, 16000, 30000...
+            if (baseDelay > 30000) baseDelay = 30000;
             int jitter = rand() % (baseDelay / 4 + 1);
             int delayMs = baseDelay + jitter;
 
-            // All retries silent (debug level only)
-            spdlog::debug("Retry {}/{}, model={}, waiting {}ms", attempt, MAX_RETRIES, activeModel, delayMs);
+            // Show retry progress to user (JackProAi: "Retrying in Xs... (attempt N/M)")
+            spdlog::warn("Retrying in {}ms (attempt {}/{}, model={})...", delayMs, attempt, MAX_RETRIES, activeModel);
+            // Surface to the UI so the spinner shows "retrying N/M" instead of
+            // appearing frozen. e.statusCode 503 = provider unavailable.
+            {
+                StreamEvent retryEvent;
+                retryEvent.type = StreamEvent::EVT_RETRY;
+                retryEvent.retryAttempt = attempt;
+                retryEvent.retryMax = MAX_RETRIES;
+                retryEvent.retryDelayMs = delayMs;
+                retryEvent.content = (e.httpStatus == 503 || e.httpStatus == 529)
+                    ? "service busy" : "network error";
+                callback(retryEvent);
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
         }
     }

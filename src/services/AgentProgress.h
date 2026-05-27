@@ -3,6 +3,7 @@
 #include <map>
 #include <mutex>
 #include <atomic>
+#include <functional>
 
 namespace closecrab {
 
@@ -50,6 +51,39 @@ private:
     mutable std::mutex mutex_;
     std::map<std::string, int> progress_;
     std::map<std::string, std::string> actions_;
+};
+
+// Thread-safe sink for streaming sub-agent activity to the main UI.
+// AgentManager (running on worker threads) emits one line per sub-agent tool
+// event; main.cpp installs a sink that prints them with an [agentId] prefix so
+// the user can see what each sub-agent is doing instead of an opaque spinner.
+class AgentActivitySink {
+public:
+    static AgentActivitySink& getInstance() {
+        static AgentActivitySink instance;
+        return instance;
+    }
+
+    using Handler = std::function<void(const std::string& agentId, const std::string& line)>;
+
+    void setHandler(Handler h) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        handler_ = std::move(h);
+    }
+
+    void log(const std::string& agentId, const std::string& line) {
+        Handler h;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            h = handler_;
+        }
+        if (h) h(agentId, line);
+    }
+
+private:
+    AgentActivitySink() = default;
+    std::mutex mutex_;
+    Handler handler_;
 };
 
 } // namespace closecrab

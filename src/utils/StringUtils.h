@@ -2,12 +2,27 @@
 
 #include <string>
 #include <algorithm>
+#include <filesystem>
 
 #ifdef _WIN32
 #include <windows.h>
 #endif
 
 namespace closecrab {
+
+// Build a std::filesystem::path from a UTF-8 string without going through the
+// ANSI code page. On Windows, constructing fs::path from a narrow std::string
+// interprets the bytes as the active code page (936/GBK here), which throws on
+// CJK paths like "需求.txt". fs::u8path interprets the bytes as UTF-8 and
+// produces the correct native (wide) path. Use this for ALL file I/O paths that
+// originate from tool input (which arrives as UTF-8 JSON).
+inline std::filesystem::path utf8Path(const std::string& p) {
+    try {
+        return std::filesystem::u8path(p);
+    } catch (...) {
+        return std::filesystem::path(p);
+    }
+}
 
 // Sanitize a string to valid UTF-8 by replacing invalid bytes with '?'
 // This prevents nlohmann::json from throwing on non-UTF-8 content

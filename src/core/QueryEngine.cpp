@@ -83,10 +83,9 @@ std::string QueryEngine::buildSystemPrompt() const {
         }
     }
 
-    // For remote APIs: brief fallback instructions (tools sent via native tool_use)
-    if (config_.toolRegistry && config_.apiClient && !config_.apiClient->isLocal()) {
-        prompt += "\n\nIf tool_use is unavailable, invoke tools by outputting:\nSKILL: <tool_name>\nPARAMS: <json>\n";
-    }
+    // For remote APIs: do NOT add fallback prompt — it confuses the model into using
+    // text-based tool calls instead of native tool_use. JackProAi never adds this.
+    // Native tool_use is sent via the `tools` field in the request body.
 
     // Append file-based memories (MEMORY.md index) — cache to avoid disk IO every turn
     static std::string cachedMemIndex;
@@ -146,22 +145,75 @@ ModelConfig QueryEngine::buildModelConfig() const {
                 }
             }
         } else {
-            // 9 core tools - proxy limit ~5KB per request body
-            // Prompt caching doesn't help because proxy limits on RAW body size
-            static const std::set<std::string> CORE_TOOLS = {
+            // JackProAi-style ToolSearch + defer_loading:
+            // - Always-loaded tools (core) get full schema in initial request
+            // - Deferred tools get full schema only after model calls ToolSearch with their name
+            //   (we scan message history for "tool_reference" markers from ToolSearch results)
+            // This keeps proxy-facing request small while exposing all tools via discovery.
+            static const std::set<std::string> ALWAYS_LOAD = {
                 "Read", "Write", "Edit", "Glob", "Grep", "Bash",
-                "AskUserQuestion", "Agent", "WebSearch"
+                "AskUserQuestion", "Agent", "WebSearch",
+                "ToolSearch"  // ToolSearch itself must always be available
             };
+
+            // Extract discovered tools from message history — JackProAi extractDiscoveredToolNames()
+            std::set<std::string> discovered;
+            for (const auto& msg : messages_) {
+                for (const auto& block : msg.content) {
+                    if (block.type != ContentBlockType::TOOL_RESULT) continue;
+                    std::string text = block.toolResult.is_string()
+                        ? block.toolResult.get<std::string>()
+                        : block.toolResult.dump();
+                    // Scan for <tool_reference name="X"/> markers
+                    size_t pos = 0;
+                    while ((pos = text.find("<tool_reference name=\"", pos)) != std::string::npos) {
+                        pos += 22;
+                        size_t end = text.find("\"", pos);
+                        if (end == std::string::npos) break;
+                        discovered.insert(text.substr(pos, end - pos));
+                        pos = end + 1;
+                    }
+                }
+            }
+
             bool planMode = config_.appState && config_.appState->planMode;
             for (Tool* t : config_.toolRegistry->getAllTools()) {
                 if (!t || !t->isEnabled() || t->isHidden()) continue;
                 if (planMode && !t->isReadOnly()) continue;
-                if (CORE_TOOLS.find(t->getName()) == CORE_TOOLS.end()) continue;
+
+                bool isAlwaysLoad = ALWAYS_LOAD.find(t->getName()) != ALWAYS_LOAD.end();
+                bool isDiscovered = discovered.count(t->getName()) > 0;
+
+                // Only send tool schema if it's always-loaded OR has been discovered via ToolSearch
+                if (!isAlwaysLoad && !isDiscovered) continue;
+
                 nlohmann::json def;
                 def["name"] = t->getName();
                 def["description"] = t->getDescription();
                 def["input_schema"] = t->getInputSchema();
                 toolDefs.push_back(std::move(def));
+            }
+
+            // For deferred (not-yet-discovered) tools: append their names to ToolSearch's
+            // description so the model knows what's available to discover.
+            // JackProAi does this via <available-deferred-tools> system reminder.
+            std::vector<std::string> deferredNames;
+            for (Tool* t : config_.toolRegistry->getAllTools()) {
+                if (!t || !t->isEnabled() || t->isHidden()) continue;
+                if (planMode && !t->isReadOnly()) continue;
+                if (ALWAYS_LOAD.count(t->getName())) continue;
+                if (discovered.count(t->getName())) continue;
+                deferredNames.push_back(t->getName());
+            }
+            if (!deferredNames.empty()) {
+                for (auto& def : toolDefs) {
+                    if (def.value("name", "") == "ToolSearch") {
+                        std::string extra = "\n\nAvailable deferred tools (call ToolSearch to load schema):\n";
+                        for (const auto& n : deferredNames) extra += "- " + n + "\n";
+                        def["description"] = def["description"].get<std::string>() + extra;
+                        break;
+                    }
+                }
             }
         }
 
@@ -173,6 +225,18 @@ ModelConfig QueryEngine::buildModelConfig() const {
 
 void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks& callbacks) {
     if (!config_.toolRegistry) return;
+
+    // Recursive-spawn guard: a sub-agent must not launch its own sub-agents.
+    // Nested Agent spawning caused unbounded thread growth and crashed the
+    // process (mirrors JackProAi's "fork not available inside a forked worker").
+    if (!config_.allowSubagents && event.toolName == "Agent") {
+        auto errResult = ToolResult::fail(
+            "Sub-agents cannot spawn other agents. Complete the task with your own tools.");
+        if (callbacks.onToolResult) callbacks.onToolResult(event.toolName, errResult);
+        messages_.push_back(Message::makeToolResult(event.toolUseId,
+            nlohmann::json(errResult.error), true));
+        return;
+    }
 
     // Check tool filter (for sub-agents with restricted tool sets)
     if (!config_.allowedTools.empty()) {
@@ -535,6 +599,12 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                     case StreamEvent::EVT_ERROR:
                         if (callbacks.onError) callbacks.onError(event.content);
                         break;
+
+                    case StreamEvent::EVT_RETRY:
+                        if (callbacks.onRetry)
+                            callbacks.onRetry(event.retryAttempt, event.retryMax,
+                                              event.retryDelayMs, event.content);
+                        break;
                 }
             }
         );
@@ -617,12 +687,31 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                 // Single tool: execute directly
                 processToolUse(pendingToolCalls[0], callbacks);
             } else {
-                // Multiple tools: execute in parallel using std::async
+                // Partition: only concurrency-safe (read-only) tools run in
+                // parallel. Stateful tools (Agent, Bash, Write, Edit) run
+                // sequentially via processToolUse — this is what stops the
+                // multi-agent thread explosion that crashed the process, and
+                // mirrors JackProAi running non-concurrency-safe tools serially.
+                std::vector<StreamEvent> parallelCalls;
+                std::vector<StreamEvent> serialCalls;
+                for (const auto& tc : pendingToolCalls) {
+                    Tool* t = config_.toolRegistry ? config_.toolRegistry->getTool(tc.toolName) : nullptr;
+                    if (t && t->isConcurrencySafe()) parallelCalls.push_back(tc);
+                    else serialCalls.push_back(tc);
+                }
+
+                // Stateful tools first, sequentially (full permission + display).
+                for (const auto& tc : serialCalls) {
+                    if (interrupted_) break;
+                    processToolUse(tc, callbacks);
+                }
+
+                // Concurrency-safe tools in parallel.
                 static std::mutex stdoutMutex;
                 std::vector<std::future<void>> futures;
                 std::mutex messagesMutex;
 
-                for (const auto& tc : pendingToolCalls) {
+                for (const auto& tc : parallelCalls) {
                     if (interrupted_) break;
                     futures.push_back(std::async(std::launch::async, [&, tc]() {
                         if (interrupted_) return;
@@ -654,7 +743,17 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                         ctx.apiClient = config_.apiClient;
                         ctx.toolRegistry = config_.toolRegistry;
 
-                        ToolResult result = tool->call(ctx, localEvent.toolInput);
+                        // Never let a throwing tool escape the worker thread — an
+                        // uncaught exception in a std::async thread calls
+                        // std::terminate and kills the whole process.
+                        ToolResult result;
+                        try {
+                            result = tool->call(ctx, localEvent.toolInput);
+                        } catch (const std::exception& e) {
+                            result = ToolResult::fail(std::string("Internal error: ") + e.what());
+                        } catch (...) {
+                            result = ToolResult::fail("Internal error (unknown exception)");
+                        }
                         {
                             std::lock_guard<std::mutex> outLock(stdoutMutex);
                             if (callbacks.onToolResult) callbacks.onToolResult(localEvent.toolName, result);
