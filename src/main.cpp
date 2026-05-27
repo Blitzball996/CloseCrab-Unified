@@ -887,8 +887,10 @@ For large tasks: use Glob/Grep to explore, Read to understand, Write/Edit to cre
                   << ansi::cyan() << "> " << ansi::reset() << std::flush;
         std::string input = getUserInput();
 
-        if (input.empty()) continue;
-        if (std::cin.eof()) break;
+        if (input.empty()) {
+            if (std::cin.eof()) break;
+            continue;
+        }
 
         // Multi-line input: backslash continuation
         while (!input.empty() && input.back() == '\\') {
