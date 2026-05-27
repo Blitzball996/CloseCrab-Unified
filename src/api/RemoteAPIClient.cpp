@@ -15,7 +15,7 @@
 // We keep a 500ms minimum gap just to prevent curl connection issues on Windows.
 static std::mutex g_rateMutex;
 static std::chrono::steady_clock::time_point g_lastRequestTime;
-static constexpr int MIN_REQUEST_INTERVAL_MS = 5000;  // 5s after previous request FINISHED
+static constexpr int MIN_REQUEST_INTERVAL_MS = 500;  // JackProAi: no limit, 500ms BASE_DELAY_MS
 
 struct APIRequestGuard {
     APIRequestGuard() {
@@ -52,8 +52,22 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
 
     if (config.temperature >= 0 && config.tools.empty()) body["temperature"] = config.temperature;
 
-    // System prompt with cache_control (like JackProAi)
-    // Prompt caching makes subsequent requests cheap — proxy won't rate-limit cached requests
+    // === CRITICAL: Fields that JackProAi sends and proxy requires ===
+
+    // 1. Betas array (in request body, not just header)
+    body["betas"] = nlohmann::json::array({
+        "prompt-caching-2024-07-31",
+        "interleaved-thinking-2025-05-14",
+        "context-management-2025-06-27"
+    });
+
+    // 2. Context management (tells API to handle caching server-side)
+    body["context_management"] = {{"edits", nlohmann::json::array()}};
+
+    // 3. Metadata (request tracking - proxy uses this for session management)
+    body["metadata"] = {{"user_id", "closecrab-" + apiKey_.substr(apiKey_.size() > 8 ? apiKey_.size() - 8 : 0)}};
+
+    // System prompt with cache_control
     if (!systemPrompt.empty()) {
         body["system"] = nlohmann::json::array({
             {{"type", "text"}, {"text", systemPrompt}, {"cache_control", {{"type", "ephemeral"}}}}

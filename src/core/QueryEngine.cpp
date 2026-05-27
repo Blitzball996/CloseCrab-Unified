@@ -146,12 +146,13 @@ ModelConfig QueryEngine::buildModelConfig() const {
                 }
             }
         } else {
-            // Main engine: COMPACT tool format that stays under proxy's ~5KB limit
-            // Tested: 18 tools with empty schemas + embedded params = 4833 bytes = works
-            // Full schemas (7KB+) triggers proxy rate limiting
+            // Main engine: send CORE tools with full schemas (like JackProAi)
+            // JackProAi sends ~15 tools with full input_schema
             static const std::set<std::string> CORE_TOOLS = {
                 "Read", "Write", "Edit", "Glob", "Grep", "Bash",
-                "AskUserQuestion", "WebSearch", "WebFetch"
+                "AskUserQuestion", "Agent", "WebSearch", "WebFetch",
+                "TodoWrite", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList",
+                "SendMessage", "EnterPlanMode", "ExitPlanMode"
             };
             bool planMode = config_.appState && config_.appState->planMode;
             for (Tool* t : config_.toolRegistry->getAllTools()) {
@@ -160,18 +161,8 @@ ModelConfig QueryEngine::buildModelConfig() const {
                 if (CORE_TOOLS.find(t->getName()) == CORE_TOOLS.end()) continue;
                 nlohmann::json def;
                 def["name"] = t->getName();
-
-                std::string desc = t->getDescription();
-                auto schema = t->getInputSchema();
-                if (schema.contains("properties") && schema["properties"].is_object()) {
-                    desc += " Params:";
-                    for (auto& [key, val] : schema["properties"].items()) {
-                        desc += " " + key + "(" + val.value("type", "string") + ")";
-                    }
-                }
-                if (desc.size() > 300) desc = desc.substr(0, 300);
-                def["description"] = desc;
-                def["input_schema"] = {{"type", "object"}, {"properties", nlohmann::json::object()}};
+                def["description"] = t->getDescription();
+                def["input_schema"] = t->getInputSchema();
                 toolDefs.push_back(std::move(def));
             }
         }
