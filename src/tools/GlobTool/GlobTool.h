@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../Tool.h"
+#include "../../utils/StringUtils.h"
 #include <filesystem>
 #include <vector>
 #include <algorithm>
@@ -34,7 +35,10 @@ public:
         std::string pattern = input["pattern"].get<std::string>();
         std::string searchPath = input.value("path", ctx.cwd);
 
-        if (!fs::exists(searchPath) || !fs::is_directory(searchPath)) {
+        // UTF-8-safe path for CJK directory names
+        fs::path fsSearchPath = utf8Path(searchPath);
+        std::error_code ec;
+        if (!fs::exists(fsSearchPath, ec) || !fs::is_directory(fsSearchPath, ec)) {
             return ToolResult::fail("Directory not found: " + searchPath);
         }
 
@@ -51,11 +55,18 @@ public:
         const int maxResults = 100;
 
         try {
-            for (auto& entry : fs::recursive_directory_iterator(searchPath,
+            for (auto& entry : fs::recursive_directory_iterator(fsSearchPath,
                     fs::directory_options::skip_permission_denied)) {
                 if (!entry.is_regular_file()) continue;
 
-                std::string relPath = fs::relative(entry.path(), searchPath).string();
+                // Use u8string() to get UTF-8 bytes — .string() throws on CJK
+                // paths because MSVC converts through the ANSI code page.
+                std::string relPath;
+                try {
+                    relPath = fs::relative(entry.path(), fsSearchPath).u8string();
+                } catch (...) {
+                    continue; // Skip paths that can't be represented
+                }
                 // Normalize separators
                 std::replace(relPath.begin(), relPath.end(), '\\', '/');
 

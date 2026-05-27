@@ -119,7 +119,11 @@ std::string QueryEngine::buildSystemPrompt() const {
 
 ModelConfig QueryEngine::buildModelConfig() const {
     ModelConfig mc;
-    mc.maxTokens = 16384;
+    // JackProAi uses 64K for opus, 32K for sonnet. 16K was causing silent
+    // truncation when the model tried to write large files — the tool_use
+    // JSON would exceed max_tokens, get cut off, and the tool call silently
+    // dropped, making the model appear to "stop acting."
+    mc.maxTokens = 64000;
     mc.temperature = 0.7f;
     mc.stream = true;
 

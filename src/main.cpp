@@ -964,8 +964,14 @@ Then work step by step using your tools to complete the task.)";
         std::string tokenHint;
         if (g_queryEngine->getMessages().size() > 20) {
             int estTokens = 0;
-            for (const auto& m : g_queryEngine->getMessages())
-                estTokens += (int)m.getText().size() / 4;
+            for (const auto& m : g_queryEngine->getMessages()) {
+                // Count ALL content (text + tool results), not just getText()
+                // which only returns TEXT blocks and shows misleading "~0k tok"
+                // after agent turns that are mostly tool_result content.
+                auto j = m.toApiJson();
+                std::string serialized = j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+                estTokens += (int)serialized.size() / 4;
+            }
             tokenHint = ansi::gray() + "[~" + std::to_string(estTokens / 1000) + "k tok] " + ansi::reset();
         }
 
