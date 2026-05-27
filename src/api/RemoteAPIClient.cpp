@@ -10,12 +10,12 @@
 #include <chrono>
 #include <thread>
 
-// Global rate limiter: serializes ALL API requests and enforces minimum interval.
-// The proxy (yikoulian.cc) can handle ~20 RPM (JackProAi does 21.6 RPM / 324 calls in 15min).
-// Serialization prevents simultaneous requests from parallel agents.
+// Global rate limiter: minimal serialization to prevent truly simultaneous requests.
+// JackProAi has NO explicit rate limiting — relies on server-side limits + fast retry (500ms base).
+// We keep a 500ms minimum gap just to prevent curl connection issues on Windows.
 static std::mutex g_rateMutex;
 static std::chrono::steady_clock::time_point g_lastRequestTime;
-static constexpr int MIN_REQUEST_INTERVAL_MS = 3000;  // 3s between requests - cached requests are cheap
+static constexpr int MIN_REQUEST_INTERVAL_MS = 500;  // Match JackProAi BASE_DELAY_MS
 
 struct APIRequestGuard {
     APIRequestGuard() {
@@ -99,6 +99,14 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
             // Re-check after each message cleared
             msgsStr = msgs.dump();
             if (msgsStr.size() <= MAX_MESSAGES_SIZE) break;
+        }
+    }
+
+    // Add cache_control on last message's last block (JackProAi addCacheBreakpoints strategy)
+    if (!msgs.empty()) {
+        auto& lastMsg = msgs.back();
+        if (lastMsg.contains("content") && lastMsg["content"].is_array() && !lastMsg["content"].empty()) {
+            lastMsg["content"].back()["cache_control"] = {{"type", "ephemeral"}};
         }
     }
 
@@ -257,6 +265,8 @@ static void performCurlSSE(
     headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
     headers = curl_slist_append(headers, "content-type: application/json");
     headers = curl_slist_append(headers, "accept: text/event-stream");
+    // Beta headers (same as JackProAi SDK)
+    headers = curl_slist_append(headers, "anthropic-beta: interleaved-thinking-2025-05-14,prompt-caching-2024-07-31");
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -370,11 +380,10 @@ void RemoteAPIClient::streamChat(
 
             if (attempt >= MAX_RETRIES) throw;
 
-            // Short exponential backoff like JackProAi SDK: 3s, 6s, 12s, 24s, 30s cap
-            // The proxy returns transient 503 when upstream is busy — retries quickly succeed
-            int baseDelay = 3000 * (1 << (attempt - 1));
-            if (baseDelay > 30000) baseDelay = 30000;
-            int jitter = rand() % (baseDelay / 4 + 1);
+            // JackProAi retry: BASE_DELAY=500ms, exponential 2^n, 25% jitter, max 32s
+            int baseDelay = 500 * (1 << (attempt - 1));  // 500, 1000, 2000, 4000, 8000, 16000, 32000
+            if (baseDelay > 32000) baseDelay = 32000;
+            int jitter = rand() % (baseDelay / 4 + 1);  // 25% jitter
             int delayMs = baseDelay + jitter;
 
             // Silent for first 3 attempts (like JackProAi), then info level
