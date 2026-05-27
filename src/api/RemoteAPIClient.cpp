@@ -264,8 +264,8 @@ static void performCurlSSE(
     headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
     headers = curl_slist_append(headers, "content-type: application/json");
     headers = curl_slist_append(headers, "accept: text/event-stream");
-    // anthropic-beta: official Claude Code identity + prompt caching + token-efficient tools
-    headers = curl_slist_append(headers, "anthropic-beta: claude-code-20250219,prompt-caching-2024-07-31,token-efficient-tools-2026-03-28");
+    // anthropic-beta: matching Claude Code v2.1.152 headers
+    headers = curl_slist_append(headers, "anthropic-beta: claude-code-20250219,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05,extended-cache-ttl-2025-04-11,context-management-2025-06-27,structured-outputs-2025-12-15,advanced-tool-use-2025-11-20,tool-search-tool-2025-10-19,redact-thinking-2026-02-12,mid-conversation-system-2026-04-07,mcp-servers-2025-12-04");
     // Identity headers matching Claude Code SDK
     headers = curl_slist_append(headers, "User-Agent: claude-cli/2.1.152 (external, cli)");
     headers = curl_slist_append(headers, "x-app: cli");
