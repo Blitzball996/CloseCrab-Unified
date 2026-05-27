@@ -118,10 +118,23 @@ struct CurlStreamCtx {
 static size_t curlStreamCallback(char* ptr, size_t size, size_t nmemb, void* userdata) {
     auto* ctx = static_cast<CurlStreamCtx*>(userdata);
     size_t totalSize = size * nmemb;
-    std::string chunk(ptr, totalSize);
-    ctx->parser->feed(chunk);
-    // Also accumulate raw response for error diagnostics
-    ctx->rawResponse += chunk;
+    // CRITICAL: This is a C callback invoked by libcurl. If ANY exception
+    // escapes here, it's undefined behavior (MSVC calls std::terminate →
+    // instant crash with no error message). This was causing the "闪退 while
+    // writing" bug — large streaming responses could trigger exceptions in
+    // the parser or callback chain.
+    try {
+        std::string chunk(ptr, totalSize);
+        ctx->parser->feed(chunk);
+        // Cap raw response accumulation to prevent OOM on huge streams
+        if (ctx->rawResponse.size() < 200000) {
+            ctx->rawResponse += chunk;
+        }
+    } catch (...) {
+        // Swallow the exception — returning 0 tells CURL to abort the transfer,
+        // which will surface as a CURLE_WRITE_ERROR in performCurlSSE.
+        return 0;
+    }
     return totalSize;
 }
 

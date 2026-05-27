@@ -107,8 +107,10 @@ private:
     HistoryCompactor compactor_;
     ContextCollapse contextCollapse_;
 
-    // Capped escalation (claude-code strategy): start low, escalate on overflow.
-    int cappedMaxTokens_ = 8000;
+    // Capped escalation disabled: 8K cap caused repeated truncation of tool
+    // calls (model generates text before Write, hits 8K, escalation retries
+    // produce different non-tool responses). Just use 64K directly.
+    int cappedMaxTokens_ = 64000;
     static constexpr int ESCALATED_MAX_TOKENS = 64000;
     BudgetTracker budgetTracker_;
 
