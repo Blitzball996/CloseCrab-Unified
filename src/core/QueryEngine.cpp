@@ -76,9 +76,16 @@ std::string QueryEngine::buildSystemPrompt() const {
                   "SKILL: <tool_name>\nPARAMS: <json_params>\n\n";
 
         bool planMode = config_.appState && config_.appState->planMode;
+        bool coordMode = config_.appState && config_.appState->coordinatorMode;
         for (Tool* t : config_.toolRegistry->getAllTools()) {
             if (!t->isEnabled() || t->isHidden()) continue;
             if (planMode && !t->isReadOnly()) continue;
+            // Coordinator mode: only expose orchestration tools
+            if (coordMode) {
+                std::string name = t->getName();
+                if (name != "Agent" && name != "TaskStop" && name != "AskUserQuestion"
+                    && name != "TodoWrite") continue;
+            }
             prompt += "- " + t->getName() + ": " + t->getDescription() + "\n";
         }
     }
@@ -105,6 +112,41 @@ std::string QueryEngine::buildSystemPrompt() const {
     if (config_.appState) {
         prompt += "- Model: " + config_.appState->currentModel + "\n";
         if (config_.appState->planMode) prompt += "- Mode: PLAN (read-only)\n";
+        if (config_.appState->coordinatorMode) prompt += "- Mode: COORDINATOR (orchestrate workers)\n";
+    }
+
+    // Coordinator mode: override system prompt with orchestration instructions
+    // (claude-code coordinatorMode.ts getCoordinatorSystemPrompt)
+    if (config_.appState && config_.appState->coordinatorMode) {
+        prompt += R"(
+
+## Coordinator Mode
+
+You are a **coordinator**. Your job is to:
+- Help the user achieve their goal
+- Direct workers to research, implement and verify code changes
+- Synthesize results and communicate with the user
+- Answer questions directly when possible — don't delegate trivially
+
+### Your Tools (coordinator-only)
+- **Agent** — Spawn a new worker (use subagent_type "general-purpose")
+- **TaskStop** — Stop a running worker
+
+### Workers
+Workers execute tasks autonomously. They have access to: Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch.
+
+### Workflow
+1. Analyze the user's request
+2. Spawn workers for research/implementation/verification
+3. After launching, tell the user what you launched and wait
+4. When workers complete, synthesize results and report to user
+5. Continue workers or spawn new ones as needed
+
+### Rules
+- Do NOT use Read/Write/Edit/Bash yourself — delegate to workers
+- After spawning agents, end your response (don't predict results)
+- Workers report back automatically when done
+)";
     }
 
     // Append user-specified extra prompt
@@ -181,9 +223,13 @@ ModelConfig QueryEngine::buildModelConfig() const {
             }
 
             bool planMode = config_.appState && config_.appState->planMode;
+            bool coordMode = config_.appState && config_.appState->coordinatorMode;
+            static const std::set<std::string> COORD_TOOLS = {"Agent", "TaskStop", "AskUserQuestion", "TodoWrite"};
             for (Tool* t : config_.toolRegistry->getAllTools()) {
                 if (!t || !t->isEnabled() || t->isHidden()) continue;
                 if (planMode && !t->isReadOnly()) continue;
+                // Coordinator mode: only orchestration tools
+                if (coordMode && COORD_TOOLS.find(t->getName()) == COORD_TOOLS.end()) continue;
 
                 bool isAlwaysLoad = ALWAYS_LOAD.find(t->getName()) != ALWAYS_LOAD.end();
                 bool isDiscovered = discovered.count(t->getName()) > 0;

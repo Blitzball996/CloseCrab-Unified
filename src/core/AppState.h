@@ -62,6 +62,7 @@ struct AppState {
     bool fastMode = false;
     bool vimMode = false;
     bool voiceEnabled = false;
+    bool coordinatorMode = false;  // claude-code coordinator: orchestrate workers only
     ThinkingConfig thinkingConfig;
 
     // Limits

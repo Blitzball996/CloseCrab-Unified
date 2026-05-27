@@ -155,22 +155,22 @@
 
 | # | 缺失功能 | 影响 | 实现难度 | 状态 |
 |---|----------|------|----------|------|
-| 4 | **Coordinator Mode** | 无法自动编排多 agent 团队 | 高 | ⏳ 待做 |
+| 4 | **Coordinator Mode** | 无法自动编排多 agent 团队 | 高 | ✅ 已有 (Coordinator.h + /coordinator + coordinatorMode flag) |
 | 5 | **Plan Mode (完整)** | 用户无法在执行前审批计划 | 中 | ✅ 已有 (EnterPlan/ExitPlan/Verify) |
-| 6 | **Auto Permission Classifier** | 每个工具都要手动批准 | 高 | ⏳ 待做 |
+| 6 | **Auto Permission Classifier** | 每个工具都要手动批准 | 高 | ✅ 已有 (BashClassifier.h) |
 | 7 | **Worktree 隔离** | 无法在 git worktree 中并行工作 | 中 | ✅ 已有 (Enter/ExitWorktree) |
-| 8 | **Team Memory** | 多 session 间无法共享知识 | 中 | ⏳ 待做 |
+| 8 | **Team Memory** | 多 session 间无法共享知识 | 中 | ✅ 已有 (TeamMemorySync.h) |
 
 ### P2 — 功能完善
 
-| # | 缺失功能 | 影响 | 实现难度 |
-|---|----------|------|----------|
-| 9 | **MCP Auth (OAuth/XAA)** | 无法连接需认证的 MCP server | 高 |
-| 10 | **Dynamic Skill Loading** | 不能运行时发现和加载新 skill | 中 |
-| 11 | **ASR Voice Input** | 只有 TTS 输出，没有语音输入 | 中 |
+| # | 缺失功能 | 影响 | 实现难度 | 状态 |
+|---|----------|------|----------|------|
+| 9 | **MCP Auth (OAuth/XAA)** | 无法连接需认证的 MCP server | 高 | ✅ 已有 (MCPOAuth.h) |
+| 10 | **Dynamic Skill Loading** | 不能运行时发现和加载新 skill | 中 | ✅ 已有 (PluginManager) |
+| 11 | **ASR Voice Input** | 只有 TTS 输出，没有语音输入 | 中 | ❌ 唯一缺失 |
 | 12 | **File Read Dedup** | 重复读同一文件浪费 cache token | 低 | ✅ 已修 |
 | 13 | **Denial Tracking** | 权限被拒后不会自动切换策略 | 低 | ✅ 已修 (3次拒绝→ASK_USER) |
-| 14 | **Observability (Langfuse)** | 无法追踪 token 使用和性能 | 中 |
+| 14 | **Observability (Langfuse)** | 无法追踪 token 使用和性能 | 中 | ✅ 已有 (Analytics.h) |
 
 ### P3 — 锦上添花
 
