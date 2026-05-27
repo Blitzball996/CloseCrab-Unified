@@ -146,13 +146,12 @@ ModelConfig QueryEngine::buildModelConfig() const {
                 }
             }
         } else {
-            // Main engine: only send CORE tools to stay within proxy limits
-            // JackProAi sends ~15 core tools, not all 49
+            // Main engine: COMPACT tool format that stays under proxy's ~5KB limit
+            // Tested: 18 tools with empty schemas + embedded params = 4833 bytes = works
+            // Full schemas (7KB+) triggers proxy rate limiting
             static const std::set<std::string> CORE_TOOLS = {
                 "Read", "Write", "Edit", "Glob", "Grep", "Bash",
-                "AskUserQuestion", "Agent", "WebSearch", "WebFetch",
-                "TodoWrite", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList",
-                "SendMessage", "EnterPlanMode", "ExitPlanMode"
+                "AskUserQuestion", "WebSearch", "WebFetch"
             };
             bool planMode = config_.appState && config_.appState->planMode;
             for (Tool* t : config_.toolRegistry->getAllTools()) {
@@ -166,19 +165,11 @@ ModelConfig QueryEngine::buildModelConfig() const {
                 auto schema = t->getInputSchema();
                 if (schema.contains("properties") && schema["properties"].is_object()) {
                     desc += " Params:";
-                    std::vector<std::string> requiredFields;
-                    if (schema.contains("required") && schema["required"].is_array()) {
-                        for (const auto& r : schema["required"]) {
-                            requiredFields.push_back(r.get<std::string>());
-                        }
-                    }
                     for (auto& [key, val] : schema["properties"].items()) {
-                        std::string ptype = val.value("type", "string");
-                        bool isReq = std::find(requiredFields.begin(), requiredFields.end(), key) != requiredFields.end();
-                        desc += " " + key + "(" + ptype + (isReq ? ",required" : "") + ")";
+                        desc += " " + key + "(" + val.value("type", "string") + ")";
                     }
                 }
-                if (desc.size() > 1024) desc = desc.substr(0, 1024);
+                if (desc.size() > 300) desc = desc.substr(0, 300);
                 def["description"] = desc;
                 def["input_schema"] = {{"type", "object"}, {"properties", nlohmann::json::object()}};
                 toolDefs.push_back(std::move(def));

@@ -15,7 +15,7 @@
 // We keep a 500ms minimum gap just to prevent curl connection issues on Windows.
 static std::mutex g_rateMutex;
 static std::chrono::steady_clock::time_point g_lastRequestTime;
-static constexpr int MIN_REQUEST_INTERVAL_MS = 500;  // Match JackProAi BASE_DELAY_MS
+static constexpr int MIN_REQUEST_INTERVAL_MS = 5000;  // 5s after previous request FINISHED
 
 struct APIRequestGuard {
     APIRequestGuard() {
@@ -265,8 +265,6 @@ static void performCurlSSE(
     headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
     headers = curl_slist_append(headers, "content-type: application/json");
     headers = curl_slist_append(headers, "accept: text/event-stream");
-    // Beta headers (same as JackProAi SDK)
-    headers = curl_slist_append(headers, "anthropic-beta: interleaved-thinking-2025-05-14,prompt-caching-2024-07-31");
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
