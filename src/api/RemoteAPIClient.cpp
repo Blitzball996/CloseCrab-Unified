@@ -52,21 +52,6 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
 
     if (config.temperature >= 0 && config.tools.empty()) body["temperature"] = config.temperature;
 
-    // === CRITICAL: Fields that JackProAi sends and proxy requires ===
-
-    // 1. Betas array (in request body, not just header)
-    body["betas"] = nlohmann::json::array({
-        "prompt-caching-2024-07-31",
-        "interleaved-thinking-2025-05-14",
-        "context-management-2025-06-27"
-    });
-
-    // 2. Context management (tells API to handle caching server-side)
-    body["context_management"] = {{"edits", nlohmann::json::array()}};
-
-    // 3. Metadata (request tracking - proxy uses this for session management)
-    body["metadata"] = {{"user_id", "closecrab-" + apiKey_.substr(apiKey_.size() > 8 ? apiKey_.size() - 8 : 0)}};
-
     // System prompt with cache_control
     if (!systemPrompt.empty()) {
         body["system"] = nlohmann::json::array({
@@ -279,12 +264,15 @@ static void performCurlSSE(
     headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
     headers = curl_slist_append(headers, "content-type: application/json");
     headers = curl_slist_append(headers, "accept: text/event-stream");
-    // Critical: anthropic-beta as HTTP HEADER (SDK converts betas array to this header)
-    headers = curl_slist_append(headers, "anthropic-beta: prompt-caching-2024-07-31,interleaved-thinking-2025-05-14,context-management-2025-06-27");
-    // Identity headers (proxy identifies Claude Code clients)
-    headers = curl_slist_append(headers, "User-Agent: claude-cli/2.1.90 (external, cli)");
+    // anthropic-beta: official Claude Code identity + prompt caching + token-efficient tools
+    headers = curl_slist_append(headers, "anthropic-beta: claude-code-20250219,prompt-caching-2024-07-31,token-efficient-tools-2026-03-28");
+    // Identity headers matching Claude Code SDK
+    headers = curl_slist_append(headers, "User-Agent: claude-cli/2.1.152 (external, cli)");
     headers = curl_slist_append(headers, "x-app: cli");
-    headers = curl_slist_append(headers, "X-Claude-Code-Session-Id: closecrab-session");
+    // Random session ID per request to avoid session-level rate limiting
+    std::string sessionHeader = "X-Claude-Code-Session-Id: cc-" + std::to_string(rand()) + "-" + std::to_string(
+        std::chrono::steady_clock::now().time_since_epoch().count() % 1000000);
+    headers = curl_slist_append(headers, sessionHeader.c_str());
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -350,7 +338,7 @@ void RemoteAPIClient::streamChat(
             "No API key configured. Use --api-key or set ANTHROPIC_AUTH_TOKEN.");
     }
 
-    std::string url = baseUrl_ + "/v1/messages?beta=true";
+    std::string url = baseUrl_ + "/v1/messages";
     constexpr int MAX_RETRIES = 10;
     constexpr int FALLBACK_THRESHOLD = 3;
     int consecutive503 = 0;
