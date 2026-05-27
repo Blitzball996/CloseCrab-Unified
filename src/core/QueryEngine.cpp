@@ -119,11 +119,11 @@ std::string QueryEngine::buildSystemPrompt() const {
 
 ModelConfig QueryEngine::buildModelConfig() const {
     ModelConfig mc;
-    // JackProAi uses 64K for opus, 32K for sonnet. 16K was causing silent
-    // truncation when the model tried to write large files — the tool_use
-    // JSON would exceed max_tokens, get cut off, and the tool call silently
-    // dropped, making the model appear to "stop acting."
-    mc.maxTokens = 64000;
+    // claude-code capped escalation strategy:
+    // Start at 8K (saves slot reservation cost on short responses — most are <8K).
+    // If the model hits max_tokens, the recovery logic below escalates to 64K.
+    // This matches claude-code's DEFAULT_CAPPED_MAX_TOKENS=8000 + escalation to 64K.
+    mc.maxTokens = cappedMaxTokens_;
     mc.temperature = 0.7f;
     mc.stream = true;
 
@@ -466,13 +466,12 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                 }
             }
 
-            // Context window limits depend on provider:
-            // - Anthropic direct: 200K tokens
-            // - Proxy APIs (yikoulian, etc.): often 32K-64K
-            // - OpenAI: 128K
-            // Use conservative defaults that work with ALL providers
-            const int64_t AUTOCOMPACT_THRESHOLD = 30000;   // Compact at 30K (safe for proxy APIs)
-            const int64_t BLOCKING_LIMIT = 50000;          // Hard stop at 50K
+            // Context window limits: yikoulian.cc proxy supports full opus 200K.
+            // Previous 30K/50K was overly conservative and caused complex tasks
+            // (multi-agent website rewrite) to hit the wall after 3 agents.
+            // claude-code uses 200K default with 1M opt-in.
+            const int64_t AUTOCOMPACT_THRESHOLD = 120000;  // Compact at 120K
+            const int64_t BLOCKING_LIMIT = 180000;         // Hard stop at 180K
 
             if (estimatedTokens > AUTOCOMPACT_THRESHOLD) {
                 spdlog::warn("Pre-flight: {} tokens (>{} threshold), applying layered context management...",
@@ -644,16 +643,25 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
         if (apiCallFailed) break; // Don't continue the turn loop on API failure
 
         // Error recovery: handle max_tokens stop reason
-        if (stopReason == "max_tokens" && !pendingToolCalls.empty()) {
-            static int maxTokensRecoveryAttempt = 0;
-            auto recovery = ErrorRecovery::handleMaxOutputTokens(
-                messages_, config_.apiClient, compactor_, ++maxTokensRecoveryAttempt);
-            if (recovery.success) {
-                spdlog::info("Recovered from max_tokens: {}", recovery.reason);
-                // Don't add the incomplete assistant message, retry
+        // claude-code escalation: if capped at 8K and hit the limit, escalate to 64K and retry.
+        if (stopReason == "max_tokens") {
+            if (cappedMaxTokens_ < ESCALATED_MAX_TOKENS) {
+                spdlog::info("max_tokens hit at {}; escalating to {}", cappedMaxTokens_, ESCALATED_MAX_TOKENS);
+                cappedMaxTokens_ = ESCALATED_MAX_TOKENS;
+                // Don't add the incomplete message — retry with higher limit
                 continue;
             }
-            maxTokensRecoveryAttempt = 0; // Reset on non-recovery
+            // Already at max — try existing recovery (compact + retry)
+            if (!pendingToolCalls.empty()) {
+                static int maxTokensRecoveryAttempt = 0;
+                auto recovery = ErrorRecovery::handleMaxOutputTokens(
+                    messages_, config_.apiClient, compactor_, ++maxTokensRecoveryAttempt);
+                if (recovery.success) {
+                    spdlog::info("Recovered from max_tokens: {}", recovery.reason);
+                    continue;
+                }
+                maxTokensRecoveryAttempt = 0;
+            }
         }
 
         // Add assistant message to history

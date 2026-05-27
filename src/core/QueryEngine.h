@@ -106,6 +106,10 @@ private:
     std::atomic<bool> interrupted_{false};
     HistoryCompactor compactor_;
     ContextCollapse contextCollapse_;
+
+    // Capped escalation (claude-code strategy): start low, escalate on overflow.
+    int cappedMaxTokens_ = 8000;
+    static constexpr int ESCALATED_MAX_TOKENS = 64000;
     BudgetTracker budgetTracker_;
 
     // Real token usage from last API response (for accurate pre-flight checks)

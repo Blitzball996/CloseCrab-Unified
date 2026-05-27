@@ -6,6 +6,8 @@
 #include <fstream>
 #include <sstream>
 #include <filesystem>
+#include <map>
+#include <mutex>
 
 namespace closecrab {
 
@@ -53,13 +55,34 @@ public:
             return ToolResult::fail("Path is a directory, not a file: " + path);
         }
 
-        // Whether the model explicitly scoped the read. JackProAi only applies a
-        // size cap when reading the WHOLE file (no limit); an explicit limit reads
-        // that range regardless of file size.
-        bool hasExplicitLimit = input.contains("limit") && !input["limit"].is_null();
         int offset = input.value("offset", 0);
         int limit = input.value("limit", 2000);
         if (limit <= 0) limit = 2000;
+        bool hasExplicitLimit = input.contains("limit") && !input["limit"].is_null();
+
+        // Dedup (claude-code readFileState): if we already read this exact range
+        // and the file hasn't changed on disk, return a stub instead of re-sending
+        // the full content. Saves ~18% of cache_creation tokens (measured by claude-code).
+        {
+            std::lock_guard<std::mutex> lock(dedupMutex_);
+            std::string dedupKey = path + ":" + std::to_string(offset) + ":" + std::to_string(limit);
+            auto it = readState_.find(dedupKey);
+            if (it != readState_.end()) {
+                try {
+                    auto mtime = fs::last_write_time(fsPath, ec);
+                    if (!ec && mtime == it->second.mtime) {
+                        nlohmann::json data = {
+                            {"filePath", path}, {"numLines", it->second.numLines},
+                            {"startLine", offset + 1}, {"totalLines", it->second.totalLines},
+                            {"truncated", false}, {"dedup", true}
+                        };
+                        return ToolResult::ok(
+                            "[file unchanged since last read — content already in context]", data);
+                    }
+                } catch (...) {}
+                readState_.erase(it);
+            }
+        }
 
         // Byte safety cap so an unbounded read of a huge file can't blow up memory.
         // Only applies when no explicit limit was requested.
@@ -113,12 +136,32 @@ public:
             {"truncated", truncated}
         };
 
+        // Store dedup state for this read
+        {
+            std::lock_guard<std::mutex> lock(dedupMutex_);
+            std::string dedupKey = path + ":" + std::to_string(offset) + ":" + std::to_string(limit);
+            DedupEntry entry;
+            try { entry.mtime = fs::last_write_time(fsPath, ec); } catch (...) {}
+            entry.numLines = linesRead;
+            entry.totalLines = totalLines;
+            readState_[dedupKey] = entry;
+        }
+
         return ToolResult::ok(ensureUtf8(result), data);
     }
 
     std::string getActivityDescription(const nlohmann::json& input) const override {
         return "Read " + input.value("file_path", "file");
     }
+
+private:
+    struct DedupEntry {
+        std::filesystem::file_time_type mtime;
+        int numLines = 0;
+        int totalLines = 0;
+    };
+    mutable std::mutex dedupMutex_;
+    mutable std::map<std::string, DedupEntry> readState_;
 };
 
 } // namespace closecrab
