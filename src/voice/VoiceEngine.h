@@ -4,6 +4,7 @@
 #include <functional>
 #include <atomic>
 #include <thread>
+#include <mutex>
 #include <cstdlib>
 #include <spdlog/spdlog.h>
 
@@ -58,6 +59,10 @@ public:
             while (listening_) {
                 std::string transcript = captureAndTranscribe();
                 if (!transcript.empty() && onTranscript_) {
+                    {
+                        std::lock_guard<std::mutex> lock(transcriptMutex_);
+                        lastTranscript_ = transcript;
+                    }
                     onTranscript_(transcript);
                 }
             }
@@ -70,6 +75,16 @@ public:
     void stopListening() {
         listening_ = false;
         spdlog::info("Voice listening stopped");
+    }
+
+    bool isListening() const { return listening_; }
+
+    // Get and clear the last transcribed text (polled by main input loop)
+    std::string getLastTranscript() {
+        std::lock_guard<std::mutex> lock(transcriptMutex_);
+        std::string t = lastTranscript_;
+        lastTranscript_.clear();
+        return t;
     }
 
     // Speak text aloud using system TTS
@@ -130,6 +145,8 @@ private:
     std::string whisperModelPath_;
     std::function<void(const std::string&)> onTranscript_;
     std::thread captureThread_;
+    std::mutex transcriptMutex_;
+    std::string lastTranscript_;
 
     // Capture audio and transcribe using whisper.cpp CLI or platform STT
     std::string captureAndTranscribe() {

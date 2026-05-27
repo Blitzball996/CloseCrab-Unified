@@ -1,0 +1,83 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: '2024.01.12'
+
+      - name: Configure CMake
+        run: cmake -B build -G "Visual Studio 17 2022" -A x64
+          -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}}
+          -DCMAKE_TOOLCHAIN_FILE=${{env.VCPKG_ROOT}}/scripts/buildsystems/vcpkg.cmake
+
+      - name: Build
+        run: cmake --build build --config ${{env.BUILD_TYPE}} --target closecrab-unified
+
+      - name: Package
+        run: |
+          mkdir dist
+          copy build\Release\closecrab-unified.exe dist\
+          copy build\Release\*.dll dist\
+          copy config\config.yaml.example dist\config.yaml
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: closecrab-windows-x64
+          path: dist/
+
+      - name: Build installer (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          choco install innosetup -y
+          iscc installer\closecrab.iss
+
+      - name: Upload installer
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: closecrab-installer
+          path: dist/CloseCrab-Setup-*.exe
+
+  release:
+    needs: build-windows
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create zip
+        run: |
+          cd closecrab-windows-x64
+          zip -r ../CloseCrab-${{github.ref_name}}-windows-x64.zip .
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            CloseCrab-${{github.ref_name}}-windows-x64.zip
+            closecrab-installer/CloseCrab-Setup-*.exe
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}

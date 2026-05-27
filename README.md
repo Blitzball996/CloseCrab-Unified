@@ -10,20 +10,21 @@
 [![CUDA](https://img.shields.io/badge/CUDA-12.x-green.svg)](https://developer.nvidia.com/cuda-toolkit)
 [![Windows](https://img.shields.io/badge/Platform-Windows%20|%20Linux%20|%20macOS-0078d7.svg)](#platforms)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tools](https://img.shields.io/badge/Tools-51-orange.svg)](#tools-51)
+[![Tools](https://img.shields.io/badge/Tools-59-orange.svg)](#tools-59)
 [![Team Mode](https://img.shields.io/badge/Team%20Mode-Parallel-ff69b4.svg)](#team-mode)
 [![Skills](https://img.shields.io/badge/Skills-11-purple.svg)](#skills)
 [![Binary Size](https://img.shields.io/badge/Binary-~3.2MB-brightgreen.svg)](#)
+[![Context](https://img.shields.io/badge/Context-1M%20tokens-blueviolet.svg)](#)
 
-A local-first AI coding assistant. Single C++17 binary, 51 tools, 83 commands, Team Mode, runs LLMs on your GPU or connects to cloud APIs.
+A local-first AI coding assistant. Single C++17 binary, 59 tools, 84 commands, Team Mode, Voice (TTS+ASR), runs LLMs on your GPU or connects to cloud APIs with 1M token context window.
 
 ---
 
 ## What is CloseCrab-Unified?
 
-CloseCrab-Unified is a terminal-based AI coding assistant written in C++17. It runs large language models locally on your hardware via llama.cpp, or connects to Anthropic (Claude), OpenAI, and compatible APIs through a single configuration change. The AI gets the same 51 tools either way: file operations, shell execution, code search, multi-agent collaboration, web access, and more.
+CloseCrab-Unified is a terminal-based AI coding assistant written in C++17. It runs large language models locally on your hardware via llama.cpp, or connects to Anthropic (Claude), OpenAI, and compatible APIs through a single configuration change. The AI gets the same 59 tools either way: file operations, shell execution, code search, multi-agent collaboration, web access, voice input/output, and more.
 
-The project merges two predecessors: **CloseCrab** (a C++ local inference engine with RAG and MoE streaming) and **JackProAi-claudecode** (a TypeScript CLI with 40+ tools and 95 commands). The result is a single ~3.0 MB executable built from ~160 source files, with 51 tools, 83 commands, and 30 service modules.
+The project merges two predecessors: **CloseCrab** (a C++ local inference engine with RAG and MoE streaming) and **JackProAi-claudecode** (a TypeScript CLI with 40+ tools and 95 commands). The result is a single ~3.2 MB executable built from ~170 source files, with 59 tools, 84 commands, and 30+ service modules.
 
 ### Why use it?
 
@@ -32,8 +33,10 @@ The project merges two predecessors: **CloseCrab** (a C++ local inference engine
 - **Real tools** -- The AI reads files, writes code, runs tests, searches the web, manages git, and more.
 - **Extensible** -- Plugin system, MCP protocol support, skill directories, cron scheduling, hooks.
 - **Fast** -- C++17, CUDA GPU acceleration, concurrent tool execution, no runtime dependencies, single binary.
-- **Multi-agent** -- 5 agent types with coordinator mode for complex task decomposition.
+- **Multi-agent** -- Coordinator mode with cache-sharing sub-agents for complex task decomposition.
 - **Team Mode** -- Multi-client parallel inference with gamification and shared knowledge base.
+- **Voice** -- TTS output + ASR input (Windows SAPI / whisper.cpp).
+- **1M Context** -- Full Claude Opus 4.7 context window support (800K auto-compact threshold).
 
 ---
 

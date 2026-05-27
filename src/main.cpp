@@ -987,7 +987,21 @@ Then work step by step using your tools to complete the task.)";
 
         std::cout << vimInput.getModeIndicator() << tokenHint
                   << ansi::cyan() << "> " << ansi::reset() << std::flush;
-        std::string input = getUserInput();
+
+        // Voice input: if ASR is active and has a transcript, use it instead of keyboard
+        std::string input;
+        auto& voiceEng = VoiceEngine::getInstance();
+        if (voiceEng.isListening()) {
+            std::string transcript = voiceEng.getLastTranscript();
+            if (!transcript.empty()) {
+                std::cout << ansi::magenta() << "[voice] " << ansi::reset() << transcript << "\n";
+                input = transcript;
+            } else {
+                input = getUserInput();
+            }
+        } else {
+            input = getUserInput();
+        }
 
         if (input.empty()) {
             if (std::cin.eof()) break;

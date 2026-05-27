@@ -6,23 +6,24 @@
 
 # CloseCrab-Unified — 本地 AI 编程助手
 
-一个用 C++17 编写的本地优先 AI 编程助手。可以在你自己的 GPU 上运行大语言模型，也可以连接 Claude、OpenAI 等远程 API — 只需改一行配置。AI 拥有 51 个工具、83 个命令、多智能体协作、Team Mode（多客户端并行推理）、记忆系统、语音输出，全部受权限系统保护。单文件可执行程序，约 3.0MB。
+一个用 C++17 编写的本地优先 AI 编程助手。可以在你自己的 GPU 上运行大语言模型，也可以连接 Claude、OpenAI 等远程 API — 只需改一行配置。AI 拥有 59 个工具、84 个命令、多智能体协作、Coordinator Mode、Team Mode（多客户端并行推理）、语音输入输出（TTS+ASR）、百万 token 上下文窗口，全部受权限系统保护。单文件可执行程序，约 3.2MB。
 
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
 [![CUDA](https://img.shields.io/badge/CUDA-12.x-green.svg)](https://developer.nvidia.com/cuda-toolkit)
 [![Windows](https://img.shields.io/badge/Platform-Windows%20|%20Linux%20|%20macOS-0078d7.svg)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tools](https://img.shields.io/badge/Tools-51-orange.svg)](#tools-51)
+[![Tools](https://img.shields.io/badge/Tools-59-orange.svg)](#tools-59)
 [![Team Mode](https://img.shields.io/badge/Team%20Mode-Parallel-ff69b4.svg)](#team-mode团队模式)
 [![Skills](https://img.shields.io/badge/Skills-11-purple.svg)](#skills)
+[![Context](https://img.shields.io/badge/Context-1M%20tokens-blueviolet.svg)](#)
 
 ---
 
 ## 这是什么？
 
-大多数 AI 编程工具需要联网。CloseCrab-Unified 给你选择权：在本地 GPU 上运行模型（零网络依赖），或者连接 Claude/OpenAI/任何兼容 API。无论哪种方式，AI 都能使用同一套 51 个工具。
+大多数 AI 编程工具需要联网。CloseCrab-Unified 给你选择权：在本地 GPU 上运行模型（零网络依赖），或者连接 Claude/OpenAI/任何兼容 API。无论哪种方式，AI 都能使用同一套 59 个工具。
 
-它融合了两个项目：**CloseCrab**（C++ 本地推理引擎，带 RAG 和 MoE 流式加载）和 **JackProAi-claudecode**（TypeScript CLI，40+ 工具和 95 个命令）。最终产出一个 C++ 单文件可执行程序，~160 个源文件编译为 ~3.2MB，包含 51 个工具、83 个命令、30 个服务模块。
+它融合了两个项目：**CloseCrab**（C++ 本地推理引擎，带 RAG 和 MoE 流式加载）和 **JackProAi-claudecode**（TypeScript CLI，40+ 工具和 95 个命令）。最终产出一个 C++ 单文件可执行程序，~170 个源文件编译为 ~3.2MB，包含 59 个工具、84 个命令、30+ 个服务模块。
 
 ### 为什么用它？
 

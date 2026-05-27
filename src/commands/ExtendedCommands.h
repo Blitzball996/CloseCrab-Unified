@@ -395,11 +395,11 @@ public:
     }
 };
 
-// /voice - toggle voice mode (TTS output)
+// /voice - toggle voice mode (TTS output + ASR input)
 class VoiceCommand : public Command {
 public:
     std::string getName() const override { return "voice"; }
-    std::string getDescription() const override { return "Toggle voice output (text-to-speech)"; }
+    std::string getDescription() const override { return "Toggle voice mode (TTS output + ASR input)"; }
 
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
         auto& voice = VoiceEngine::getInstance();
@@ -414,10 +414,23 @@ public:
 
         voice.setEnabled(enable);
         ctx.appState->voiceEnabled = enable;
-        ctx.print("Voice: " + std::string(enable ? "ON" : "OFF") + "\n");
 
         if (enable) {
+            ctx.print("Voice: ON (TTS + ASR)\n");
+            ctx.print("  TTS: responses will be read aloud\n");
+            ctx.print("  ASR: listening for voice input (speak to submit)\n");
             voice.speak("Voice mode enabled.");
+            // Start ASR listening — transcribed text goes to the pending input queue
+            voice.startListening([&ctx](const std::string& transcript) {
+                if (!transcript.empty()) {
+                    ctx.print("\n[voice] " + transcript + "\n");
+                    // The transcript will be picked up by the main input loop
+                    // via VoiceEngine::getLastTranscript()
+                }
+            });
+        } else {
+            voice.stopListening();
+            ctx.print("Voice: OFF\n");
         }
         return CommandResult::ok();
     }
