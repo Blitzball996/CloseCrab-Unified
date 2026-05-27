@@ -268,10 +268,10 @@ static void performCurlSSE(
     // Identity headers matching Claude Code SDK
     headers = curl_slist_append(headers, "User-Agent: claude-cli/2.1.152 (external, cli)");
     headers = curl_slist_append(headers, "x-app: cli");
-    // Random session ID per request to avoid session-level rate limiting
-    std::string sessionHeader = "X-Claude-Code-Session-Id: cc-" + std::to_string(rand()) + "-" + std::to_string(
-        std::chrono::steady_clock::now().time_since_epoch().count() % 1000000);
-    headers = curl_slist_append(headers, sessionHeader.c_str());
+    // Stable session ID for prompt cache affinity (NOT random - cache needs same session)
+    static std::string sessionId = "X-Claude-Code-Session-Id: cc-" + std::to_string(
+        std::chrono::system_clock::now().time_since_epoch().count() / 1000000000);
+    headers = curl_slist_append(headers, sessionId.c_str());
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -338,7 +338,7 @@ void RemoteAPIClient::streamChat(
     }
 
     std::string url = baseUrl_ + "/v1/messages";
-    constexpr int MAX_RETRIES = 10;
+    constexpr int MAX_RETRIES = 3;
     constexpr int FALLBACK_THRESHOLD = 3;
     int consecutive503 = 0;
     std::string activeModel = model_;
@@ -349,7 +349,7 @@ void RemoteAPIClient::streamChat(
         std::string bodyStr = body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 
         if (attempt == 1) {
-            spdlog::info("API request: {} bytes, {} tools, system_prompt={} chars, model={}, url={}",
+            spdlog::debug("API request: {} bytes, {} tools, system_prompt={} chars, model={}, url={}",
                          bodyStr.size(),
                          config.tools.is_array() ? config.tools.size() : 0,
                          systemPrompt.size(), activeModel, url);
@@ -367,8 +367,10 @@ void RemoteAPIClient::streamChat(
                 handleSSEEvent(event, callback, currentToolName, currentToolId, currentToolJson);
             });
             CurlStreamCtx curlCtx{&parser};
-            APIRequestGuard guard;  // Serializes + rate-limits all API calls
-            performCurlSSE(url, bodyStr, apiKey_, curlCtx);
+            {
+                APIRequestGuard guard;  // Only protect the curl call, NOT the sleep
+                performCurlSSE(url, bodyStr, apiKey_, curlCtx);
+            }  // Mutex released here - before parser.finish() and before any sleep
             parser.finish();
             return; // Success
         } catch (const APIError& e) {
@@ -378,28 +380,21 @@ void RemoteAPIClient::streamChat(
 
             // Model fallback: after N consecutive 503/529, switch to fallback model
             if (consecutive503 >= FALLBACK_THRESHOLD && !fallbackModel_.empty() && activeModel != fallbackModel_) {
-                spdlog::info("Model fallback triggered after {} consecutive errors: {} -> {}",
-                             consecutive503, activeModel, fallbackModel_);
+                spdlog::debug("Model fallback: {} -> {}", activeModel, fallbackModel_);
                 activeModel = fallbackModel_;
                 consecutive503 = 0;
             }
 
             if (attempt >= MAX_RETRIES) throw;
 
-            // JackProAi retry: BASE_DELAY=500ms, exponential 2^n, 25% jitter, max 32s
-            int baseDelay = 500 * (1 << (attempt - 1));  // 500, 1000, 2000, 4000, 8000, 16000, 32000
-            if (baseDelay > 32000) baseDelay = 32000;
-            int jitter = rand() % (baseDelay / 4 + 1);  // 25% jitter
+            // Fast retry: 1s, 2s, 4s max (total <10s). JackProAi MAX_529_RETRIES=3
+            int baseDelay = 1000 * (1 << (attempt - 1));  // 1000, 2000, 4000
+            if (baseDelay > 5000) baseDelay = 5000;
+            int jitter = rand() % (baseDelay / 4 + 1);
             int delayMs = baseDelay + jitter;
 
-            // Silent for first 3 attempts (like JackProAi), then info level
-            if (attempt <= 3) {
-                spdlog::debug("Retry attempt {}/{}, model={}, waiting {}ms",
-                              attempt, MAX_RETRIES, activeModel, delayMs);
-            } else {
-                spdlog::info("Retrying... (attempt {}/{}), model={}",
-                             attempt, MAX_RETRIES, activeModel);
-            }
+            // All retries silent (debug level only)
+            spdlog::debug("Retry {}/{}, model={}, waiting {}ms", attempt, MAX_RETRIES, activeModel, delayMs);
             std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
         }
     }

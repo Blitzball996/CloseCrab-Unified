@@ -146,12 +146,11 @@ ModelConfig QueryEngine::buildModelConfig() const {
                 }
             }
         } else {
-            // Send only essential tools with minimal schemas to stay under proxy's 4KB limit
-            // JackProAi works because it has official OAuth + higher quota
-            // CloseCrab uses API key auth → lower quota → must keep requests small
+            // 9 core tools - proxy limit ~5KB per request body
+            // Prompt caching doesn't help because proxy limits on RAW body size
             static const std::set<std::string> CORE_TOOLS = {
                 "Read", "Write", "Edit", "Glob", "Grep", "Bash",
-                "WebSearch", "WebFetch", "Agent"
+                "AskUserQuestion", "Agent", "WebSearch"
             };
             bool planMode = config_.appState && config_.appState->planMode;
             for (Tool* t : config_.toolRegistry->getAllTools()) {
@@ -160,17 +159,8 @@ ModelConfig QueryEngine::buildModelConfig() const {
                 if (CORE_TOOLS.find(t->getName()) == CORE_TOOLS.end()) continue;
                 nlohmann::json def;
                 def["name"] = t->getName();
-                def["description"] = t->getDescription().substr(0, 80);
-                // Minimal schema - just required params
-                auto schema = t->getInputSchema();
-                nlohmann::json minSchema = {{"type", "object"}, {"properties", nlohmann::json::object()}};
-                if (schema.contains("required")) minSchema["required"] = schema["required"];
-                if (schema.contains("properties")) {
-                    for (auto& [key, val] : schema["properties"].items()) {
-                        minSchema["properties"][key] = {{"type", val.value("type", "string")}};
-                    }
-                }
-                def["input_schema"] = minSchema;
+                def["description"] = t->getDescription();
+                def["input_schema"] = t->getInputSchema();
                 toolDefs.push_back(std::move(def));
             }
         }
