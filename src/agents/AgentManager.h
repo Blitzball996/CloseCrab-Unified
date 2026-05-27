@@ -69,9 +69,12 @@ public:
     static AgentManager& getInstance();
 
     // Spawn a new agent, returns agent ID
+    // parentSystemPrompt: pass the parent's rendered system prompt so the sub-agent
+    // can reuse the same prompt cache (claude-code cache-safe fork strategy).
     std::string spawnAgent(const AgentConfig& config, APIClient* apiClient,
                            ToolRegistry* parentToolRegistry, AppState* appState,
-                           const std::string& cwd);
+                           const std::string& cwd,
+                           const std::string& parentSystemPrompt = "");
 
     // Get agent result (blocks if still running and block=true, with 300s timeout)
     AgentResult getResult(const std::string& agentId, bool block = true);

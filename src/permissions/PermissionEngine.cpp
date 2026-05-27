@@ -75,6 +75,15 @@ PermissionDecision PermissionEngine::check(const std::string& toolName,
     // Bypass mode: allow everything
     if (mode_ == PermissionMode::BYPASS) return PermissionDecision::ALLOWED;
 
+    // Denial tracking (claude-code pattern): if this tool has been denied 3+
+    // times, force ASK_USER regardless of mode — gives the user a chance to
+    // approve if the model keeps trying, and signals to the model that it
+    // should stop or try a different approach.
+    auto denialIt = denialCounts_.find(toolName);
+    if (denialIt != denialCounts_.end() && denialIt->second >= 3) {
+        return PermissionDecision::ASK_USER;
+    }
+
     // Check explicit rules first
     auto ruleResult = matchRules(toolName, action);
     if (ruleResult == PermissionDecision::ALLOWED) return PermissionDecision::ALLOWED;

@@ -74,7 +74,8 @@ std::vector<std::string> AgentManager::getAllowedTools(AgentType type) const {
 
 std::string AgentManager::spawnAgent(const AgentConfig& config, APIClient* apiClient,
                                       ToolRegistry* parentToolRegistry, AppState* appState,
-                                      const std::string& cwd) {
+                                      const std::string& cwd,
+                                      const std::string& parentSystemPrompt) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto instance = std::make_shared<AgentInstance>();
@@ -88,9 +89,18 @@ std::string AgentManager::spawnAgent(const AgentConfig& config, APIClient* apiCl
     // Build a filtered tool registry for this agent
     auto allowedTools = getAllowedTools(config.type);
 
-    // Build system prompt for agent
-    std::string systemPrompt = "You are a " + agentTypeName(config.type) + " sub-agent. "
-        "Complete the task described below. Be thorough and report your findings.";
+    // Cache-safe system prompt (claude-code forkSubagent strategy):
+    // Use the PARENT's system prompt so the API can reuse the prompt cache.
+    // Append agent-specific instructions as a suffix — this keeps the cache
+    // prefix identical across parent + all sub-agents.
+    std::string systemPrompt;
+    if (!parentSystemPrompt.empty()) {
+        systemPrompt = parentSystemPrompt + "\n\n[Sub-agent mode: " + agentTypeName(config.type) + "] "
+            "Complete the task below. Be thorough and concise.";
+    } else {
+        systemPrompt = "You are a " + agentTypeName(config.type) + " sub-agent. "
+            "Complete the task described below. Be thorough and report your findings.";
+    }
 
     if (config.type == AgentType::EXPLORE) {
         systemPrompt += " You have read-only access. Use Glob, Grep, and Read to explore the codebase."

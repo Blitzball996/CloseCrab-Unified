@@ -81,6 +81,10 @@ struct ToolContext {
     // Stream output callback: real-time line-by-line output for execution tools
     std::function<void(const std::string&)> onStreamOutput;
 
+    // Parent's rendered system prompt — AgentTool passes this to sub-agents
+    // so they share the prompt cache (claude-code cache-safe fork strategy).
+    std::string systemPrompt;
+
     // File read cache (mtime-based dedup, like JackProAi readFileState)
     std::map<std::string, int64_t>* fileReadCache = nullptr;
 

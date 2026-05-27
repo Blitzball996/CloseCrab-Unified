@@ -149,17 +149,17 @@
 |---|----------|------|----------|------|
 | 1 | **Context Window 太小 (50K hard stop)** | 复杂任务在 3 个 agent 后触发 compact/停止 | 中 | ✅ 已修 (120K/180K) |
 | 2 | **max_tokens capped escalation 缺失** | 直接用 64K 浪费 slot reservation | 低 | ✅ 已修 (8K→64K escalation) |
-| 3 | **Agent fork 不共享 prompt cache** | 每个 sub-agent 冷启动，慢 2-3x + 贵 2x | 高 | ⏳ 待做 |
+| 3 | **Agent fork 不共享 prompt cache** | 每个 sub-agent 冷启动，慢 2-3x + 贵 2x | 高 | ✅ 已修 (parent system prompt 传递) |
 
 ### P1 — 严重影响效率
 
-| # | 缺失功能 | 影响 | 实现难度 |
-|---|----------|------|----------|
-| 4 | **Coordinator Mode** | 无法自动编排多 agent 团队 | 高 |
-| 5 | **Plan Mode (完整)** | 用户无法在执行前审批计划 | 中 |
-| 6 | **Auto Permission Classifier** | 每个工具都要手动批准 | 高 |
-| 7 | **Worktree 隔离** | 无法在 git worktree 中并行工作 | 中 |
-| 8 | **Team Memory** | 多 session 间无法共享知识 | 中 |
+| # | 缺失功能 | 影响 | 实现难度 | 状态 |
+|---|----------|------|----------|------|
+| 4 | **Coordinator Mode** | 无法自动编排多 agent 团队 | 高 | ⏳ 待做 |
+| 5 | **Plan Mode (完整)** | 用户无法在执行前审批计划 | 中 | ✅ 已有 (EnterPlan/ExitPlan/Verify) |
+| 6 | **Auto Permission Classifier** | 每个工具都要手动批准 | 高 | ⏳ 待做 |
+| 7 | **Worktree 隔离** | 无法在 git worktree 中并行工作 | 中 | ✅ 已有 (Enter/ExitWorktree) |
+| 8 | **Team Memory** | 多 session 间无法共享知识 | 中 | ⏳ 待做 |
 
 ### P2 — 功能完善
 
@@ -169,7 +169,7 @@
 | 10 | **Dynamic Skill Loading** | 不能运行时发现和加载新 skill | 中 |
 | 11 | **ASR Voice Input** | 只有 TTS 输出，没有语音输入 | 中 |
 | 12 | **File Read Dedup** | 重复读同一文件浪费 cache token | 低 | ✅ 已修 |
-| 13 | **Denial Tracking** | 权限被拒后不会自动切换策略 | 低 |
+| 13 | **Denial Tracking** | 权限被拒后不会自动切换策略 | 低 | ✅ 已修 (3次拒绝→ASK_USER) |
 | 14 | **Observability (Langfuse)** | 无法追踪 token 使用和性能 | 中 |
 
 ### P3 — 锦上添花

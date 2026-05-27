@@ -40,7 +40,8 @@ public:
         if (!ctx.appState) return ToolResult::fail("No app state available");
         if (!ctx.apiClient) return ToolResult::fail("No API client available for sub-agent");
 
-        std::string agentId = mgr.spawnAgent(config, ctx.apiClient, ctx.toolRegistry, ctx.appState, ctx.cwd);
+        std::string agentId = mgr.spawnAgent(config, ctx.apiClient, ctx.toolRegistry,
+                                              ctx.appState, ctx.cwd, ctx.systemPrompt);
 
         if (config.runInBackground) {
             return ToolResult::ok("Agent " + agentId + " launched in background (" +

@@ -296,6 +296,12 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
     }
 
     if (decision == PermissionDecision::DENIED) {
+        // Denial tracking (claude-code pattern): after 3 denials of the same
+        // tool, switch from auto-deny to always-ask so the user gets a chance
+        // to approve if the model keeps trying.
+        if (config_.permissionEngine) {
+            config_.permissionEngine->trackDenial(event.toolName, event.toolInput.dump());
+        }
         auto result = ToolResult::fail("Permission denied for " + event.toolName);
         if (callbacks.onToolResult) callbacks.onToolResult(event.toolName, result);
         messages_.push_back(Message::makeToolResult(event.toolUseId,
@@ -325,6 +331,7 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
     ctx.abortFlag = &interrupted_;
     ctx.apiClient = config_.apiClient;
     ctx.toolRegistry = config_.toolRegistry;
+    ctx.systemPrompt = buildSystemPrompt(); // For AgentTool cache sharing
 
     // Stream output callback for execution tools (Bash/PowerShell)
     if (callbacks.onToolUse) {
