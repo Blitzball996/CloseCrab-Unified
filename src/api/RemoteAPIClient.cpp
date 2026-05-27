@@ -45,9 +45,8 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
     }
 
     // API Microcompact: clear old tool_result content when context is too large.
-    // JackProAi sends up to 243KB per request to the same proxy without 503.
-    // Only compact when messages exceed 200KB (JackProAi MAX_TOOL_RESULTS_PER_MESSAGE_CHARS).
-    // The QueryEngine pre-flight check (30K tokens ≈ 120KB) is the primary defense.
+    // Threshold must match what the proxy can handle within its timeout.
+    // See claude-code analysis below for the correct strategy.
     constexpr size_t MAX_MESSAGES_SIZE = 200000;
     std::string msgsStr = msgs.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
     if (msgsStr.size() > MAX_MESSAGES_SIZE && msgs.size() > 4) {
@@ -285,9 +284,14 @@ static void performCurlSSE(
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
     curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
 
-    // Timeouts (JackProAi uses 600s / 10 minutes)
+    // Timeouts (claude-code: 90s streaming idle timeout watchdog)
+    // CURL's TIMEOUT is for the ENTIRE transfer. But the real problem is the
+    // proxy dropping idle connections after ~60s. Use LOW_SPEED to detect this:
+    // if fewer than 1 byte/sec for 60s, abort (proxy is dead).
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);   // min bytes/sec
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 60L);   // abort after 60s idle
 
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
@@ -379,8 +383,42 @@ void RemoteAPIClient::streamChat(
 
             if (attempt >= MAX_RETRIES) throw;
 
-            // Exponential backoff: 500ms base, cap 30s (JackProAi: POST_BASE_DELAY_MS=500, pow(2,attempt-1))
-            int baseDelay = 500 * (1 << (attempt - 1));  // 500, 1000, 2000, 4000, 8000, 16000, 30000...
+            // claude-code strategy: on network timeout, the request is likely too
+            // large for the proxy. Compact messages BEFORE retrying so the next
+            // attempt sends a smaller request. Without this, all 10 retries send
+            // the same oversized request and all time out identically.
+            if (e.type == APIErrorType::NETWORK_ERROR && bodyStr.size() > 80000) {
+                spdlog::warn("Request was {}KB — compacting before retry", bodyStr.size() / 1024);
+                auto& msgArray = body["messages"];
+                for (size_t i = 0; i + 4 < msgArray.size(); i++) {
+                    if (msgArray[i].value("role", "") == "user" && msgArray[i].contains("content") && msgArray[i]["content"].is_array()) {
+                        for (auto& block : msgArray[i]["content"]) {
+                            if (block.value("type", "") == "tool_result") {
+                                if (block.contains("content") && block["content"].is_string()) {
+                                    std::string content = block["content"].get<std::string>();
+                                    if (content.size() > 200) {
+                                        block["content"] = content.substr(0, 150) + "\n[cleared: request too large for proxy]";
+                                    }
+                                } else if (block.contains("content") && block["content"].is_array()) {
+                                    for (auto& sub : block["content"]) {
+                                        if (sub.value("type", "") == "text") {
+                                            std::string text = sub.value("text", "");
+                                            if (text.size() > 200) {
+                                                sub["text"] = text.substr(0, 150) + "\n[cleared]";
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                bodyStr = body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+                spdlog::info("Compacted to {}KB", bodyStr.size() / 1024);
+            }
+
+            // Exponential backoff: 500ms base, cap 30s
+            int baseDelay = 500 * (1 << (attempt - 1));
             if (baseDelay > 30000) baseDelay = 30000;
             int jitter = rand() % (baseDelay / 4 + 1);
             int delayMs = baseDelay + jitter;
