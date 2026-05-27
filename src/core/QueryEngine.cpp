@@ -521,10 +521,11 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
 
             // Context window limits: yikoulian.cc proxy supports full opus 200K.
             // Previous 30K/50K was overly conservative and caused complex tasks
-            // (multi-agent website rewrite) to hit the wall after 3 agents.
-            // claude-code uses 200K default with 1M opt-in.
-            const int64_t AUTOCOMPACT_THRESHOLD = 120000;  // Compact at 120K
-            const int64_t BLOCKING_LIMIT = 180000;         // Hard stop at 180K
+            // Claude Opus 4.7 supports 1M (1,000,000) token context window.
+            // Compact at 800K to leave room for output (64K) + tools + system prompt.
+            // Hard stop at 950K to avoid API rejection.
+            const int64_t AUTOCOMPACT_THRESHOLD = 800000;  // Compact at 800K
+            const int64_t BLOCKING_LIMIT = 950000;         // Hard stop at 950K
 
             if (estimatedTokens > AUTOCOMPACT_THRESHOLD) {
                 spdlog::warn("Pre-flight: {} tokens (>{} threshold), applying layered context management...",
