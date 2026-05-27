@@ -63,6 +63,18 @@ std::string QueryEngine::buildSystemPrompt() const {
 
     std::string prompt = config_.systemPrompt;
 
+    // Core behavior rules (from claude-code system prompt):
+    // "Default to action" prevents the model from explaining plans instead of executing.
+    prompt += R"(
+
+# Behavior Rules
+- Default to action: implement changes rather than only suggesting them.
+- When you know what to do, call tools immediately. Do NOT explain your plan first.
+- For file writes: call Write directly with the content. Never say "let me write" without actually calling Write in the same response.
+- If a task requires multiple files, write them one at a time in sequence.
+- Keep text output minimal. The user wants results, not explanations.
+)";
+
     // Append CLAUDE.md content if available
     if (config_.appState && !config_.appState->claudeMdContent.empty()) {
         prompt += "\n\n" + config_.appState->claudeMdContent;
