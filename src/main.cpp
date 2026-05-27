@@ -1059,12 +1059,16 @@ Then work step by step using your tools to complete the task.)";
             g_queryEngine->submitMessage(input, callbacks);
         } catch (const std::exception& e) {
             spinner.stop();
-            std::cerr << ansi::red() << "Fatal error: " << e.what() << ansi::reset() << "\n";
-            spdlog::error("submitMessage crashed: {}", e.what());
+            // Don't say "Fatal" — it scares users into thinking the program crashed.
+            // claude-code just shows the error and returns to the prompt.
+            std::cerr << ansi::red() << "Error: " << e.what() << ansi::reset() << "\n";
+            std::cerr << ansi::dim() << "(Returned to prompt. You can retry or try a different approach.)" << ansi::reset() << "\n";
+            spdlog::error("submitMessage exception: {}", e.what());
         } catch (...) {
             spinner.stop();
-            std::cerr << ansi::red() << "Fatal unknown error in submitMessage" << ansi::reset() << "\n";
-            spdlog::error("submitMessage crashed with unknown exception");
+            std::cerr << ansi::red() << "Error: unexpected exception" << ansi::reset() << "\n";
+            std::cerr << ansi::dim() << "(Returned to prompt.)" << ansi::reset() << "\n";
+            spdlog::error("submitMessage unknown exception");
         }
     }
 

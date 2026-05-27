@@ -170,45 +170,12 @@ public:
         outFile << modified;
         outFile.close();
 
-        // Build diff preview (JackProAi shows old/new lines)
+        // claude-code: tool_result is just a short confirmation.
+        // "The file {path} has been updated successfully."
+        // Do NOT include diff content — it bloats the next API request.
         std::string msg = replaceAll
             ? "Replaced " + std::to_string(count) + " occurrences in " + path
-            : "Replaced 1 occurrence in " + path;
-
-        auto getFirstLines = [](const std::string& s, int n) -> std::string {
-            std::string result;
-            std::istringstream iss(s);
-            std::string line;
-            int i = 0;
-            while (std::getline(iss, line) && i < n) {
-                if (line.size() > 100) line = line.substr(0, 100) + "...";
-                result += line + "\n";
-                i++;
-            }
-            return result;
-        };
-
-        std::string diffPreview;
-        std::string oldPreview = getFirstLines(oldStr, 3);
-        std::string newPreview = getFirstLines(newStr, 3);
-        if (!oldPreview.empty()) {
-            for (auto& c : oldPreview) { /* just use as-is */ }
-            std::istringstream oldStream(oldPreview);
-            std::string l;
-            while (std::getline(oldStream, l)) {
-                diffPreview += "  - " + l + "\n";
-            }
-        }
-        if (!newPreview.empty()) {
-            std::istringstream newStream(newPreview);
-            std::string l;
-            while (std::getline(newStream, l)) {
-                diffPreview += "  + " + l + "\n";
-            }
-        }
-        if (!diffPreview.empty()) {
-            msg += "\n" + diffPreview;
-        }
+            : "The file " + path + " has been updated successfully.";
 
         FileStateCache::getInstance().invalidate(path);
         return ToolResult::ok(msg);

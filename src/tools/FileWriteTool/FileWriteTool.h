@@ -56,20 +56,12 @@ public:
             return ToolResult::fail("Failed to write file: " + path);
         }
 
-        // Build result with content preview (JackProAi shows file content after write)
-        std::string msg = "File written: " + path + " (" + std::to_string(content.size()) + " bytes)";
-        std::string preview;
-        std::istringstream iss(content);
-        std::string line;
-        int lineCount = 0;
-        while (std::getline(iss, line) && lineCount < 20) {
-            if (line.size() > 120) line = line.substr(0, 120) + "...";
-            preview += "  " + line + "\n";
-            lineCount++;
-        }
-        if (!preview.empty()) {
-            msg += "\n" + preview;
-        }
+        // claude-code mapToolResultToToolResultBlockParam: the API-facing
+        // tool_result is JUST a short confirmation. Including file content
+        // here caused the next API request to be 68KB+ → proxy timeout →
+        // infinite retry loop. The UI can show a preview separately.
+        std::string msg = "File created successfully at: " + path +
+                          " (" + std::to_string(content.size()) + " bytes)";
 
         FileStateCache::getInstance().invalidate(path);
         return ToolResult::ok(msg);
