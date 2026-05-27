@@ -279,6 +279,12 @@ static void performCurlSSE(
     headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
     headers = curl_slist_append(headers, "content-type: application/json");
     headers = curl_slist_append(headers, "accept: text/event-stream");
+    // Critical: anthropic-beta as HTTP HEADER (SDK converts betas array to this header)
+    headers = curl_slist_append(headers, "anthropic-beta: prompt-caching-2024-07-31,interleaved-thinking-2025-05-14,context-management-2025-06-27");
+    // Identity headers (proxy identifies Claude Code clients)
+    headers = curl_slist_append(headers, "User-Agent: claude-cli/2.1.90 (external, cli)");
+    headers = curl_slist_append(headers, "x-app: cli");
+    headers = curl_slist_append(headers, "X-Claude-Code-Session-Id: closecrab-session");
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -344,7 +350,7 @@ void RemoteAPIClient::streamChat(
             "No API key configured. Use --api-key or set ANTHROPIC_AUTH_TOKEN.");
     }
 
-    std::string url = baseUrl_ + "/v1/messages";
+    std::string url = baseUrl_ + "/v1/messages?beta=true";
     constexpr int MAX_RETRIES = 10;
     constexpr int FALLBACK_THRESHOLD = 3;
     int consecutive503 = 0;
