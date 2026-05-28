@@ -821,6 +821,7 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                 for (const auto& tc : parallelCalls) {
                     if (interrupted_) break;
                     futures.push_back(std::async(std::launch::async, [&, tc]() -> ParallelResult {
+                        FILE* tf = fopen("trace.log","a"); if(tf){fprintf(tf,"  parallel-start %s\n", tc.toolName.c_str()); fflush(tf); fclose(tf);}
                         if (interrupted_) return {tc, ToolResult::fail("interrupted")};
                         StreamEvent localEvent = tc;
 
@@ -845,14 +846,18 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                         } catch (...) {
                             result = ToolResult::fail("Internal error (unknown exception)");
                         }
+                        {FILE* tf2 = fopen("trace.log","a"); if(tf2){fprintf(tf2,"  parallel-done %s ok=%d\n", localEvent.toolName.c_str(), result.success?1:0); fflush(tf2); fclose(tf2);}}
                         return {localEvent, result};
                     }));
                 }
 
                 // Wait for all parallel tools, then display results sequentially (safe)
+                { FILE* tf = fopen("trace.log","a"); if(tf){fprintf(tf,"  waiting %zu futures\n", futures.size()); fflush(tf); fclose(tf);} }
                 for (auto& f : futures) {
                     if (!f.valid()) continue;
+                    { FILE* tf = fopen("trace.log","a"); if(tf){fprintf(tf,"  f.get()\n"); fflush(tf); fclose(tf);} }
                     auto [ev, result] = f.get();
+                    { FILE* tf = fopen("trace.log","a"); if(tf){fprintf(tf,"  got %s ok=%d\n", ev.toolName.c_str(), result.success?1:0); fflush(tf); fclose(tf);} }
                     if (callbacks.onToolUse) callbacks.onToolUse(ev.toolName, ev.toolInput);
                     if (callbacks.onToolResult) callbacks.onToolResult(ev.toolName, result);
 
