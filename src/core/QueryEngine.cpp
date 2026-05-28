@@ -403,6 +403,7 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
 
     auto start = std::chrono::steady_clock::now();
     ToolResult result;
+    { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"  tool-call %s input=%zu\n", event.toolName.c_str(), event.toolInput.dump().size()); fflush(t); fclose(t);} }
     try {
         result = tool->call(ctx, event.toolInput);
     } catch (const std::exception& e) {
@@ -412,6 +413,7 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
         spdlog::error("Tool {} threw unknown exception", event.toolName);
         result = ToolResult::fail("Internal error (unknown exception)");
     }
+    { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"  tool-ret %s ok=%d\n", event.toolName.c_str(), result.success?1:0); fflush(t); fclose(t);} }
     auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 
     if (config_.appState) {
