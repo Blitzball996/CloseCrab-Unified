@@ -170,6 +170,17 @@ void RemoteAPIClient::handleSSEEvent(
                 callback({StreamEvent::EVT_THINKING, delta.value("thinking", "")});
             } else if (deltaType == "input_json_delta") {
                 currentToolJson += delta.value("partial_json", "");
+                // Surface streaming progress so the user sees "Generating Write... (32KB)"
+                // instead of a frozen spinner for 2-3 minutes during large file writes.
+                if (currentToolJson.size() % 4096 < 200) { // ~every 4KB
+                    StreamEvent progress;
+                    progress.type = StreamEvent::EVT_RETRY; // reuse for progress display
+                    progress.retryAttempt = 0; // 0 = not a retry, it's a progress update
+                    progress.retryMax = 0;
+                    progress.retryDelayMs = (int)currentToolJson.size();
+                    progress.content = "generating " + currentToolName;
+                    callback(progress);
+                }
             }
         } else if (eventType == "content_block_stop") {
             if (!currentToolName.empty()) {
@@ -314,9 +325,24 @@ static void performCurlSSE(
     if (httpCode >= 400) {
         auto errType = closecrab::classifyHttpStatus(httpCode);
         std::string errBody = curlCtx.rawResponse.substr(0, 500);
-        spdlog::debug("HTTP {} response body: {}", httpCode, errBody);
-        throw closecrab::APIError(errType, static_cast<int>(httpCode),
-                                   "HTTP " + std::to_string(httpCode));
+        spdlog::error("HTTP {} response body: {}", httpCode, errBody);
+
+        // Parse the actual error message from the proxy response.
+        // yikoulian.cc returns JSON like: {"error":{"message":"预扣费额失败, 用户剩余额度: ¥0.53, 需要预扣费额度: ¥3.82"}}
+        // Show the FULL message to the user, not just "HTTP 403".
+        std::string displayMsg = "HTTP " + std::to_string(httpCode);
+        try {
+            auto errJson = nlohmann::json::parse(errBody);
+            if (errJson.contains("error") && errJson["error"].contains("message")) {
+                displayMsg = errJson["error"]["message"].get<std::string>();
+            }
+        } catch (...) {
+            // Not JSON or no message field — use raw body if it has content
+            if (errBody.size() > 10 && errBody.size() < 300) {
+                displayMsg += ": " + errBody;
+            }
+        }
+        throw closecrab::APIError(errType, static_cast<int>(httpCode), displayMsg);
     }
 }
 

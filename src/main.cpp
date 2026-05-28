@@ -822,12 +822,19 @@ Then work step by step using your tools to complete the task.)";
     // Retry status (task C): update the spinner so the user sees progress
     // instead of a frozen wheel during 503/network retries.
     callbacks.onRetry = [&spinner](int attempt, int maxAttempts, int delayMs, const std::string& reason) {
-        double secs = delayMs / 1000.0;
-        std::ostringstream msg;
-        msg << "Retrying " << attempt << "/" << maxAttempts << " in "
-            << std::fixed << std::setprecision(1) << secs << "s (" << reason << ")";
-        spinner.setMessage(msg.str());
-        closecrab::MobileWebSocket::getInstance().sendText("[" + msg.str() + "]\n");
+        if (attempt == 0) {
+            // Streaming progress update (not a retry): show what's being generated
+            // delayMs carries the accumulated bytes count
+            int kb = delayMs / 1024;
+            spinner.setMessage(reason + " (" + std::to_string(kb) + "KB)");
+        } else {
+            double secs = delayMs / 1000.0;
+            std::ostringstream msg;
+            msg << "Retrying " << attempt << "/" << maxAttempts << " in "
+                << std::fixed << std::setprecision(1) << secs << "s (" << reason << ")";
+            spinner.setMessage(msg.str());
+            closecrab::MobileWebSocket::getInstance().sendText("[" + msg.str() + "]\n");
+        }
     };
     // Track session-level permission grants
     bool autoApproveSession = false;
