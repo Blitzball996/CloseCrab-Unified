@@ -771,7 +771,9 @@ Then work step by step using your tools to complete the task.)";
         closecrab::MobileWebSocket::getInstance().sendToolUse(name, input.value("command", input.value("file_path", "")));
     };
     callbacks.onToolResult = [&spinner, &streamState](const std::string& name, const ToolResult& result) {
+        {FILE* tf=fopen("trace.log","a");if(tf){fprintf(tf,"  CB-enter name=%s content=%zu\n",name.c_str(),result.content.size());fflush(tf);fclose(tf);}}
         spinner.stop();
+        {FILE* tf=fopen("trace.log","a");if(tf){fprintf(tf,"  CB-after-stop\n");fflush(tf);fclose(tf);}}
         streamState = StreamState::WAITING;
         if (result.success) {
             // Per-tool result display (JackProAi: renderToolResultMessage per tool)
