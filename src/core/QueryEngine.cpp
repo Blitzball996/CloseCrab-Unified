@@ -423,7 +423,9 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
 
     result.elapsedSeconds = elapsed;
 
+    { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"  pre-callback\n"); fflush(t); fclose(t);} }
     if (callbacks.onToolResult) callbacks.onToolResult(event.toolName, result);
+    { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"  post-callback\n"); fflush(t); fclose(t);} }
 
     // Fire PostToolUse hooks
     if (hookMgr.hasHooks()) {
@@ -431,6 +433,7 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
     }
 
     // Add tool result to messages (ensure valid UTF-8 for JSON serialization)
+    { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"  pre-msg-push content=%zu\n", result.content.size()); fflush(t); fclose(t);} }
     std::string safeContent = ensureUtf8(result.success ? result.content : result.error);
     // Persist large output to disk, return preview to LLM
     if (result.success) {
