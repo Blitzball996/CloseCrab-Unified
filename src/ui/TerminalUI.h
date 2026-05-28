@@ -51,30 +51,54 @@ namespace ansi {
 // Spinner for long-running operations
 class Spinner {
 public:
-    void start(const std::string& message = "") {
+    Spinner() {
+        // Single persistent thread — never destroyed until program exit.
+        // Repeated thread create/join was causing heap corruption on Windows.
+        worker_ = std::thread([this]() {
+            while (!shutdown_.load()) {
+                std::unique_lock<std::mutex> lock(mutex_);
+                cv_.wait(lock, [this] { return active_.load() || shutdown_.load(); });
+                if (shutdown_.load()) break;
+                lock.unlock();
+                const char* frames[] = {"|","/","-","\\","|","/","-","\\"};
+                int i = 0;
+                while (active_.load()) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+                    if (!active_.load()) break;
+                    std::lock_guard<std::mutex> lk(getStdoutMutex());
+                    std::cout << "\r" << ansi::cyan() << frames[i % 8] << ansi::reset() << std::flush;
+                    i++;
+                }
+            }
+        });
+    }
+
+    void start(const char* message = nullptr) {
         stop();
-        running_ = true;
-        if (message.empty() || message == "Waiting for response...") {
-            message_ = getRandomVerb();
-        } else {
-            message_ = message;
+        if (!message || !message[0]) {
+            message = getRandomVerb();
         }
+        size_t len = strlen(message);
+        if (len >= sizeof(message_)) len = sizeof(message_) - 1;
+        memcpy(message_, message, len);
+        message_[len] = '\0';
+
         if (std::getenv("CLOSECRAB_WEB")) {
             std::cout << "<<<CCSPIN:START:" << message_ << ">>>\n" << std::flush;
             return;
         }
         std::cout << "\r" << ansi::cyan() << "|" << ansi::reset()
                   << " " << message_ << "   " << std::flush;
-        // MINIMAL thread: only sleep + check flag. No IO, no allocations.
-        thread_ = std::thread([this]() {
-            while (running_.load()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(80));
-            }
-        });
+        active_ = true;
+        cv_.notify_one();
+    }
+
+    void start(const std::string& message) {
+        start(message.c_str());
     }
 
 private:
-    static std::string getRandomVerb() {
+    static const char* getRandomVerb() {
         static const char* VERBS[] = {
             "Accomplishing", "Actioning", "Actualizing", "Architecting",
             "Baking", "Beaming", "Beboppin'", "Befuddling",
@@ -131,29 +155,35 @@ private:
 public:
 
     void stop() {
-        bool was_running = running_.exchange(false);
-        if (thread_.joinable()) thread_.join();
-        if (was_running && !std::getenv("CLOSECRAB_WEB")) {
-            // Clear line: use fixed width to avoid heap allocation from std::string ctor
+        if (!active_.exchange(false)) return;
+        if (!std::getenv("CLOSECRAB_WEB")) {
             std::cout << "\r                                                            \r" << std::flush;
-        }
-        if (was_running && std::getenv("CLOSECRAB_WEB")) {
+        } else {
             std::cout << "<<<CCSPIN:STOP>>>\n" << std::flush;
         }
     }
 
     void setMessage(const std::string& msg) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        message_ = msg;
+        size_t len = msg.size();
+        if (len >= sizeof(message_)) len = sizeof(message_) - 1;
+        memcpy(message_, msg.c_str(), len);
+        message_[len] = '\0';
     }
 
-    ~Spinner() { stop(); }
+    ~Spinner() {
+        active_ = false;
+        shutdown_ = true;
+        cv_.notify_one();
+        if (worker_.joinable()) worker_.join();
+    }
 
 private:
-    std::atomic<bool> running_{false};
-    std::string message_;
-    std::thread thread_;
+    std::atomic<bool> active_{false};
+    std::atomic<bool> shutdown_{false};
+    char message_[64] = {};
+    std::thread worker_;
     std::mutex mutex_;
+    std::condition_variable cv_;
 };
 
 // Simple markdown-to-ANSI renderer for terminal output
