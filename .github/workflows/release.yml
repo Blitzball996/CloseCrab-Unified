@@ -2,53 +2,163 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+env:
+  BUILD_TYPE: Release
+
 jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 'a7b6122f6b6504d16d96117336a0562693579933'
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} `
+            -DCMAKE_TOOLCHAIN_FILE="${{env.VCPKG_ROOT}}/scripts/buildsystems/vcpkg.cmake" `
+            -DUSE_CUDA=OFF `
+            -DUSE_LOCAL_LLM=OFF `
+            -DUSE_FAISS=OFF `
+            -DUSE_ONNX=OFF
+
+      - name: Build
+        run: cmake --build build --config ${{env.BUILD_TYPE}} --target closecrab-unified
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p package/CloseCrab
+          cp build/Release/closecrab-unified.exe package/CloseCrab/
+          cp build/Release/*.dll package/CloseCrab/ 2>/dev/null || true
+          cp config/config.yaml.example package/CloseCrab/config.yaml 2>/dev/null || true
+          cd package && 7z a -tzip ../CloseCrab-Windows-x64.zip CloseCrab/
+
+      - name: Build installer
+        run: |
+          choco install innosetup -y
+          iscc installer\closecrab.iss
+        continue-on-error: true
+
+      - name: Upload ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: CloseCrab-Windows-x64
+          path: CloseCrab-Windows-x64.zip
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        if: hashFiles('installer/Output/*.exe') != ''
+        with:
+          name: CloseCrab-Windows-Setup
+          path: installer/Output/*.exe
+
+  build-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build \
+            libcurl4-openssl-dev \
+            zlib1g-dev \
+            libssl-dev
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
+            -DUSE_CUDA=OFF \
+            -DUSE_LOCAL_LLM=ON \
+            -DUSE_FAISS=OFF \
+            -DUSE_ONNX=OFF
+
+      - name: Build
+        run: cmake --build build --config ${{env.BUILD_TYPE}} --target closecrab-unified
+
+      - name: Package
+        run: |
+          mkdir -p package/CloseCrab
+          cp build/closecrab-unified package/CloseCrab/
+          cp config/config.yaml.example package/CloseCrab/config.yaml 2>/dev/null || true
+          tar -czf CloseCrab-Linux-x86_64.tar.gz -C package CloseCrab
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CloseCrab-Linux-x86_64
+          path: CloseCrab-Linux-x86_64.tar.gz
+
+  build-macos-arm64:
+    runs-on: macos-14
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: brew install ninja
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
+            -DCMAKE_OSX_ARCHITECTURES="arm64" \
+            -DUSE_CUDA=OFF \
+            -DUSE_LOCAL_LLM=ON \
+            -DUSE_FAISS=OFF \
+            -DUSE_ONNX=OFF
+
+      - name: Build
+        run: cmake --build build --config ${{env.BUILD_TYPE}} --target closecrab-unified
+
+      - name: Package
+        run: |
+          mkdir -p package/CloseCrab
+          cp build/closecrab-unified package/CloseCrab/
+          cp config/config.yaml.example package/CloseCrab/config.yaml 2>/dev/null || true
+          tar -czf CloseCrab-macOS-arm64.tar.gz -C package CloseCrab
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CloseCrab-macOS-arm64
+          path: CloseCrab-macOS-arm64.tar.gz
+
   create-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-windows, build-linux, build-macos-arm64]
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
 
-      - name: Create Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: "CloseCrab ${{ github.ref_name }}"
-          body: |
-            ## CloseCrab ${{ github.ref_name }} — Team Mode Release
-
-            ### Downloads
-
-            | Platform | File | Notes |
-            |----------|------|-------|
-            | Windows | `CloseCrab-Unified_Setup.exe` | CUDA GPU acceleration, Inno Setup installer |
-            | macOS | `CloseCrab-Unified.dmg` | Universal binary (Intel + Apple Silicon), CPU-only |
-            | Linux | `CloseCrab-Unified-linux-x86_64.tar.gz` | Portable binary, CPU-only |
-
-            ### What's New in v0.2.0
-            - **Team Mode**: Multiple developers connect to one server with independent conversations
-            - **Parallel Inference**: True parallel decode (API: concurrent HTTP, Local: llama.cpp n_parallel)
-            - **Gamification**: Leaderboard, achievements, coding stats
-            - **Dashboard**: Apple-style GUI to start/stop backend from your phone
-            - **Shared Knowledge**: Team Q&A indexed and searchable across sessions
-            - **Session Persistence**: Save and restore collaboration sessions
-
-            ### Quick Start
-            ```bash
-            # Windows: download and run the installer
-            # macOS: mount DMG, drag to Applications, run from terminal
-            # Linux: tar xzf CloseCrab-Unified-linux-x86_64.tar.gz && ./closecrab-unified
-            ```
-
-            ### Links
-            - [User Guide (English)](USER_GUIDE_EN.md)
-            - [用户指南 (中文)](USER_GUIDE.md)
-            - [Mobile Web UI](https://github.com/Blitzball996/CloseCrab-Web)
+          generate_release_notes: true
+          files: |
+            CloseCrab-Windows-x64/CloseCrab-Windows-x64.zip
+            CloseCrab-Linux-x86_64/CloseCrab-Linux-x86_64.tar.gz
+            CloseCrab-macOS-arm64/CloseCrab-macOS-arm64.tar.gz
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
