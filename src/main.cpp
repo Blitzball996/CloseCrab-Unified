@@ -771,78 +771,14 @@ Then work step by step using your tools to complete the task.)";
         closecrab::MobileWebSocket::getInstance().sendToolUse(name, input.value("command", input.value("file_path", "")));
     };
     callbacks.onToolResult = [&spinner, &streamState](const std::string& name, const ToolResult& result) {
-        {FILE* tf=fopen("trace.log","a");if(tf){fprintf(tf,"  CB-enter name=%s content=%zu\n",name.c_str(),result.content.size());fflush(tf);fclose(tf);}}
         spinner.stop();
-        {FILE* tf=fopen("trace.log","a");if(tf){fprintf(tf,"  CB-after-stop\n");fflush(tf);fclose(tf);}}
         streamState = StreamState::WAITING;
-        {FILE* tf=fopen("trace.log","a");if(tf){fprintf(tf,"  CB-pre-display success=%d data_type=%d\n",result.success?1:0,(int)result.data.type());fflush(tf);fclose(tf);}}
+        // MINIMAL display to diagnose crash — all complex logic removed temporarily
         if (result.success) {
-            // Per-tool result display (JackProAi: renderToolResultMessage per tool)
-            std::string summary;
-            if (name == "Read") {
-                std::string path = result.data.is_object() ? result.data.value("filePath", "") : "";
-                int lines = result.data.is_object() ? result.data.value("numLines", 0) : 0;
-                // Extract basename by raw string scan — std::filesystem::path(path)
-                // round-trips through the ANSI code page and THROWS on CJK paths
-                // (e.g. "需求.txt"), which previously crashed the whole turn.
-                std::string fname;
-                if (!path.empty()) {
-                    size_t slash = path.find_last_of("/\\");
-                    fname = (slash == std::string::npos) ? path : path.substr(slash + 1);
-                }
-                summary = fname + " (" + std::to_string(lines) + " lines)";
-            } else if (name == "Write") {
-                // content format: "File written: path (N bytes)"
-                summary = result.content;
-            } else if (name == "Edit") {
-                summary = result.content;
-            } else if (name == "Glob") {
-                int count = result.data.is_object() ? result.data.value("numFiles", 0) : 0;
-                if (count > 0) summary = std::to_string(count) + " files matched";
-                else summary = result.content.substr(0, std::min((size_t)80, result.content.size()));
-            } else if (name == "Grep") {
-                int matches = result.data.is_object() ? result.data.value("numMatches", 0) : 0;
-                int files = result.data.is_object() ? result.data.value("numFiles", 0) : 0;
-                if (matches > 0) summary = std::to_string(matches) + " matches in " + std::to_string(files) + " files";
-                else summary = result.content.substr(0, std::min((size_t)80, result.content.size()));
-            } else if (name == "WebSearch") {
-                summary = result.content.substr(0, std::min((size_t)80, result.content.size()));
-            } else if (name == "WebFetch") {
-                summary = result.content.substr(0, std::min((size_t)80, result.content.size()));
-            } else if (name == "Agent") {
-                summary = result.content.substr(0, std::min((size_t)60, result.content.size()));
-            } else if (name == "Bash" || name == "PowerShell") {
-                // Keep existing collapsed output logic
-                summary = "";
-            } else {
-                summary = result.content.substr(0, std::min((size_t)80, result.content.size()));
-            }
-
-            std::cout << " " << ansi::green() << "OK" << ansi::reset();
-            {FILE* tf=fopen("trace.log","a");if(tf){fprintf(tf,"  CB-after-OK\n");fflush(tf);fclose(tf);}}
-            if (!summary.empty()) {
-                std::cout << " " << ansi::dim() << summary << ansi::reset();
-            }
-            if (result.elapsedSeconds > 0.1) {
-                std::cout << ansi::dim() << " (" << std::fixed << std::setprecision(1) << result.elapsedSeconds << "s)" << ansi::reset();
-            }
-            // Show collapsed output for execution tools
-            if ((name == "Bash" || name == "PowerShell") && !result.content.empty()) {
-                auto collapsed = OutputCollapse::collapse(result.content);
-                std::cout << "\n" << ansi::dim() << collapsed.display << ansi::reset();
-                if (collapsed.collapsed) {
-                    std::cout << ansi::dim() << "  [" << collapsed.totalLines << " total lines]" << ansi::reset();
-                }
-            }
-            std::cout << "\n" << std::flush;
+            std::cout << " " << ansi::green() << "OK" << ansi::reset() << "\n" << std::flush;
         } else {
-            std::cout << " " << ansi::red() << "Error: " << result.error << ansi::reset();
-            if (result.elapsedSeconds > 0.1) {
-                std::cout << ansi::dim() << " (" << std::fixed << std::setprecision(1) << result.elapsedSeconds << "s)" << ansi::reset();
-            }
-            std::cout << "\n";
+            std::cout << " " << ansi::red() << "Error: " << result.error << ansi::reset() << "\n" << std::flush;
         }
-        // After tool result, API will be called again — show waiting
         closecrab::MobileWebSocket::getInstance().sendToolResult(name, result.success, result.elapsedSeconds);
         spinner.start("Waiting for response...");
     };
