@@ -20,6 +20,8 @@
 #include <sstream>
 #include <iomanip>
 #include <spdlog/spdlog.h>
+#include <spdlog/sinks/basic_file_sink.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 #include <CLI/CLI.hpp>
 
 #include "core/QueryEngine.h"
@@ -293,6 +295,39 @@ int main(int argc, char* argv[]) {
     SetConsoleCP(CP_UTF8);
     WSADATA wsaData;
     WSAStartup(MAKEWORD(2, 2), &wsaData);
+
+    // Crash handler: write diagnostic info to crash.log before dying.
+    // This captures the exact reason for "闪退" that's otherwise invisible.
+    SetUnhandledExceptionFilter([](EXCEPTION_POINTERS* ep) -> LONG {
+        FILE* f = fopen("crash.log", "a");
+        if (f) {
+            auto now = std::chrono::system_clock::now();
+            auto t = std::chrono::system_clock::to_time_t(now);
+            fprintf(f, "\n=== CRASH at %s", ctime(&t));
+            fprintf(f, "Exception code: 0x%08lX\n", ep->ExceptionRecord->ExceptionCode);
+            fprintf(f, "Address: 0x%p\n", ep->ExceptionRecord->ExceptionAddress);
+            fprintf(f, "RIP: 0x%p\n", (void*)ep->ContextRecord->Rip);
+            fflush(f);
+            fclose(f);
+        }
+        return EXCEPTION_CONTINUE_SEARCH;
+    });
+
+    // Also catch std::terminate (from uncaught exceptions in threads)
+    std::set_terminate([]() {
+        FILE* f = fopen("crash.log", "a");
+        if (f) {
+            auto now = std::chrono::system_clock::now();
+            auto t = std::chrono::system_clock::to_time_t(now);
+            fprintf(f, "\n=== TERMINATE at %s", ctime(&t));
+            try { std::rethrow_exception(std::current_exception()); }
+            catch (const std::exception& e) { fprintf(f, "Exception: %s\n", e.what()); }
+            catch (...) { fprintf(f, "Unknown exception\n"); }
+            fflush(f);
+            fclose(f);
+        }
+        std::abort();
+    });
 #endif
 
     // Initialize CURL globally BEFORE any threads are created.
@@ -321,6 +356,18 @@ int main(int argc, char* argv[]) {
     CLI11_PARSE(app, argc, argv);
 
     spdlog::set_level(verbose ? spdlog::level::debug : spdlog::level::info);
+
+    // File logging: write all logs to closecrab.log so crash diagnostics survive
+    try {
+        auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>("closecrab.log", true);
+        auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+        auto logger = std::make_shared<spdlog::logger>("multi", spdlog::sinks_init_list{console_sink, file_sink});
+        logger->set_level(verbose ? spdlog::level::debug : spdlog::level::info);
+        logger->flush_on(spdlog::level::warn); // Flush on warnings (ensures crash context is saved)
+        spdlog::set_default_logger(logger);
+    } catch (...) {
+        // Fall back to console-only if file logging fails
+    }
 
     // ---- Load config ----
     auto& config = Config::getInstance();
