@@ -775,6 +775,7 @@ Then work step by step using your tools to complete the task.)";
         spinner.stop();
         {FILE* tf=fopen("trace.log","a");if(tf){fprintf(tf,"  CB-after-stop\n");fflush(tf);fclose(tf);}}
         streamState = StreamState::WAITING;
+        {FILE* tf=fopen("trace.log","a");if(tf){fprintf(tf,"  CB-pre-display success=%d data_type=%d\n",result.success?1:0,(int)result.data.type());fflush(tf);fclose(tf);}}
         if (result.success) {
             // Per-tool result display (JackProAi: renderToolResultMessage per tool)
             std::string summary;
@@ -818,6 +819,7 @@ Then work step by step using your tools to complete the task.)";
             }
 
             std::cout << " " << ansi::green() << "OK" << ansi::reset();
+            {FILE* tf=fopen("trace.log","a");if(tf){fprintf(tf,"  CB-after-OK\n");fflush(tf);fclose(tf);}}
             if (!summary.empty()) {
                 std::cout << " " << ansi::dim() << summary << ansi::reset();
             }
