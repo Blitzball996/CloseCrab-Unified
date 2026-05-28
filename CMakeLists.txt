@@ -48,6 +48,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(MSVC)
     add_compile_options(/Zc:char8_t-)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    # Address Sanitizer: detects use-after-free, buffer overflow, stack corruption.
+    # Enable for Debug builds to find the heap corruption causing crash 0xC0000005.
+    # The crash reads freed memory containing {3, 1000} as a function pointer.
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug" OR ENABLE_ASAN)
+        add_compile_options(/fsanitize=address)
+        add_link_options(/fsanitize=address)
+        message(STATUS "AddressSanitizer ENABLED")
+    endif()
 endif()
 
 # ============================================
