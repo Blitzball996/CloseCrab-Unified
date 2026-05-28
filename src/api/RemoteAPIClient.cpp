@@ -112,12 +112,10 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
 struct CurlStreamCtx {
     closecrab::StreamParser* parser;
     std::string rawResponse;
-    std::chrono::steady_clock::time_point lastChunkTime;
 };
 
 static size_t curlStreamCallback(char* ptr, size_t size, size_t nmemb, void* userdata) {
     auto* ctx = static_cast<CurlStreamCtx*>(userdata);
-    ctx->lastChunkTime = std::chrono::steady_clock::now(); // Reset idle timer
     size_t totalSize = size * nmemb;
     // CRITICAL: This is a C callback invoked by libcurl. If ANY exception
     // escapes here, it's undefined behavior (MSVC calls std::terminate →
@@ -139,18 +137,9 @@ static size_t curlStreamCallback(char* ptr, size_t size, size_t nmemb, void* use
     return totalSize;
 }
 
-// claude-code idle watchdog equivalent: CURL calls this ~1/sec even when no data.
-// If no chunk has arrived for 180s, abort (connection is truly dead).
-// 180s is generous — claude-code uses 90s but their API sends heartbeats during
-// thinking; proxies may not forward those, so we use 2x.
-static int curlProgressCallback(void* userdata, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
-    auto* ctx = static_cast<CurlStreamCtx*>(userdata);
-    auto elapsed = std::chrono::steady_clock::now() - ctx->lastChunkTime;
-    if (std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() > 180) {
-        return 1; // non-zero = abort transfer
-    }
-    return 0;
-}
+// idle watchdog removed — was causing ACCESS_VIOLATION (0xC0000005).
+// CURL progress callbacks are unreliable with some CURL/proxy combinations.
+// Rely on CURLOPT_TIMEOUT=600 as the safety net instead.
 
 namespace closecrab { // reopen
 
@@ -310,23 +299,11 @@ static void performCurlSSE(
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
     curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
 
-    // Timeouts (claude-code strategy: 300s overall + 90s idle watchdog per-chunk)
-    // DO NOT use LOW_SPEED_LIMIT — it triggers during the model's thinking phase
-    // (60s of no output while planning) and kills the connection. This was the
-    // root cause of "闪退 during file write" — the model thinks for 60s before
-    // emitting the Write tool_use, CURL aborts, process crashes.
-    // claude-code uses a per-chunk timer (resetStreamIdleTimer on each chunk)
-    // which we implement via the progress callback below.
+    // Timeouts: 600s overall, 30s connect. No LOW_SPEED (kills thinking pauses).
+    // No progress callback (caused ACCESS_VIOLATION segfault).
+    // claude-code's 90s idle watchdog uses JS setTimeout, not CURL callbacks.
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
-    // NO LOW_SPEED_LIMIT — it's incompatible with LLM streaming (long think pauses)
-
-    // Progress callback: implements claude-code's 90s idle watchdog.
-    // Called ~1/sec by CURL even when no data flows. Checks if writeCallback
-    // hasn't been called for 180s (generous for thinking models).
-    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, curlProgressCallback);
-    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &curlCtx);
 
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
@@ -415,7 +392,7 @@ void RemoteAPIClient::streamChat(
             StreamParser parser([&](const StreamParser::SSEEvent& event) {
                 handleSSEEvent(event, callback, currentToolName, currentToolId, currentToolJson);
             });
-            CurlStreamCtx curlCtx{&parser, "", std::chrono::steady_clock::now()};
+            CurlStreamCtx curlCtx{&parser, ""};
             performCurlSSE(url, bodyStr, apiKey_, curlCtx);
             parser.finish();
             return; // Success
