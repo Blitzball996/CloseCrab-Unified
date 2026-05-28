@@ -448,6 +448,7 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
         resultJson = nlohmann::json(ascii);
     }
     messages_.push_back(Message::makeToolResult(event.toolUseId, resultJson, !result.success));
+    { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"  tool-done %s ok=%d msgCount=%zu\n", event.toolName.c_str(), result.success?1:0, messages_.size()); fclose(t);} }
 }
 
 void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks& callbacks) {
@@ -708,6 +709,8 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
 
         if (apiCallFailed) break; // Don't continue the turn loop on API failure
 
+        { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"[turn%d] post-stream stopReason=%s tools=%zu text=%zu\n", turnCount, stopReason.c_str(), pendingToolCalls.size(), accumulatedText.size()); fclose(t);} }
+
         // Error recovery: handle max_tokens stop reason
         // claude-code escalation: if capped at 8K and hit the limit, escalate to 64K and retry.
         if (stopReason == "max_tokens") {
@@ -761,6 +764,7 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
 
         // Process tool calls (parallel when multiple, sequential when single)
         if (!pendingToolCalls.empty() && !interrupted_) {
+            { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"[turn%d] pre-tool %s\n", turnCount, pendingToolCalls[0].toolName.c_str()); fclose(t);} }
             if (pendingToolCalls.size() == 1) {
                 // Single tool: execute directly
                 processToolUse(pendingToolCalls[0], callbacks);
