@@ -306,7 +306,11 @@ int main(int argc, char* argv[]) {
             fprintf(f, "\n=== CRASH at %s", ctime(&t));
             fprintf(f, "Exception code: 0x%08lX\n", ep->ExceptionRecord->ExceptionCode);
             fprintf(f, "Address: 0x%p\n", ep->ExceptionRecord->ExceptionAddress);
+            fprintf(f, "Fault address: 0x%p\n", (void*)ep->ExceptionRecord->ExceptionInformation[1]);
+            fprintf(f, "Access type: %s\n", ep->ExceptionRecord->ExceptionInformation[0] == 0 ? "READ" : "WRITE");
             fprintf(f, "RIP: 0x%p\n", (void*)ep->ContextRecord->Rip);
+            fprintf(f, "RSP: 0x%p\n", (void*)ep->ContextRecord->Rsp);
+            fprintf(f, "RBP: 0x%p\n", (void*)ep->ContextRecord->Rbp);
             fflush(f);
             fclose(f);
         }
