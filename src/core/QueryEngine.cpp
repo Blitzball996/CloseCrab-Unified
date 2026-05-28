@@ -791,10 +791,14 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                 std::vector<StreamEvent> parallelCalls;
                 std::vector<StreamEvent> serialCalls;
                 { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"  partitioning %zu tools\n", pendingToolCalls.size()); fflush(t); fclose(t);} }
-                for (const auto& tc : pendingToolCalls) {
-                    Tool* t = config_.toolRegistry ? config_.toolRegistry->getTool(tc.toolName) : nullptr;
-                    if (t && t->isConcurrencySafe()) parallelCalls.push_back(tc);
+                for (size_t idx = 0; idx < pendingToolCalls.size(); idx++) {
+                    const auto& tc = pendingToolCalls[idx];
+                    { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"  partition[%zu] name=%s registry=%p\n", idx, tc.toolName.c_str(), (void*)config_.toolRegistry); fflush(t); fclose(t);} }
+                    Tool* t2 = config_.toolRegistry ? config_.toolRegistry->getTool(tc.toolName) : nullptr;
+                    { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"  partition[%zu] tool=%p\n", idx, (void*)t2); fflush(t); fclose(t);} }
+                    if (t2 && t2->isConcurrencySafe()) parallelCalls.push_back(tc);
                     else serialCalls.push_back(tc);
+                    { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"  partition[%zu] done serial=%zu parallel=%zu\n", idx, serialCalls.size(), parallelCalls.size()); fflush(t); fclose(t);} }
                 }
 
                 // Stateful tools first, sequentially (full permission + display).
