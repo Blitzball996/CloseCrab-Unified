@@ -179,6 +179,9 @@ private:
     }
 
     // Parallel execution of multiple tool calls
+    // CRITICAL: callbacks are NOT called from worker threads (they touch the
+    // Spinner which causes data races). Workers only execute tools; callbacks
+    // are invoked sequentially after all workers complete.
     std::vector<ToolExecution> executeParallel(
         const std::vector<StreamEvent>& toolCalls,
         ToolContext& ctx,
@@ -194,7 +197,6 @@ private:
         for (const auto& tc : toolCalls) {
             if (interrupted.load()) break;
 
-            // Throttle: if we've hit maxParallel, wait for one to finish
             if (launched >= config_.maxParallel) {
                 for (auto& f : futures) {
                     if (f.valid()) {
@@ -205,21 +207,66 @@ private:
             }
 
             futures.push_back(std::async(std::launch::async,
-                [this, &tc, &ctx, registry, budget, &callbacks, &interrupted]() {
-                    return executeSingle(tc, ctx, registry, budget, callbacks, interrupted);
+                [this, &tc, &ctx, registry, budget, &interrupted]() {
+                    return executeWorker(tc, ctx, registry, budget, interrupted);
                 }));
             launched++;
         }
 
-        // Collect all results in order
+        // Collect results and invoke callbacks sequentially on main thread
         std::vector<ToolExecution> results;
         results.reserve(futures.size());
         for (auto& f : futures) {
             if (f.valid()) {
-                results.push_back(f.get());
+                auto exec = f.get();
+                if (callbacks.onToolUse) callbacks.onToolUse(exec.toolName, {});
+                if (callbacks.onToolResult) callbacks.onToolResult(exec.toolName, exec.result);
+                results.push_back(std::move(exec));
             }
         }
         return results;
+    }
+
+    // Worker-thread-safe execution (no callbacks)
+    ToolExecution executeWorker(
+        const StreamEvent& event,
+        ToolContext& ctx,
+        ToolRegistry* registry,
+        BudgetTracker* budget,
+        std::atomic<bool>& interrupted)
+    {
+        ToolExecution exec;
+        exec.toolName = event.toolName;
+        exec.toolUseId = event.toolUseId;
+        auto startTime = std::chrono::steady_clock::now();
+
+        Tool* tool = registry ? registry->getTool(event.toolName) : nullptr;
+        if (!tool) { exec.result = ToolResult::fail("Unknown tool: " + event.toolName); exec.durationMs = elapsedMs(startTime); return exec; }
+
+        auto validation = tool->validateInput(event.toolInput);
+        if (!validation.valid) {
+            std::string errMsg;
+            for (const auto& e : validation.errors) { if (!errMsg.empty()) errMsg += "; "; errMsg += e; }
+            exec.result = ToolResult::fail("Validation failed: " + errMsg);
+            exec.durationMs = elapsedMs(startTime);
+            return exec;
+        }
+
+        try {
+            if (interrupted.load()) { exec.result = ToolResult::fail("Interrupted"); exec.wasInterrupted = true; }
+            else { exec.result = tool->call(ctx, event.toolInput); }
+        } catch (const std::exception& e) {
+            exec.result = ToolResult::fail(std::string("Tool threw: ") + e.what());
+        }
+
+        if (budget && config_.enableBudgetTrimming && exec.result.success) {
+            exec.result.content = budget->applyToolResultBudget(exec.result.content);
+        }
+        if (exec.result.success) exec.result.content = ensureUtf8(exec.result.content);
+        else exec.result.error = ensureUtf8(exec.result.error);
+
+        exec.durationMs = elapsedMs(startTime);
+        return exec;
     }
 
     static double elapsedMs(const std::chrono::steady_clock::time_point& start) {

@@ -856,12 +856,16 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                 for (auto& f : futures) {
                     if (!f.valid()) continue;
                     { FILE* tf = fopen("trace.log","a"); if(tf){fprintf(tf,"  f.get()\n"); fflush(tf); fclose(tf);} }
-                    auto [ev, result] = f.get();
-                    { FILE* tf = fopen("trace.log","a"); if(tf){fprintf(tf,"  got %s ok=%d\n", ev.toolName.c_str(), result.success?1:0); fflush(tf); fclose(tf);} }
-                    if (callbacks.onToolUse) callbacks.onToolUse(ev.toolName, ev.toolInput);
-                    if (callbacks.onToolResult) callbacks.onToolResult(ev.toolName, result);
+                    auto pr = f.get();
+                    { FILE* tf = fopen("trace.log","a"); if(tf){fprintf(tf,"  got %s ok=%d\n", pr.event.toolName.c_str(), pr.result.success?1:0); fflush(tf); fclose(tf);} }
+                    if (callbacks.onToolUse) callbacks.onToolUse(pr.event.toolName, pr.event.toolInput);
+                    if (callbacks.onToolResult) callbacks.onToolResult(pr.event.toolName, pr.result);
 
-                    std::string safeContent = ensureUtf8(result.success ? result.content : result.error);
+                    std::string safeContent = ensureUtf8(pr.result.success ? pr.result.content : pr.result.error);
+                    if (pr.result.success) {
+                        safeContent = OutputPersistence::persistIfNeeded(safeContent, pr.event.toolName, pr.event.toolUseId);
+                    }
+                    safeContent = budgetTracker_.applyToolResultBudget(safeContent);
                     nlohmann::json resultJson;
                     try { resultJson = nlohmann::json(safeContent); }
                     catch (...) {
@@ -869,7 +873,7 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                         for (char c : safeContent) ascii += (static_cast<unsigned char>(c) < 0x80) ? c : '?';
                         resultJson = nlohmann::json(ascii);
                     }
-                    messages_.push_back(Message::makeToolResult(ev.toolUseId, resultJson, !result.success));
+                    messages_.push_back(Message::makeToolResult(pr.event.toolUseId, resultJson, !pr.result.success));
                 }
             }
 

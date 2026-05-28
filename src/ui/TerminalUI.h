@@ -52,12 +52,15 @@ namespace ansi {
 class Spinner {
 public:
     void start(const std::string& message = "") {
-        if (running_.load()) return;
+        stop();
         running_ = true;
-        if (message.empty() || message == "Waiting for response...") {
-            message_ = getRandomVerb();
-        } else {
-            message_ = message;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (message.empty() || message == "Waiting for response...") {
+                message_ = getRandomVerb();
+            } else {
+                message_ = message;
+            }
         }
         if (std::getenv("CLOSECRAB_WEB")) {
             std::cout << "<<<CCSPIN:START:" << message_ << ">>>\n" << std::flush;
@@ -68,7 +71,8 @@ public:
             int i = 0;
             while (running_.load()) {
                 {
-                    std::lock_guard<std::mutex> lock(getStdoutMutex());
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    std::lock_guard<std::mutex> lock2(getStdoutMutex());
                     std::cout << "\r" << ansi::cyan() << frames[i % 8]
                               << ansi::reset() << " " << message_ << "   " << std::flush;
                 }
@@ -76,7 +80,8 @@ public:
                 std::this_thread::sleep_for(std::chrono::milliseconds(80));
             }
             {
-                std::lock_guard<std::mutex> lock(getStdoutMutex());
+                std::lock_guard<std::mutex> lock(mutex_);
+                std::lock_guard<std::mutex> lock2(getStdoutMutex());
                 std::cout << "\r" << std::string(message_.size() + 10, ' ') << "\r" << std::flush;
             }
         });
