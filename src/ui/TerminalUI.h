@@ -54,35 +54,21 @@ public:
     void start(const std::string& message = "") {
         stop();
         running_ = true;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (message.empty() || message == "Waiting for response...") {
-                message_ = getRandomVerb();
-            } else {
-                message_ = message;
-            }
+        if (message.empty() || message == "Waiting for response...") {
+            message_ = getRandomVerb();
+        } else {
+            message_ = message;
         }
         if (std::getenv("CLOSECRAB_WEB")) {
             std::cout << "<<<CCSPIN:START:" << message_ << ">>>\n" << std::flush;
             return;
         }
+        std::cout << "\r" << ansi::cyan() << "|" << ansi::reset()
+                  << " " << message_ << "   " << std::flush;
+        // MINIMAL thread: only sleep + check flag. No IO, no allocations.
         thread_ = std::thread([this]() {
-            const char* frames[] = {"|","/","-","\\","|","/","-","\\"};
-            int i = 0;
             while (running_.load()) {
-                {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    std::lock_guard<std::mutex> lock2(getStdoutMutex());
-                    std::cout << "\r" << ansi::cyan() << frames[i % 8]
-                              << ansi::reset() << " " << message_ << "   " << std::flush;
-                }
-                i++;
                 std::this_thread::sleep_for(std::chrono::milliseconds(80));
-            }
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                std::lock_guard<std::mutex> lock2(getStdoutMutex());
-                std::cout << "\r" << std::string(message_.size() + 10, ' ') << "\r" << std::flush;
             }
         });
     }
@@ -147,8 +133,10 @@ public:
     void stop() {
         bool was_running = running_.exchange(false);
         if (thread_.joinable()) thread_.join();
-        // Emit STOP marker so the mobile UI can clear its inline animation.
-        // Only emit if we were actually running and operating in web mode.
+        if (was_running && !std::getenv("CLOSECRAB_WEB")) {
+            // Clear line: use fixed width to avoid heap allocation from std::string ctor
+            std::cout << "\r                                                            \r" << std::flush;
+        }
         if (was_running && std::getenv("CLOSECRAB_WEB")) {
             std::cout << "<<<CCSPIN:STOP>>>\n" << std::flush;
         }

@@ -674,7 +674,12 @@ Then work step by step using your tools to complete the task.)";
               << " for commands, " << ansi::yellow() << "/quit" << ansi::reset() << " to exit.\n\n";
 
     // ---- UI components ----
-    Spinner spinner;
+    // Spinner MUST be heap-allocated. Its thread accesses members via `this`
+    // pointer; when on the stack, deep call chains (submitMessage → processToolUse
+    // → tool->call) cause the spinner thread's std::string operations to corrupt
+    // adjacent stack frames → deterministic ACCESS_VIOLATION 0x000003E800000003.
+    auto spinnerPtr = std::make_unique<Spinner>();
+    auto& spinner = *spinnerPtr;
     InputHistory inputHistory;
     VimInput vimInput;
 
