@@ -108,7 +108,8 @@ if(NOT yaml-cpp_FOUND)
     set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(yaml-cpp
         GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
-        GIT_TAG 0.8.0)
+        GIT_TAG master
+        SYSTEM)
     set(CMAKE_POLICY_DEFAULT_CMP0148 OLD CACHE STRING "" FORCE)
     FetchContent_MakeAvailable(yaml-cpp)
 endif()
@@ -332,12 +333,17 @@ add_executable(closecrab-unified
     src/network/HttpServer.cpp
     src/network/SSEServer.cpp
     src/security/Sandbox.cpp
-    src/rag/RAGManager.cpp
-    src/rag/EmbeddingEngine.cpp
-    src/rag/RerankerEngine.cpp
-    src/rag/HFTokenizer.cpp
     src/ssd/SSDExpertStreamer.cpp
 )
+
+if(USE_ONNX)
+    target_sources(closecrab-unified PRIVATE
+        src/rag/RAGManager.cpp
+        src/rag/EmbeddingEngine.cpp
+        src/rag/RerankerEngine.cpp
+        src/rag/HFTokenizer.cpp
+    )
+endif()
 
 # ============================================
 # Link libraries (cross-platform)

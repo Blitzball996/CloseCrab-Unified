@@ -2,14 +2,13 @@
 #include <vector>
 #include <string>
 #include <memory>
+#ifdef CLOSECRAB_HAS_ONNX
 #include <onnxruntime_cxx_api.h>
+#endif
 #include "HFTokenizer.h"
 
 class EmbeddingEngine {
 public:
-    /// @param modelPath          ONNX 模型路径 (model.onnx，同目录自动读 model.onnx_data)
-    /// @param tokenizerJsonPath  tokenizer.json 路径
-    /// @param useGPU             是否尝试使用 CUDA
     EmbeddingEngine(const std::string& modelPath,
         const std::string& tokenizerJsonPath,
         bool useGPU = true);
@@ -19,9 +18,11 @@ public:
     int getDimension() const { return dimension; }
 
 private:
+#ifdef CLOSECRAB_HAS_ONNX
     Ort::Env env;
     std::unique_ptr<Ort::Session> session;
     Ort::SessionOptions sessionOptions;
+#endif
 
     std::unique_ptr<HFTokenizer> tokenizer;
     int dimension = 768;

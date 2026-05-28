@@ -1,0 +1,9 @@
+{
+  "name": "closecrab-unified",
+  "version": "0.2.0",
+  "dependencies": [
+    "curl",
+    "zlib",
+    "openssl"
+  ]
+}

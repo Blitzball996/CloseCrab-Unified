@@ -2,7 +2,9 @@
 
 #include "Command.h"
 #include "../api/APIClient.h"
+#ifdef CLOSECRAB_HAS_ONNX
 #include "../rag/RAGManager.h"
+#endif
 #include "../security/Sandbox.h"
 #include "../permissions/PermissionEngine.h"
 #include <sstream>
@@ -13,6 +15,7 @@
 namespace closecrab {
 
 // /rag - RAG management
+#ifdef CLOSECRAB_HAS_ONNX
 class RAGCommand : public Command {
 public:
     std::string getName() const override { return "rag"; }
@@ -53,6 +56,7 @@ public:
         return CommandResult::ok();
     }
 };
+#endif
 
 // /ssd - SSD Expert Streaming status
 class SSDCommand : public Command {
@@ -136,8 +140,12 @@ public:
         out << "  Permissions: " << PermissionEngine::getInstance().getModeName() << "\n";
         out << "  Plan mode: " << (ctx.appState->planMode ? "ON" : "OFF") << "\n";
         out << "  Thinking: " << (ctx.appState->thinkingConfig.enabled ? "ON" : "OFF") << "\n";
+#ifdef CLOSECRAB_HAS_ONNX
         out << "  RAG: " << (RAGManager::getInstance().isEnabled() ? "enabled" : "disabled")
             << " (" << RAGManager::getInstance().getDocumentCount() << " docs)\n";
+#else
+        out << "  RAG: not available (built without ONNX)\n";
+#endif
         out << "  Cost: $" << std::fixed << std::setprecision(4) << ctx.appState->getTotalCost() << "\n\n";
 
         // External tools

@@ -495,7 +495,9 @@ int main(int argc, char* argv[]) {
     cmdRegistry.registerCommand(std::make_unique<FastCommand>());
     cmdRegistry.registerCommand(std::make_unique<ThinkingCommand>());
     // Advanced
+#ifdef CLOSECRAB_HAS_ONNX
     cmdRegistry.registerCommand(std::make_unique<RAGCommand>());
+#endif
     cmdRegistry.registerCommand(std::make_unique<SSDCommand>());
     cmdRegistry.registerCommand(std::make_unique<SandboxCommand>());
     cmdRegistry.registerCommand(std::make_unique<PlanCommand>());
