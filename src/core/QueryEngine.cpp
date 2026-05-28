@@ -794,32 +794,25 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                 }
 
                 // Concurrency-safe tools in parallel.
-                static std::mutex stdoutMutex;
-                std::vector<std::future<void>> futures;
+                // CRITICAL: do NOT call callbacks.onToolUse/onToolResult from worker
+                // threads — the callbacks touch the Spinner (thread join/start) which
+                // causes data races → segfault. Collect results, display after join.
+                struct ParallelResult {
+                    StreamEvent event;
+                    ToolResult result;
+                };
+                std::vector<std::future<ParallelResult>> futures;
                 std::mutex messagesMutex;
 
                 for (const auto& tc : parallelCalls) {
                     if (interrupted_) break;
-                    futures.push_back(std::async(std::launch::async, [&, tc]() {
-                        if (interrupted_) return;
-                        // processToolUse writes to messages_ — need synchronization
-                        // Create a local copy of the event to avoid race
+                    futures.push_back(std::async(std::launch::async, [&, tc]() -> ParallelResult {
+                        if (interrupted_) return {tc, ToolResult::fail("interrupted")};
                         StreamEvent localEvent = tc;
 
-                        // Execute tool (callbacks are thread-safe for output)
-                        if (!config_.toolRegistry) return;
+                        if (!config_.toolRegistry) return {localEvent, ToolResult::fail("no registry")};
                         Tool* tool = config_.toolRegistry->getTool(localEvent.toolName);
-                        if (!tool) {
-                            std::lock_guard<std::mutex> lock(messagesMutex);
-                            messages_.push_back(Message::makeToolResult(localEvent.toolUseId,
-                                nlohmann::json("Unknown tool: " + localEvent.toolName), true));
-                            return;
-                        }
-
-                        {
-                            std::lock_guard<std::mutex> outLock(stdoutMutex);
-                            if (callbacks.onToolUse) callbacks.onToolUse(localEvent.toolName, localEvent.toolInput);
-                        }
+                        if (!tool) return {localEvent, ToolResult::fail("Unknown tool: " + localEvent.toolName)};
 
                         ToolContext ctx;
                         ctx.cwd = config_.cwd;
@@ -830,9 +823,6 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                         ctx.apiClient = config_.apiClient;
                         ctx.toolRegistry = config_.toolRegistry;
 
-                        // Never let a throwing tool escape the worker thread — an
-                        // uncaught exception in a std::async thread calls
-                        // std::terminate and kills the whole process.
                         ToolResult result;
                         try {
                             result = tool->call(ctx, localEvent.toolInput);
@@ -841,31 +831,26 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                         } catch (...) {
                             result = ToolResult::fail("Internal error (unknown exception)");
                         }
-                        {
-                            std::lock_guard<std::mutex> outLock(stdoutMutex);
-                            if (callbacks.onToolResult) callbacks.onToolResult(localEvent.toolName, result);
-                        }
-
-                        std::string safeContent = ensureUtf8(result.success ? result.content : result.error);
-                        nlohmann::json resultJson;
-                        try {
-                            resultJson = nlohmann::json(safeContent);
-                        } catch (...) {
-                            std::string ascii;
-                            for (char c : safeContent) {
-                                ascii += (static_cast<unsigned char>(c) < 0x80) ? c : '?';
-                            }
-                            resultJson = nlohmann::json(ascii);
-                        }
-                        std::lock_guard<std::mutex> lock(messagesMutex);
-                        messages_.push_back(Message::makeToolResult(
-                            localEvent.toolUseId, resultJson, !result.success));
+                        return {localEvent, result};
                     }));
                 }
 
-                // Wait for all to complete
+                // Wait for all parallel tools, then display results sequentially (safe)
                 for (auto& f : futures) {
-                    if (f.valid()) f.wait();
+                    if (!f.valid()) continue;
+                    auto [ev, result] = f.get();
+                    if (callbacks.onToolUse) callbacks.onToolUse(ev.toolName, ev.toolInput);
+                    if (callbacks.onToolResult) callbacks.onToolResult(ev.toolName, result);
+
+                    std::string safeContent = ensureUtf8(result.success ? result.content : result.error);
+                    nlohmann::json resultJson;
+                    try { resultJson = nlohmann::json(safeContent); }
+                    catch (...) {
+                        std::string ascii;
+                        for (char c : safeContent) ascii += (static_cast<unsigned char>(c) < 0x80) ? c : '?';
+                        resultJson = nlohmann::json(ascii);
+                    }
+                    messages_.push_back(Message::makeToolResult(ev.toolUseId, resultJson, !result.success));
                 }
             }
 
