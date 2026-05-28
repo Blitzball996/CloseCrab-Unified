@@ -17,16 +17,14 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgGitCommitId: 'a7b6122f6b6504d16d96117336a0562693579933'
+      - name: Install vcpkg dependencies
+        run: vcpkg install curl zlib openssl --triplet x64-windows
 
       - name: Configure CMake
         run: |
           cmake -B build -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} `
-            -DCMAKE_TOOLCHAIN_FILE="${{env.VCPKG_ROOT}}/scripts/buildsystems/vcpkg.cmake" `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
             -DUSE_CUDA=OFF `
             -DUSE_LOCAL_LLM=OFF `
             -DUSE_FAISS=OFF `

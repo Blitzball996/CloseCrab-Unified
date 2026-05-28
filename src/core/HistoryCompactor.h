@@ -32,8 +32,14 @@ public:
         bool enableSnipCompact = true;
     };
 
-    explicit HistoryCompactor(const Config& config = {})
+    explicit HistoryCompactor(const Config& config)
         : config_(config)
+    {
+        registerStrategies();
+    }
+
+    HistoryCompactor()
+        : config_()
     {
         registerStrategies();
     }
