@@ -22,6 +22,16 @@
 
 namespace closecrab {
 
+// Global stdout mutex: ALL terminal output must go through this.
+// Multiple threads write to stdout (spinner, sub-agents, main thread).
+// Without a single mutex, concurrent writes corrupt the Windows console
+// buffer → ACCESS_VIOLATION (0xC0000005) on the next write.
+// claude-code doesn't need this because Node.js is single-threaded.
+inline std::mutex& getStdoutMutex() {
+    static std::mutex m;
+    return m;
+}
+
 // ANSI color helpers
 namespace ansi {
     inline std::string reset()   { return "\033[0m"; }
@@ -58,14 +68,17 @@ public:
             int i = 0;
             while (running_.load()) {
                 {
-                    std::lock_guard<std::mutex> lock(mutex_);
+                    std::lock_guard<std::mutex> lock(getStdoutMutex());
                     std::cout << "\r" << ansi::cyan() << frames[i % 8]
                               << ansi::reset() << " " << message_ << "   " << std::flush;
                 }
                 i++;
                 std::this_thread::sleep_for(std::chrono::milliseconds(80));
             }
-            std::cout << "\r" << std::string(message_.size() + 10, ' ') << "\r" << std::flush;
+            {
+                std::lock_guard<std::mutex> lock(getStdoutMutex());
+                std::cout << "\r" << std::string(message_.size() + 10, ' ') << "\r" << std::flush;
+            }
         });
     }
 

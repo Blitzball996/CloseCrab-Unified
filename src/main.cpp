@@ -679,9 +679,7 @@ Then work step by step using your tools to complete the task.)";
     // Serialized by its own mutex; sub-agents run on worker threads.
     AgentActivitySink::getInstance().setHandler(
         [](const std::string& agentId, const std::string& line) {
-            static std::mutex sinkMutex;
-            std::lock_guard<std::mutex> lock(sinkMutex);
-            // Clear the current spinner line, then print the agent activity.
+            std::lock_guard<std::mutex> lock(getStdoutMutex());
             std::cout << "\r" << std::string(60, ' ') << "\r"
                       << ansi::cyan() << "  [" << agentId << "]" << ansi::reset()
                       << " " << ansi::dim() << line << ansi::reset() << "\n" << std::flush;
