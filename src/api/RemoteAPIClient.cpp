@@ -174,17 +174,11 @@ void RemoteAPIClient::handleSSEEvent(
                 callback({StreamEvent::EVT_THINKING, delta.value("thinking", "")});
             } else if (deltaType == "input_json_delta") {
                 currentToolJson += delta.value("partial_json", "");
-                // Surface streaming progress so the user sees "Generating Write... (32KB)"
-                // instead of a frozen spinner for 2-3 minutes during large file writes.
-                if (currentToolJson.size() % 4096 < 200) { // ~every 4KB
-                    StreamEvent progress;
-                    progress.type = StreamEvent::EVT_RETRY; // reuse for progress display
-                    progress.retryAttempt = 0; // 0 = not a retry, it's a progress update
-                    progress.retryMax = 0;
-                    progress.retryDelayMs = (int)currentToolJson.size();
-                    progress.content = "generating " + currentToolName;
-                    callback(progress);
-                }
+                // NOTE: streaming progress removed — calling callback() here caused
+                // a data race: the callback updates spinner.message (main thread)
+                // while the spinner display thread reads it concurrently.
+                // std::string concurrent read/write = undefined behavior = segfault.
+                // claude-code doesn't have this problem (single-threaded Node.js).
             }
         } else if (eventType == "content_block_stop") {
             if (!currentToolName.empty()) {
@@ -393,7 +387,16 @@ void RemoteAPIClient::streamChat(
                 handleSSEEvent(event, callback, currentToolName, currentToolId, currentToolJson);
             });
             CurlStreamCtx curlCtx{&parser, ""};
+            // Crash trace: log before/after CURL call to narrow down segfault location
+            {
+                FILE* trace = fopen("trace.log", "a");
+                if (trace) { fprintf(trace, "[%d] pre-curl bodySize=%zu\n", attempt, bodyStr.size()); fclose(trace); }
+            }
             performCurlSSE(url, bodyStr, apiKey_, curlCtx);
+            {
+                FILE* trace = fopen("trace.log", "a");
+                if (trace) { fprintf(trace, "[%d] post-curl OK\n", attempt); fclose(trace); }
+            }
             parser.finish();
             return; // Success
         } catch (const APIError& e) {
