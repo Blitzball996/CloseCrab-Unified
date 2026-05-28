@@ -64,15 +64,15 @@ std::string QueryEngine::buildSystemPrompt() const {
     std::string prompt = config_.systemPrompt;
 
     // Core behavior rules (from claude-code system prompt):
-    // "Default to action" prevents the model from explaining plans instead of executing.
     prompt += R"(
 
 # Behavior Rules
 - Default to action: implement changes rather than only suggesting them.
 - When you know what to do, call tools immediately. Do NOT explain your plan first.
-- For file writes: call Write directly with the content. Never say "let me write" without actually calling Write in the same response.
 - If a task requires multiple files, write them one at a time in sequence.
 - Keep text output minimal. The user wants results, not explanations.
+- IMPORTANT: If the content to write exceeds 150 lines, you MUST only write the first 50 lines using the Write tool, then use the Edit tool to append the remaining content in chunks of no more than 50 lines each. If needed, leave a unique placeholder to help append content. On the final chunk, do NOT include the placeholder.
+- Prefer the Edit tool for modifying existing files — it only sends the diff.
 )";
 
     // Append CLAUDE.md content if available
