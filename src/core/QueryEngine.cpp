@@ -769,18 +769,28 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
 
         // Process tool calls (parallel when multiple, sequential when single)
         if (!pendingToolCalls.empty() && !interrupted_) {
-            { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"[turn%d] pre-tool %s\n", turnCount, pendingToolCalls[0].toolName.c_str()); fclose(t);} }
+            {
+                FILE* t = fopen("trace.log","a");
+                if(t){
+                    fprintf(t,"[turn%d] pre-tool count=%zu\n", turnCount, pendingToolCalls.size());
+                    for (size_t i = 0; i < pendingToolCalls.size(); i++) {
+                        fprintf(t,"  tool[%zu]=%s id=%s input=%zu\n", i,
+                            pendingToolCalls[i].toolName.c_str(),
+                            pendingToolCalls[i].toolUseId.c_str(),
+                            pendingToolCalls[i].toolInput.dump().size());
+                    }
+                    fprintf(t,"  messages=%zu\n", messages_.size());
+                    fflush(t); fclose(t);
+                }
+            }
             if (pendingToolCalls.size() == 1) {
                 // Single tool: execute directly
                 processToolUse(pendingToolCalls[0], callbacks);
             } else {
-                // Partition: only concurrency-safe (read-only) tools run in
-                // parallel. Stateful tools (Agent, Bash, Write, Edit) run
-                // sequentially via processToolUse — this is what stops the
-                // multi-agent thread explosion that crashed the process, and
-                // mirrors JackProAi running non-concurrency-safe tools serially.
+                // Partition tools into serial and parallel
                 std::vector<StreamEvent> parallelCalls;
                 std::vector<StreamEvent> serialCalls;
+                { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"  partitioning %zu tools\n", pendingToolCalls.size()); fflush(t); fclose(t);} }
                 for (const auto& tc : pendingToolCalls) {
                     Tool* t = config_.toolRegistry ? config_.toolRegistry->getTool(tc.toolName) : nullptr;
                     if (t && t->isConcurrencySafe()) parallelCalls.push_back(tc);
