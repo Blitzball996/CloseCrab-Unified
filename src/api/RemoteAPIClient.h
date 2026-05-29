@@ -29,6 +29,12 @@ public:
 
     void setFallbackModel(const std::string& model) { fallbackModel_ = model; }
 
+    // Effective prompt-cache TTL in minutes. Set to match the proxy's real cache
+    // lifetime (MEASURED: yikoulian honors only 5 min and ignores ttl:1h; the
+    // official Anthropic API honors 1h). Drives BOTH the cache_control ttl field
+    // AND the P1 time-based microcompact gap threshold so they stay consistent.
+    void setCacheTtlMinutes(int m) { cacheTtlMinutes_ = m; }
+
 private:
     nlohmann::json buildRequestBody(const std::vector<Message>& messages,
                                      const std::string& systemPrompt,
@@ -57,6 +63,10 @@ private:
     // prompt cache has expired anyway, so we proactively clear old tool results
     // before the (inevitably rewritten) request to shrink it. 0 = never sent yet.
     mutable int64_t lastRequestEpochMs_ = 0;
+
+    // Effective cache TTL (minutes). Default 5 = the measured yikoulian cap.
+    // Official Anthropic API users can set 60. Used for cache_control ttl + P1.
+    int cacheTtlMinutes_ = 5;
 };
 
 } // namespace closecrab

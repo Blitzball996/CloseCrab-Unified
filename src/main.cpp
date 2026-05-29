@@ -430,6 +430,12 @@ int main(int argc, char* argv[]) {
         // Set fallback model for 503/529 auto-downgrade
         std::string fallback = config.getString("api.fallback_model", "claude-sonnet-4-20250514");
         if (fallback != apiModel) remote->setFallbackModel(fallback);
+        // Effective prompt-cache TTL (minutes). Default 5 = measured yikoulian cap
+        // (it ignores ttl:1h). Set api.cache_ttl_minutes: 60 for the official
+        // Anthropic API to actually get 1h cache survival. Drives cache_control
+        // ttl + P1 time-based microcompact gap threshold.
+        int cacheTtl = config.getInt("api.cache_ttl_minutes", 5);
+        remote->setCacheTtlMinutes(cacheTtl);
         appState.currentModel = apiModel;
         spdlog::info("Using Anthropic API: {} ({}, fallback={})", apiBaseUrl, apiModel, fallback);
         apiClient = std::move(remote);

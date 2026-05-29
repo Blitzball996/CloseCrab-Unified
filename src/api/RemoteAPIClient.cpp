@@ -33,14 +33,18 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
 
     if (config.temperature >= 0 && config.tools.empty()) body["temperature"] = config.temperature;
 
-    // P0 1h cache TTL (JackProAi getCacheControl + should1hCacheTTL). The
-    // `extended-cache-ttl-2025-04-11` beta header is already sent (see request
-    // headers), so the channel is open. 5m default → 1h means the prompt cache
-    // survives think-time / idle gaps up to an hour: a turn 6 minutes later still
-    // hits read price ($0.85/1M) instead of re-writing at create price ($10.6/1M).
-    // JackProAi gates this by billing allowlist; CloseCrab is single-user with its
-    // own key, so we always opt in for maximum savings.
-    const nlohmann::json kCacheControl = {{"type", "ephemeral"}, {"ttl", "1h"}};
+    // P0 cache TTL (JackProAi getCacheControl). Only emit ttl:"1h" when the proxy
+    // is known to honor it (cacheTtlMinutes_ >= 60, e.g. official Anthropic API).
+    // MEASURED: yikoulian ignores ttl:1h and hard-expires at 5 min, so for it we
+    // send the plain 5m ephemeral form (default) — sending ttl:1h there is useless
+    // and risks a 2x write charge if behavior ever changes. The
+    // extended-cache-ttl beta header is already sent for the 1h case.
+    nlohmann::json kCacheControl;
+    if (cacheTtlMinutes_ >= 60) {
+        kCacheControl = {{"type", "ephemeral"}, {"ttl", "1h"}};
+    } else {
+        kCacheControl = {{"type", "ephemeral"}};
+    }
 
     // §1 System prompt cache split: the prompt carries a boundary marker
     // separating the STATIC cacheable prefix from the DYNAMIC tail (cwd/model/
@@ -128,7 +132,10 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
     {
         int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
-        constexpr int64_t kGapThresholdMs = 60LL * 60 * 1000; // 60 min (JackProAi default)
+        // Gap threshold = the effective cache TTL: once exceeded, the server cache
+        // is gone, so shrinking the prefix is pure win. MEASURED yikoulian = 5min,
+        // so this fires usefully there (JackProAi uses 60 because it gets 1h TTL).
+        const int64_t kGapThresholdMs = (int64_t)cacheTtlMinutes_ * 60 * 1000;
         constexpr int kKeepRecent = 5;                        // JackProAi keepRecent=5
         if (lastRequestEpochMs_ != 0 && (nowMs - lastRequestEpochMs_) > kGapThresholdMs) {
             // Collect (msgIndex, blockRef) of all compactable tool_results in order.
