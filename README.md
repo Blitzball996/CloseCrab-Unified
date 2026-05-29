@@ -40,6 +40,19 @@ The project merges two predecessors: **CloseCrab** (a C++ local inference engine
 
 ---
 
+## What's New in 0.2.1 (Reliability & Cost)
+
+This release hardens the agent loop and cuts API cost on repeated turns:
+
+- **Read-before-write safety** -- Write/Edit refuse to overwrite a file the model hasn't read, and detect external modifications via mtime + content hash. A failed write no longer leads the model down a "delete and rebuild" path that could lose your files.
+- **Dangerous `rm` guard** -- `rm`/`rmdir`/`del` targeting protected paths (drive roots, home, root-level dirs, wildcards) always prompt for confirmation -- this cannot be bypassed by auto-approve mode.
+- **Windows shell quoting fix** -- Commands like `node -e "..."`, `sed -i "..."`, and `python -c "..."` no longer break on Git Bash. Commands are run through a single-quoted `eval` wrapper with proper Windows argv escaping; `>nul` is rewritten to `/dev/null`.
+- **Working-directory persistence** -- `cd subdir` now carries over to the next Bash call (captured via `pwd -P`).
+- **Prompt-cache optimization** -- The system prompt is split into a stable (cached) prefix and a dynamic tail; old tool results are compacted deterministically so the message prefix stays byte-stable. This restores prompt-cache hits and sharply reduces cost on multi-turn sessions.
+- **Model fallback chain** -- After repeated `503`/overload errors, the client automatically falls back from the primary model (e.g. Opus) to a configured fallback (e.g. Sonnet). Set `api.fallback_model` in `config.yaml`.
+
+---
+
 ## Quick Start
 
 ### Option 1: Installer

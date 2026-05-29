@@ -1,8 +1,14 @@
 ; CloseCrab-Unified Installer
 ; Cross-platform packaging: Windows Inno Setup script
-; Version 0.2.0 - Team Mode release
+; Version 0.2.1 - Reliability & cost release
+;   - Read-before-write + mtime guard (no more accidental file loss)
+;   - Dangerous rm/rmdir path guard (cannot be silenced by auto-approve)
+;   - Windows Git Bash quoting fix (node -e / sed -i / python -c no longer break)
+;   - Working-directory persistence across bash calls (cd carries over)
+;   - Prompt-cache split + deterministic compaction (big cost reduction on repeat turns)
+;   - Model fallback chain (Opus -> Sonnet on repeated overload)
 #define MyAppName "CloseCrab-Unified"
-#define MyAppVersion "0.2.0"
+#define MyAppVersion "0.2.1"
 #define MyAppPublisher "Blitzball996"
 #define MyAppURL "https://github.com/Blitzball996/CloseCrab-Unified"
 #define MyAppExeName "closecrab-unified.exe"
