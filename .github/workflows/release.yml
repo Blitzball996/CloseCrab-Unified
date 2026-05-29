@@ -20,7 +20,7 @@ jobs:
           submodules: recursive
 
       - name: Install vcpkg dependencies
-        run: vcpkg install curl zlib openssl --triplet x64-windows
+        run: vcpkg install --triplet x64-windows
 
       - name: Configure CMake
         run: |

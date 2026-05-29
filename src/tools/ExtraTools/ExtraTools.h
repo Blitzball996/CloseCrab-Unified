@@ -3,6 +3,11 @@
 #include "../Tool.h"
 #include "../../services/AgentProgress.h"
 #include "../../agents/AgentManager.h"
+
+#ifdef _WIN32
+#define popen _popen
+#define pclose _pclose
+#endif
 #include <filesystem>
 #include <fstream>
 #include <chrono>
@@ -125,9 +130,9 @@ public:
     }
     ToolResult call(ToolContext& ctx, const nlohmann::json& input) override {
         std::string target = input["target"].get<std::string>();
-        FILE* pipe = _popen(("cd \"" + ctx.cwd + "\" && git diff " + target + " 2>&1").c_str(), "r");
+        FILE* pipe = popen(("cd \"" + ctx.cwd + "\" && git diff " + target + " 2>&1").c_str(), "r");
         if (!pipe) return ToolResult::fail("git diff failed");
-        std::string out; char buf[4096]; while (fgets(buf, sizeof(buf), pipe)) out += buf; _pclose(pipe);
+        std::string out; char buf[4096]; while (fgets(buf, sizeof(buf), pipe)) out += buf; pclose(pipe);
         if (out.size() > 8000) out = out.substr(0, 8000) + "\n[truncated]";
         return ToolResult::ok(out.empty() ? "No changes" : out);
     }
@@ -164,8 +169,8 @@ public:
         int pr = input["pr_number"].get<int>(); std::string repo = input.value("repo", "");
         std::string cmd = "gh pr view " + std::to_string(pr) + " --json state,reviews,statusCheckRollup";
         if (!repo.empty()) cmd += " -R " + repo;
-        FILE* pipe = _popen(cmd.c_str(), "r"); if (!pipe) return ToolResult::fail("gh not available");
-        std::string out; char buf[4096]; while (fgets(buf, sizeof(buf), pipe)) out += buf; _pclose(pipe);
+        FILE* pipe = popen(cmd.c_str(), "r"); if (!pipe) return ToolResult::fail("gh not available");
+        std::string out; char buf[4096]; while (fgets(buf, sizeof(buf), pipe)) out += buf; pclose(pipe);
         return ToolResult::ok(out.empty() ? "No data" : out.substr(0, 6000));
     }
 };
@@ -183,9 +188,9 @@ public:
         std::string url = input["url"].get<std::string>(), env = input.value("auth_env", "VAULT_TOKEN");
         const char* tok = std::getenv(env.c_str());
         std::string auth = tok ? std::string(" -H \"Authorization: Bearer ") + tok + "\"" : "";
-        FILE* pipe = _popen(("curl -s" + auth + " \"" + url + "\"").c_str(), "r");
+        FILE* pipe = popen(("curl -s" + auth + " \"" + url + "\"").c_str(), "r");
         if (!pipe) return ToolResult::fail("curl not available");
-        std::string out; char buf[4096]; while (fgets(buf, sizeof(buf), pipe)) out += buf; _pclose(pipe);
+        std::string out; char buf[4096]; while (fgets(buf, sizeof(buf), pipe)) out += buf; pclose(pipe);
         if (out.size() > 8000) out = out.substr(0, 8000) + "\n[truncated]";
         return ToolResult::ok(out);
     }
