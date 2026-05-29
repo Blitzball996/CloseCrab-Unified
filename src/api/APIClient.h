@@ -62,6 +62,12 @@ struct ModelConfig {
 
     // Tool use
     nlohmann::json tools = nlohmann::json::array();
+
+    // P2 fork cache sharing (JackProAi skipCacheWrite). When true (sub-agent /
+    // fire-and-forget fork), the message-level cache_control marker is placed on
+    // the SECOND-to-last message instead of the last, so the fork READS the
+    // parent's cached prefix but does not WRITE its own tail into the cache.
+    bool skipCacheWrite = false;
 };
 
 // ============================================================

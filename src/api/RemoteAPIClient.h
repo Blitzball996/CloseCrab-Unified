@@ -51,6 +51,12 @@ private:
     // re-decided each turn → cache miss → the 77K-per-request billing bug).
     // mutable because buildRequestBody is const but must freeze decisions.
     mutable std::set<std::string> clearedToolUseIds_;
+
+    // P1 time-based microcompact (JackProAi timeBasedMCConfig.ts). Tracks when the
+    // last request was built; if the gap exceeds the cache TTL the server-side
+    // prompt cache has expired anyway, so we proactively clear old tool results
+    // before the (inevitably rewritten) request to shrink it. 0 = never sent yet.
+    mutable int64_t lastRequestEpochMs_ = 0;
 };
 
 } // namespace closecrab

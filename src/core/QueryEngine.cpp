@@ -195,6 +195,10 @@ ModelConfig QueryEngine::buildModelConfig() const {
     mc.temperature = 0.7f;
     mc.stream = true;
 
+    // P2 fork cache sharing: sub-agents (allowSubagents==false) read the parent's
+    // cached prefix but must not write their own message tail into the cache.
+    mc.skipCacheWrite = !config_.allowSubagents;
+
     if (config_.appState) {
         mc.thinkingEnabled = config_.appState->thinkingConfig.enabled;
         mc.thinkingBudgetTokens = config_.appState->thinkingConfig.budgetTokens;

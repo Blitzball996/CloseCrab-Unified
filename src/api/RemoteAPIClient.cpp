@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <chrono>
 #include <thread>
+#include <vector>
 
 // JackProAi has NO explicit rate limiting — relies on server-side limits + fast retry.
 // Removed global mutex serialization that was blocking concurrent agent requests.
@@ -32,6 +33,15 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
 
     if (config.temperature >= 0 && config.tools.empty()) body["temperature"] = config.temperature;
 
+    // P0 1h cache TTL (JackProAi getCacheControl + should1hCacheTTL). The
+    // `extended-cache-ttl-2025-04-11` beta header is already sent (see request
+    // headers), so the channel is open. 5m default → 1h means the prompt cache
+    // survives think-time / idle gaps up to an hour: a turn 6 minutes later still
+    // hits read price ($0.85/1M) instead of re-writing at create price ($10.6/1M).
+    // JackProAi gates this by billing allowlist; CloseCrab is single-user with its
+    // own key, so we always opt in for maximum savings.
+    const nlohmann::json kCacheControl = {{"type", "ephemeral"}, {"ttl", "1h"}};
+
     // §1 System prompt cache split: the prompt carries a boundary marker
     // separating the STATIC cacheable prefix from the DYNAMIC tail (cwd/model/
     // mode). Emit two text blocks; cache_control ONLY on the static block so the
@@ -45,14 +55,14 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
             std::string dynamicPart = systemPrompt.substr(mpos + marker.size());
             nlohmann::json sysArr = nlohmann::json::array();
             sysArr.push_back({{"type", "text"}, {"text", staticPart},
-                              {"cache_control", {{"type", "ephemeral"}}}});
+                              {"cache_control", kCacheControl}});
             if (!dynamicPart.empty()) {
                 sysArr.push_back({{"type", "text"}, {"text", dynamicPart}});
             }
             body["system"] = std::move(sysArr);
         } else {
             body["system"] = nlohmann::json::array({
-                {{"type", "text"}, {"text", systemPrompt}, {"cache_control", {{"type", "ephemeral"}}}}
+                {{"type", "text"}, {"text", systemPrompt}, {"cache_control", kCacheControl}}
             });
         }
     }
@@ -109,6 +119,42 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
         }
     }
 
+    // P1 Time-based microcompact (JackProAi timeBasedMCConfig.ts). If the gap
+    // since the last request exceeds the cache TTL (1h), the server-side prompt
+    // cache has certainly expired — the whole prefix will be rewritten anyway.
+    // So proactively freeze+clear all but the most-recent `kKeepRecent` tool
+    // results to shrink that inevitable rewrite. Frozen ids are recorded, so the
+    // decision stays byte-stable on subsequent turns (consistent with §3).
+    {
+        int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        constexpr int64_t kGapThresholdMs = 60LL * 60 * 1000; // 60 min (JackProAi default)
+        constexpr int kKeepRecent = 5;                        // JackProAi keepRecent=5
+        if (lastRequestEpochMs_ != 0 && (nowMs - lastRequestEpochMs_) > kGapThresholdMs) {
+            // Collect (msgIndex, blockRef) of all compactable tool_results in order.
+            std::vector<std::pair<size_t, size_t>> trBlocks;
+            for (size_t i = 0; i < msgs.size(); i++) {
+                if (!msgs[i].contains("content") || !msgs[i]["content"].is_array()) continue;
+                auto& content = msgs[i]["content"];
+                for (size_t b = 0; b < content.size(); b++) {
+                    if (content[b].value("type", "") == "tool_result")
+                        trBlocks.push_back({i, b});
+                }
+            }
+            // Clear all but the last kKeepRecent.
+            if (trBlocks.size() > (size_t)kKeepRecent) {
+                size_t clearUpTo = trBlocks.size() - kKeepRecent;
+                for (size_t k = 0; k < clearUpTo; k++) {
+                    auto& block = msgs[trBlocks[k].first]["content"][trBlocks[k].second];
+                    std::string id = block.value("tool_use_id", "");
+                    if (!id.empty()) clearedToolUseIds_.insert(id);
+                    clearBlock(block);
+                }
+            }
+        }
+        lastRequestEpochMs_ = nowMs;
+    }
+
     // Pass 2: if still over budget, freeze MORE oldest tool_results (keep last 4
     // messages intact). Each newly cleared id is recorded so it stays cleared.
     std::string msgsStr = msgs.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
@@ -130,11 +176,19 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
         }
     }
 
-    // Add cache_control on last message's last block (JackProAi addCacheBreakpoints strategy)
+    // Message-level cache_control breakpoint (JackProAi addCacheBreakpoints).
+    // Normally on the LAST message's last block. For sub-agent forks
+    // (skipCacheWrite), shift to the SECOND-to-last message: the fork then reads
+    // the parent's shared prefix and the write is a no-op merge, so the fork does
+    // not leave its own tail in the cache (JackProAi markerIndex = length - 2).
     if (!msgs.empty()) {
-        auto& lastMsg = msgs.back();
-        if (lastMsg.contains("content") && lastMsg["content"].is_array() && !lastMsg["content"].empty()) {
-            lastMsg["content"].back()["cache_control"] = {{"type", "ephemeral"}};
+        size_t markerIdx = msgs.size() - 1;
+        if (config.skipCacheWrite && msgs.size() >= 2) {
+            markerIdx = msgs.size() - 2;
+        }
+        auto& mkMsg = msgs[markerIdx];
+        if (mkMsg.contains("content") && mkMsg["content"].is_array() && !mkMsg["content"].empty()) {
+            mkMsg["content"].back()["cache_control"] = kCacheControl;
         }
     }
 
@@ -144,7 +198,7 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
     if (!config.tools.empty() && config.tools.is_array() && config.tools.size() > 0) {
         nlohmann::json tools = config.tools;
         if (!tools.empty()) {
-            tools.back()["cache_control"] = {{"type", "ephemeral"}};
+            tools.back()["cache_control"] = kCacheControl;
         }
         body["tools"] = std::move(tools);
     }
@@ -153,6 +207,36 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
     if (config.thinkingEnabled) {
         body["thinking"]["type"] = "enabled";
         body["thinking"]["budget_tokens"] = config.thinkingBudgetTokens;
+    }
+
+    // P3 Server-side context_management (JackProAi apiMicrocompact.ts:
+    // clear_tool_uses_20250919). The server clears old tool results once input
+    // tokens exceed the trigger — local message bytes stay untouched, so the
+    // cached prefix is never disturbed (cleaner than the local §3 path).
+    //
+    // ALIGNMENT NOTE: in JackProAi this strategy is ant-only AND env-gated
+    // (USE_API_CLEAR_TOOL_RESULTS), default OFF for external users — they rely on
+    // the local path instead. We mirror that exactly: capability present but gated
+    // behind CLOSECRAB_API_CLEAR_TOOL_RESULTS, default OFF. The
+    // `context-management-2025-06-27` beta header is already sent, so enabling it
+    // is just flipping the env var once the proxy is confirmed to honor it.
+    {
+        const char* clearEnv = std::getenv("CLOSECRAB_API_CLEAR_TOOL_RESULTS");
+        bool enableServerClear = clearEnv && (std::string(clearEnv) == "1" ||
+                                              std::string(clearEnv) == "true");
+        if (enableServerClear) {
+            // Match JackProAi DEFAULT_MAX_INPUT_TOKENS / DEFAULT_TARGET_INPUT_TOKENS.
+            constexpr int kTrigger = 180000;
+            constexpr int kTarget = 40000;
+            nlohmann::json strategy = {
+                {"type", "clear_tool_uses_20250919"},
+                {"trigger", {{"type", "input_tokens"}, {"value", kTrigger}}},
+                {"clear_at_least", {{"type", "input_tokens"}, {"value", kTrigger - kTarget}}},
+                // TOOLS_CLEARABLE_RESULTS: shell + Glob/Grep/Read/WebFetch/WebSearch
+                {"clear_tool_inputs", {"Bash", "Glob", "Grep", "Read", "WebFetch", "WebSearch"}}
+            };
+            body["context_management"] = {{"edits", nlohmann::json::array({strategy})}};
+        }
     }
 
     return body;
