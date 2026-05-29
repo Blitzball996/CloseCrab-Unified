@@ -195,9 +195,14 @@ ModelConfig QueryEngine::buildModelConfig() const {
     mc.temperature = 0.7f;
     mc.stream = true;
 
-    // P2 fork cache sharing: sub-agents (allowSubagents==false) read the parent's
-    // cached prefix but must not write their own message tail into the cache.
-    mc.skipCacheWrite = !config_.allowSubagents;
+    // P2 fork cache sharing (JackProAi skipCacheWrite): NOT applied to regular
+    // sub-agents. In JackProAi skipCacheWrite=true is reserved for fire-and-forget
+    // single-shot helper queries (awaySummary, compact summary, promptSuggestion,
+    // sideQuestion) — NOT for working explore/code sub-agents, which are
+    // multi-turn and SHOULD write their own cache so later turns hit earlier ones.
+    // The mechanism (markerIndex=length-2 in buildRequestBody) stays available for
+    // a future fire-and-forget code path; we leave the default false here.
+    mc.skipCacheWrite = false;
 
     if (config_.appState) {
         mc.thinkingEnabled = config_.appState->thinkingConfig.enabled;
