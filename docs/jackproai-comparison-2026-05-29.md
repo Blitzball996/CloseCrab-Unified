@@ -30,12 +30,10 @@
 
 | 维度 | JackProAi | CloseCrab 原实现 | 我刚改的 | 优点 | 缺点/风险 |
 |---|---|---|---|---|---|
-| system 拆分 | `constants/prompts.ts:560-575`：static sections 在 `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` 前；dynamic sections 在后。`utils/api.ts:321-405` 的 `splitSysPromptPrefix` 根据 boundary 分块，静态块可带 `cache_control scope:'global'`，动态块不缓存。 | `RemoteAPIClient.cpp:35-40`：整个 `systemPrompt` 一个 block 带 cache_control。`QueryEngine.cpp:60-176` 里 cwd/model/mode 直接拼进 system。 | 未改。 | JackProAi 能防 session-specific guidance、MCP、cwd、mode 变化污染静态 cache key。 | CloseCrab 现在一旦 mode/model/cwd 变，system 整体 cache 失效。 |
-| message 断点 | `claude.ts:addCacheBreakpoints`：注释明确"Exactly one message-level cache_control marker per request"，标在最后 message；fork `skipCacheWrite` 时标倒数第二。 | `RemoteAPIClient.cpp:83-88`：最后 message 最后 block 打 cache_control。 | 未改。 | CloseCrab 这一点接近 JackProAi。 | CloseCrab 没跳过 assistant thinking/tool_use，也没处理 fork skipCacheWrite。 |
-| tools 断点 | 之前我判断工具 cache_control 在 `toolSchemas` 最后一个，但本次深挖 `claude.ts:1235-1244` 未看到 `cacheControl` 传入；`utils/api.ts:129` 支持参数但调用处未传。说明还原源码里**工具 cache_control 可能由其他路径/feature 注入，不能断言**。 | `RemoteAPIClient.cpp:93-100` 明确 `tools.back()["cache_control"]`。 | 未改。 | CloseCrab 简单直接。 | 若 tools 数组动态变，标在 back() 会导致缓存不稳。 |
-| 结论 | JackProAi 的关键不是"三处断点"，而是**静态前缀稳定 + 动态内容后移 + 同请求 message 断点唯一**。 | CloseCrab 最大问题是 system 未拆、tools 动态变。 | 未改。 |  | 下一步应先拆 system，再处理 tools 稳定。 |
-
-**建议**：先不要照 v3 写死"tools cache_control 在 toolSchemas.back"，因为本次深挖没在调用链里找到明确传 `cacheControl`。应先做稳妥的：system 静/动态拆分 + messages 单断点 + tools 数组固定化。
+| system 拆分 | `constants/prompts.ts:560-575`：static sections 在 `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` 前；dynamic sections 在后。`utils/api.ts:321-405` 的 `splitSysPromptPrefix` 根据 boundary 分块，静态块带 `cache_control`，动态块不缓存。 | `RemoteAPIClient.cpp:35-40`：整个 `systemPrompt` 一个 block 带 cache_control。 | **✅ 已对齐**：`Message.h` 定义 `kSystemDynamicBoundary`；`QueryEngine::buildSystemPrompt` 在 `# Environment` 前插入 marker（static=intro/rules/CLAUDE.md/tool docs/MEMORY；dynamic=cwd/model/mode/coordinator）；`RemoteAPIClient` 按 marker 切成 2 个 system block，cache_control **只在 static 块**。无 marker 时回退单块。 | mode/model/cwd 变化不再污染静态前缀；与 JackProAi boundary 模式一致。 | 未用 `scope:'global'`（那是 ant-only 跨会话特性，单机用 ephemeral 即可）。 |
+| message 断点 | `claude.ts:addCacheBreakpoints`：单 message-level cache_control，标最后 message。 | `RemoteAPIClient.cpp:83-88`：最后 message 最后 block 打 cache_control。 | 保留（已是单断点，与 JackProAi 一致）。 | 与 JackProAi 一致。 | 未跳过 assistant thinking 块（CloseCrab 不在 messages 里塞 thinking，无影响）。 |
+| tools 断点 | base schema session-cache + defer_loading overlay（从 cache hash 排除）。 | `RemoteAPIClient.cpp:93-100` `tools.back()["cache_control"]`。 | 保留 tools.back() 断点；**关键是让 tools 数组本身字节稳定（见 §2）**，断点才有意义。 | tools 固定后该断点稳定命中。 | — |
+| 结论 | 关键是静态前缀稳定 + 动态后移 + message 单断点。 | system 未拆、tools 动态变。 | **✅ system 拆分已完全对齐**（配合 §2 tools 固定，静态前缀 = tools + static-system 全字节稳定）。 |  | message 前缀仍受 §3 in-place microcompact 影响（见 §3）。 |
 
 ---
 
@@ -43,14 +41,10 @@
 
 | 维度 | JackProAi | CloseCrab 原实现 | 我刚改的 | 优点 | 缺点/风险 |
 |---|---|---|---|---|---|
-| tool schema 缓存 | `utils/api.ts:136-180`：`toolToAPISchema` 用 `getToolSchemaCache()`，base schema 只算一次，避免 GrowthBook/tool.prompt() 中途变导致工具数组字节 churn。 | 每轮从 ToolRegistry 生成 JSON schema，没有稳定缓存层。 | 未改。 | JackProAi 防止工具描述/strict/eager_input_streaming 中途变导致 cache miss。 | CloseCrab 工具描述若动态变化会破 cache。 |
-| defer_loading | `utils/api.ts:211-260`：deferLoading/cacheControl 是 per-request overlay，不污染 base cache；`CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` 时剥掉非标准字段。 | `QueryEngine.cpp:210-280` 用 `discovered` 从消息历史里扫描 `<tool_reference name="X"/>` 后动态 push 完整 schema。 | 未改。 | JackProAi 的工具发现不必改变基础 schema 缓存。 | CloseCrab 的动态扩 tools 会让 tools 数组每轮不同。 |
-| cache hash 排除 | `claude.ts:1461-1467`：prompt cache break detection 过滤 defer_loading 工具，注释说明 API 会 strip deferred tools，所以它们不应影响 cache key。 | 无等价检测。 | 未改。 | JackProAi 能判断 cache break 来源。 | CloseCrab 无法知道 tools 变化是否破 cache。 |
-| 结论 | JackProAi 是"稳定 base schema + overlay defer_loading"。 | CloseCrab 是"发现一个加一个完整 schema"。 | 未改。 |  | CloseCrab 不建议继续动态扩 tools。 |
-
-**建议方案**：
-1. 短期：直接全量发所有工具，保证 tools 数组固定，立刻换缓存命中。
-2. 长期：做 JackProAi 式 schema cache + defer_loading overlay，但要先确认中转是否接受 defer_loading。
+| tool schema 稳定 | `utils/api.ts:136-180`：`toolToAPISchema` 用 `getToolSchemaCache()`，base schema 只算一次，避免中途变导致工具数组字节 churn。 | 每轮从 ToolRegistry 生成 JSON schema。 | **✅ 已对齐（目标层面）**：`QueryEngine::buildModelConfig` 改为发**全部** enabled 工具，按 name 排序保证确定性顺序，描述稳定（getDescription 是 const 字面量）→ tools 数组字节稳定。 | 达成 JackProAi 的 verified 目标（稳定 tools 前缀 → cache 命中）。 | 工具描述若运行时动态变仍会破 cache（当前都是静态字面量，无此问题）。 |
+| defer_loading | `utils/api.ts:211-260`：deferLoading 是 per-request overlay；`CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` 剥掉非标准字段。 | `QueryEngine.cpp:210-280` 扫 `<tool_reference>` 动态 push schema，数组每轮变。 | **✅ 已删除动态扩展**：改全量发。defer_loading 是 Anthropic beta，yikoulian 中转未确认转发（门禁 B 未过），故不用——用全量发达成同样的稳定前缀。 | 不依赖中转支持 beta；零 cache churn。 | 首轮多发 ~20-30KB（59 工具全 schema），但被后续每轮缓存命中抵消，净省。 |
+| cache hash 排除 | `claude.ts:1461-1467`：过滤 defer_loading 工具不计入 cache key。 | 无。 | N/A（不用 defer_loading 就无需排除）。 | — | — |
+| 结论 | JackProAi：稳定 base schema + defer_loading overlay（exclude from hash）。 | CloseCrab：发现一个加一个，数组每轮变 = cache killer。 | **✅ 已对齐目标**：全量发 + 排序固定 → 字节稳定的 tools 前缀。机制不同（全量 vs defer），但 JackProAi 的 verified 结果（cache 命中）已达成。 |  | 若将来确认中转支持 defer_loading 且 token 预算吃紧，可再切 overlay 方案。 |
 
 ---
 
@@ -58,12 +52,10 @@
 
 | 维度 | JackProAi | CloseCrab 原实现 | 我刚改的 | 优点 | 缺点/风险 |
 |---|---|---|---|---|---|
-| API-side microcompact | `services/compact/apiMicrocompact.ts`：构造 `context_management.edits`，`clear_tool_uses_20250919`，trigger 180K，target 40K，清理 Bash/Glob/Grep/FileRead/WebFetch/WebSearch。 | `RemoteAPIClient.cpp:48-81`：客户端每轮 `msgs.dump()` 超 200KB 就直接改旧 `tool_result.content`。 | 未改。 | JackProAi 不改本地 messages 字节，服务端清理，cache key 稳。 | 依赖 beta 和 provider 支持；第三方中转可能剥字段。 |
-| 本地持久化阈值 | `constants/toolLimits.ts`：单结果默认 50K；同一 user message aggregate 200K。 | AgentTool 自己 >2KB 持久化；Bash 100KB 截断；Read/Glob/Grep 不统一。 | 未改。 | JackProAi 有统一预算，不让单轮并行工具堆 400K。 | CloseCrab 分散硬编码，行为不一致。 |
-| Replacement state | `toolResultStorage.ts:390-397`：`ContentReplacementState={seenIds,replacements}`；line 769 起 `enforceToolResultBudget` 对 fresh/frozen/mustReapply 分区，同一 tool_use_id 的替换决策永远固定。 | 无跨轮 replacement state；每轮重新按大小决定清理哪条。 | 未改。 | JackProAi byte-identical，保 cache。 | CloseCrab 当前是 cache killer。 |
-| 结论 | JackProAi 有两条互补路径：服务端清理 + 本地确定性落盘。 | CloseCrab 是非确定性 in-place 清理。 | 未改。 |  | 这是缓存成本核心。 |
-
-**建议方案**：在中转支持未确认前，先做本地确定性 B 路：`ContentReplacementState` + 统一 `ToolResultStorage`。不要再每轮 in-place 改旧消息。
+| API-side microcompact | `services/compact/apiMicrocompact.ts`：构造 `context_management.edits`，`clear_tool_uses_20250919`，trigger 180K，target 40K（服务端清理，本地字节不动）。 | `RemoteAPIClient.cpp:48-81`：每轮 `msgs.dump()` 超 200KB 就**就地改旧** `tool_result.content`，决策每轮变 → cache 失效。 | **B 路（已对齐目标）**：未走 A 路（服务端 `context_management`）——yikoulian 中转未确认转发该 beta（门禁 B 未过）。改为本地**确定性**替换：见下行 Replacement state。 | 不依赖中转 beta。 | A 路待中转确认后可再加（验证项 7）。 |
+| 本地持久化阈值 | `constants/toolLimits.ts`：单结果默认 50K；同一 message aggregate 200K。 | AgentTool >2KB 持久化；Bash 100KB 截断；Read/Glob/Grep 不统一。 | **✅ 已对齐（且本就统一）**：`OutputPersistence::persistIfNeeded`（`MAX_INLINE_SIZE=50000`，2KB 预览，对齐 JackProAi DEFAULT_MAX_RESULT_SIZE_CHARS）在 `processToolUse` 串行(line417)+并行(line857)路径**集中**对所有工具结果生效；超 50K → 落盘 `data/tool-results/<tool_use_id>.txt` + `<persisted>` 预览。 | 所有工具统一预算；预览在 tool 运行时写入 messages 一次 → 天然字节稳定。 | AgentTool 另有 >2KB 内联持久化（更激进，预览已 <50K，两者不冲突）。 |
+| Replacement state | `toolResultStorage.ts:390-397`：`ContentReplacementState={seenIds,replacements}`；`enforceToolResultBudget` 对 fresh/frozen 分区，同一 tool_use_id 决策永远固定。 | 无跨轮 state；每轮重新决定清理哪条 → cache killer。 | **✅ 已对齐**：`RemoteAPIClient::clearedToolUseIds_`（mutable set）= JackProAi seenIds。Pass1 对已冻结 id **始终**应用相同 stub（byte-identical）；Pass2 仅在仍超预算时**追加冻结**最旧 tool_result。决策单调 → message 前缀字节稳定 → 压缩后 cache 仍命中。 | 根治 77K/请求的 cache miss。 | stub 用「原文前 400 字符 + 固定 marker」，同 id 同内容确定性一致。 |
+| 结论 | 服务端清理 + 本地确定性落盘两条路。 | 非确定性 in-place 清理（cache killer）。 | **✅ B 路 + 持久化已完全对齐**（A 路服务端 context_management 待中转确认）。 |  | — |
 
 ---
 

@@ -32,11 +32,29 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
 
     if (config.temperature >= 0 && config.tools.empty()) body["temperature"] = config.temperature;
 
-    // System prompt with cache_control
+    // §1 System prompt cache split: the prompt carries a boundary marker
+    // separating the STATIC cacheable prefix from the DYNAMIC tail (cwd/model/
+    // mode). Emit two text blocks; cache_control ONLY on the static block so the
+    // server-side prompt cache survives when the dynamic tail changes. If no
+    // marker is present (e.g. sub-agent / local model), fall back to one block.
     if (!systemPrompt.empty()) {
-        body["system"] = nlohmann::json::array({
-            {{"type", "text"}, {"text", systemPrompt}, {"cache_control", {{"type", "ephemeral"}}}}
-        });
+        const std::string marker = kSystemDynamicBoundary;
+        auto mpos = systemPrompt.find(marker);
+        if (mpos != std::string::npos) {
+            std::string staticPart = systemPrompt.substr(0, mpos);
+            std::string dynamicPart = systemPrompt.substr(mpos + marker.size());
+            nlohmann::json sysArr = nlohmann::json::array();
+            sysArr.push_back({{"type", "text"}, {"text", staticPart},
+                              {"cache_control", {{"type", "ephemeral"}}}});
+            if (!dynamicPart.empty()) {
+                sysArr.push_back({{"type", "text"}, {"text", dynamicPart}});
+            }
+            body["system"] = std::move(sysArr);
+        } else {
+            body["system"] = nlohmann::json::array({
+                {{"type", "text"}, {"text", systemPrompt}, {"cache_control", {{"type", "ephemeral"}}}}
+            });
+        }
     }
 
     // Messages
@@ -45,36 +63,68 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
         msgs.push_back(msg.toApiJson());
     }
 
-    // API Microcompact: clear old tool_result content when context is too large.
-    // Threshold must match what the proxy can handle within its timeout.
-    // See claude-code analysis below for the correct strategy.
+    // §3 Deterministic microcompact (JackProAi enforceToolResultBudget +
+    // ContentReplacementState). The OLD code re-decided which tool_results to
+    // clear every turn based on the current total size, so the same tool_use_id
+    // could be full on turn N and truncated on turn N+1 — the byte sequence
+    // changed and the server-side prompt cache missed (the 77K-per-request bug).
+    //
+    // New rule: a clear decision, once made, is FROZEN. clearedToolUseIds_ records
+    // every id we've ever cleared; we ALWAYS re-apply the same deterministic stub
+    // to those ids first (byte-identical), then only freeze MORE ids if still over
+    // budget. Decisions are monotonic → the message prefix is byte-stable across
+    // turns → cache hits survive compaction.
     constexpr size_t MAX_MESSAGES_SIZE = 200000;
+
+    // Helper: replace a tool_result block's content with a deterministic stub.
+    // Deterministic = first 400 chars of the original + a fixed marker, so the
+    // same id always yields the same bytes (messages_ keeps the full content;
+    // this only affects the wire serialization).
+    auto clearBlock = [](nlohmann::json& block) {
+        if (block.contains("content") && block["content"].is_string()) {
+            std::string content = block["content"].get<std::string>();
+            if (content.size() > 500)
+                block["content"] = content.substr(0, 400) + "\n[cleared for context limit]";
+        } else if (block.contains("content") && block["content"].is_array()) {
+            for (auto& sub : block["content"]) {
+                if (sub.value("type", "") == "text") {
+                    std::string text = sub.value("text", "");
+                    if (text.size() > 500)
+                        sub["text"] = text.substr(0, 400) + "\n[cleared for context limit]";
+                }
+            }
+        }
+    };
+
+    // Pass 1: re-apply all FROZEN clears (byte-identical, no decision change).
+    if (!clearedToolUseIds_.empty()) {
+        for (auto& msg : msgs) {
+            if (!msg.contains("content") || !msg["content"].is_array()) continue;
+            for (auto& block : msg["content"]) {
+                if (block.value("type", "") == "tool_result" &&
+                    clearedToolUseIds_.count(block.value("tool_use_id", ""))) {
+                    clearBlock(block);
+                }
+            }
+        }
+    }
+
+    // Pass 2: if still over budget, freeze MORE oldest tool_results (keep last 4
+    // messages intact). Each newly cleared id is recorded so it stays cleared.
     std::string msgsStr = msgs.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
     if (msgsStr.size() > MAX_MESSAGES_SIZE && msgs.size() > 4) {
-        // Clear oldest tool_results first (keep last 4 messages intact)
         for (size_t i = 0; i + 4 < msgs.size(); i++) {
             if (msgs[i].value("role", "") == "user" && msgs[i].contains("content") && msgs[i]["content"].is_array()) {
                 for (auto& block : msgs[i]["content"]) {
                     if (block.value("type", "") == "tool_result") {
-                        if (block.contains("content") && block["content"].is_string()) {
-                            std::string content = block["content"].get<std::string>();
-                            if (content.size() > 500) {
-                                block["content"] = content.substr(0, 400) + "\n[cleared for context limit]";
-                            }
-                        } else if (block.contains("content") && block["content"].is_array()) {
-                            for (auto& sub : block["content"]) {
-                                if (sub.value("type", "") == "text") {
-                                    std::string text = sub.value("text", "");
-                                    if (text.size() > 500) {
-                                        sub["text"] = text.substr(0, 400) + "\n[cleared for context limit]";
-                                    }
-                                }
-                            }
+                        std::string id = block.value("tool_use_id", "");
+                        if (!id.empty() && !clearedToolUseIds_.count(id)) {
+                            clearBlock(block);
+                            clearedToolUseIds_.insert(id);  // freeze the decision
                         }
                     }
                 }
             }
-            // Re-check after each message cleared
             msgsStr = msgs.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
             if (msgsStr.size() <= MAX_MESSAGES_SIZE) break;
         }

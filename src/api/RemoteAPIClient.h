@@ -3,6 +3,7 @@
 #include "APIClient.h"
 #include "StreamParser.h"
 #include <string>
+#include <set>
 
 namespace closecrab {
 
@@ -41,6 +42,15 @@ private:
     std::string baseUrl_;
     std::string model_;
     std::string fallbackModel_;
+
+    // §3 deterministic microcompact (JackProAi ContentReplacementState.seenIds):
+    // once a tool_result is cleared for the context budget, its tool_use_id is
+    // recorded here and it stays cleared on EVERY subsequent request with the
+    // SAME stub bytes. This keeps the message prefix byte-stable so the
+    // server-side prompt cache survives compaction (the old in-place rewrite
+    // re-decided each turn → cache miss → the 77K-per-request billing bug).
+    // mutable because buildRequestBody is const but must freeze decisions.
+    mutable std::set<std::string> clearedToolUseIds_;
 };
 
 } // namespace closecrab

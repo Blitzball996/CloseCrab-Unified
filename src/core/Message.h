@@ -8,6 +8,12 @@
 
 namespace closecrab {
 
+// §1 cache split marker. Separates the STATIC cacheable system-prompt prefix
+// from the DYNAMIC tail (cwd/model/mode). QueryEngine inserts it; RemoteAPIClient
+// splits the system prompt on it into two blocks, cache_control only on the
+// static one. Uses control chars so it never collides with real prompt content.
+inline constexpr const char* kSystemDynamicBoundary = "\x01__CRAB_SYS_DYNAMIC_BOUNDARY__\x01";
+
 // ============================================================
 // Content Block Types (对标 JackProAi ContentBlock)
 // ============================================================
