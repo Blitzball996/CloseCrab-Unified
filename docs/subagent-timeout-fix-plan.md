@@ -150,14 +150,14 @@ CloseCrab 是 C++ 多线程但目前性能优势未体现，原因：
 
 ### 真正发挥 C++ 的方向
 
-| 优化 | 预期收益 | 复杂度 | 参考 |
+| 优化 | 预期收益 | 复杂度 | 状态 |
 |------|---------|--------|------|
-| **本地 RAG 加速** — embedding+reranker 用 ONNX/CUDA | 比 TS 快 10-50x，文件搜索秒级 | 中（已有 ONNX 集成） | CloseCrab 已有 `rag/EmbeddingEngine.cpp` |
-| **多线程 grep/glob** — 并行扫描大型 codebase | 大项目 grep 从秒级→毫秒级 | 低 | 已有 ThreadPool.h |
-| **流式 idle 预计算** — API 等待期间预加载文件、预算 diff | 减少工具调用延迟 | 中 | claude-code 无此能力（单线程） |
-| **本地 LLM 推理** — llama.cpp 简单任务零 API 调用 | 简单任务零延迟零成本 | 低（已有 LocalLLMClient） | CloseCrab 已集成 |
-| **mmap 文件缓存** — 内存映射大文件避免重复读 | 重复读同一文件零开销 | 低 | FileStateCache.h 可扩展 |
-| **预测性工具执行** — 模型生成 tool_use 时立即开始执行（不等完整 JSON） | 减少 ~500ms/tool | 高 | claude-code 无此能力 |
+| ✅ **多线程 grep/glob** — 内置 regex + ThreadPool，rg 不可用时自动启用 | 大项目 grep 从秒级→毫秒级 | 低 | **已完成** commit 6b6b2e9 |
+| ✅ **mmap 文件缓存** — LRU 50文件/100MB，mtime 校验 | 重复读同一文件零开销 | 低 | **已完成** commit 6b6b2e9 |
+| ✅ **流式 idle 预计算** — API 等待期间预加载 CWD 文件 | 减少工具调用延迟 | 中 | **已完成** commit 6b6b2e9 |
+| **本地 LLM 推理** — llama.cpp 简单任务零 API 调用 | 简单任务零延迟零成本 | 低（已有 LocalLLMClient） | 待实施 |
+| ✅ **预测性工具执行** — 解析 streaming input_json_delta 提前读文件 | 减少 ~500ms/tool | 高 | **已完成** commit 6b6b2e9 |
+| **本地 RAG 加速** — embedding+reranker 用 ONNX/CUDA | 比 TS 快 10-50x | 中（已有 ONNX 集成） | 待实施 |
 
 ### CloseCrab 独有优势（TS 项目做不到）
 
