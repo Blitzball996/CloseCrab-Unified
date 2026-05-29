@@ -224,18 +224,37 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
         const char* clearEnv = std::getenv("CLOSECRAB_API_CLEAR_TOOL_RESULTS");
         bool enableServerClear = clearEnv && (std::string(clearEnv) == "1" ||
                                               std::string(clearEnv) == "true");
-        if (enableServerClear) {
+        const char* clearUsesEnv = std::getenv("CLOSECRAB_API_CLEAR_TOOL_USES");
+        bool enableClearUses = clearUsesEnv && (std::string(clearUsesEnv) == "1" ||
+                                                std::string(clearUsesEnv) == "true");
+        if (enableServerClear || enableClearUses) {
             // Match JackProAi DEFAULT_MAX_INPUT_TOKENS / DEFAULT_TARGET_INPUT_TOKENS.
             constexpr int kTrigger = 180000;
             constexpr int kTarget = 40000;
-            nlohmann::json strategy = {
-                {"type", "clear_tool_uses_20250919"},
-                {"trigger", {{"type", "input_tokens"}, {"value", kTrigger}}},
-                {"clear_at_least", {{"type", "input_tokens"}, {"value", kTrigger - kTarget}}},
-                // TOOLS_CLEARABLE_RESULTS: shell + Glob/Grep/Read/WebFetch/WebSearch
-                {"clear_tool_inputs", {"Bash", "Glob", "Grep", "Read", "WebFetch", "WebSearch"}}
-            };
-            body["context_management"] = {{"edits", nlohmann::json::array({strategy})}};
+            nlohmann::json edits = nlohmann::json::array();
+
+            // Strategy 1 (useClearToolResults): clear the tool_result content of
+            // read-type tools (shell + Glob/Grep/Read/WebFetch/WebSearch).
+            if (enableServerClear) {
+                edits.push_back({
+                    {"type", "clear_tool_uses_20250919"},
+                    {"trigger", {{"type", "input_tokens"}, {"value", kTrigger}}},
+                    {"clear_at_least", {{"type", "input_tokens"}, {"value", kTrigger - kTarget}}},
+                    {"clear_tool_inputs", {"Bash", "Glob", "Grep", "Read", "WebFetch", "WebSearch"}}
+                });
+            }
+            // Strategy 2 (useClearToolUses): clear tool USES but EXCLUDE the
+            // mutating tools (Edit/Write/NotebookEdit) so their record is kept.
+            // Independent of strategy 1 — additive (JackProAi apiMicrocompact.ts:128).
+            if (enableClearUses) {
+                edits.push_back({
+                    {"type", "clear_tool_uses_20250919"},
+                    {"trigger", {{"type", "input_tokens"}, {"value", kTrigger}}},
+                    {"clear_at_least", {{"type", "input_tokens"}, {"value", kTrigger - kTarget}}},
+                    {"exclude_tools", {"Edit", "Write", "NotebookEdit"}}
+                });
+            }
+            body["context_management"] = {{"edits", std::move(edits)}};
         }
     }
 
