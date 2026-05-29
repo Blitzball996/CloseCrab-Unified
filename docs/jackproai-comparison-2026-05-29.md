@@ -11,18 +11,18 @@
 
 ## 总览表
 
-| 项 | JackProAi 实现 | CloseCrab 原实现 | 我刚改的实现 | 与 JackProAi 一致度 | 结论 |
-|---|---|---|---|---|---|
-| §1 缓存断点 | system 静/动态拆分；message 1 个断点；tools 前缀稳定 | system/tools/message 都打；system 未拆；tools 动态变 | 未改 | 未实现 | 应按 JackProAi 模式改，但要先解决 tools cache_control 标记位置真实性 |
-| §2 tools 稳定 | tool schema session-cache；defer_loading 是 overlay；deferred 从 cache hash 排除 | discovered tools 动态扩 tools 数组 | 未改 | 未实现 | CloseCrab 应避免每轮改变 tools 数组 |
-| §3 API microcompact | A：服务端 context_management；B：本地确定性 replacement state | 每轮 in-place 改写 tool_result | 未改 | 未实现 | 必须改，当前是缓存杀手 |
-| §4 BashTool prompt | 完整 Bash prompt 里强制用 Read/Edit/Grep/Glob，不用 cat/sed/find 等 | BashTool 描述很短 | 已在 getDescription 加禁用清单 | 模式一致，位置简化 | 可保留，后续可补完整 prompt |
-| §5 rm 拦截 | validate path → dangerous removal check → behavior:'ask'，无 MUST_ASK 枚举 | 只靠 PermissionEngine；auto-approve 可绕过 | 新加 MUST_ASK_USER + 简化 path parser | 功能近似，机制不同 | 当前不够 JackProAi 化，建议后续重构到 PermissionEngine 流程 |
-| §6 readFileState | FileStateCache 存 content/timestamp/offset/limit/isPartialView；写前检查未读/partial/mtime | 无写前必读 | 已加 readFileState + 写前检查；刚修正 isPartialView | 基本一致，但少 content/offset/limit | 可用；要进一步补 path normalize 和 content fallback |
-| §7 tool_result 持久化 | 单结果 50K、每消息 200K；ContentReplacementState 保字节一致 | AgentTool >2KB 持久化；Bash 截断 | 未改 | 部分已有 | 应统一 ToolResultStorage |
-| §8 fallback | withRetry 连续 529≥3 → FallbackTriggeredError → query.ts 切模型重试 | 无 fallback | 未改 | 未实现 | 可后做 |
-| §9 防循环 | 无 sameToolStreak；靠 maxTurns/task_budget/prompt/microcompact | sameToolStreak 有，但阈值松 | 未改 | CloseCrab 自有增强 | 不必硬照 JackProAi；调低阈值即可 |
-| §10 shell spawn | spawn + cwd + env + shell snapshot + quoteShellCommand + output fd + cwd tracking | CreateProcessA 硬编码 bash；无 cwd；无 env | 加 cwd/env/bash 自动发现；未做 shell quote/snapshot/cwd tracking | 部分一致 | 目前只是粗糙接近，后续要补 quoting 与 cwd persistence |
+| 项 | JackProAi 实现 | CloseCrab 原实现 | 最终状态 | 一致度 |
+|---|---|---|---|---|
+| §1 缓存断点 | system 静/动态拆分；message 1 个断点；tools 前缀稳定 | system 整块缓存；cwd/model 混入 | ✅ system 按 boundary 拆 2 块，cache_control 只在静态块 | 已对齐 |
+| §2 tools 稳定 | session-cache schema + defer_loading overlay | discovered 动态扩 tools 数组 | ✅ 全量发 + name 排序固定（删动态发现） | 已对齐目标 |
+| §3 API microcompact | A:服务端 context_management；B:本地确定性 replacement | 每轮 in-place 改写 = cache killer | ✅ B 路：clearedToolUseIds_ 冻结决策，单调不回退 | 已对齐(B路) |
+| §4 BashTool prompt | 完整 prompt（工具替代+instructions+git+sleep） | 一句话 | ✅ 完整结构（除不适用的 sandbox 段） | 已对齐 |
+| §5 rm 拦截 | path validate → dangerous removal → ask（流程前置） | 仅 PermissionEngine；auto-approve 可绕 | ✅ dangerous rm 下沉 PermissionEngine::check 最前，BYPASS 也拦 | 已对齐 |
+| §6 readFileState | content/timestamp/offset/limit/isPartialView；写前检查 | 无写前必读 | ✅ hash+size+mtime+offset/limit+isPartialView+normalize+content fallback | 已对齐 |
+| §7 tool_result 持久化 | 单结果 50K；ContentReplacementState 保字节 | AgentTool 2KB；Bash 截断 | ✅ OutputPersistence 50K/2KB 集中应用所有工具（本就齐） | 已对齐 |
+| §8 fallback | 连续 529≥3 → 切 fallbackModel 重试 | 代码齐但配置空 | ✅ 填配置值，FALLBACK_THRESHOLD=3 生效 | 已对齐 |
+| §9 防循环 | 无 sameToolStreak；靠 maxTurns/budget/prompt | sameToolStreak 有但阈值松(15) | 🟡 HOLD：删=回退；建议仅调阈值，未动 | CloseCrab 增强 |
+| §10 shell spawn | spawn+cwd+env+quoteShellCommand+cwd tracking | CreateProcessA 硬编码；无 cwd/env/quoting | ✅ eval 单引号包裹+Windows argv 转义+>nul rewrite+cwd+env+pwd-P 持久化 | 已对齐(foreground) |
 
 ---
 
@@ -63,9 +63,9 @@
 
 | 维度 | JackProAi | CloseCrab 原实现 | 我刚改的 | 优点 | 缺点/风险 |
 |---|---|---|---|---|---|
-| Bash prompt 位置 | `tools/BashTool/prompt.ts:getSimplePrompt()`，作为工具 prompt 进入 API schema description。包含完整 bash 用法、sandbox、git、sleep、background、工具替代清单。 | `BashTool.h:getDescription()` 只有一句。 | 在 `getDescription()` 加工具替代清单 + Windows/Git Bash 注意。 | 快速有效，让模型少跑 sed/findstr/cat。 | 比 JackProAi 少很多细节：sandbox、sleep、git safety、working dir persistence。 |
-| 禁用清单 | JackProAi 明确：File search 用 Glob；Content search 用 Grep；Read 用 Read；Edit 用 Edit；Write 用 Write；Communication 直接输出。 | 无。 | 已加。 | 模式一致。 | 我额外加了 Windows findstr/cmd 警告，这是针对本项目事故的合理扩展。 |
-| 结论 | 模式一致，深度不足。 | 原来太弱。 | 可保留。 |  | 后续可把 Bash prompt 拆成专门 prompt 函数，不塞 getDescription 一行里。 |
+| Bash prompt 位置 | `tools/BashTool/prompt.ts:getSimplePrompt()`，进入 API schema description。含 bash 用法、sandbox、git、sleep、background、工具替代清单。 | `BashTool.h:getDescription()` 只有一句。 | **✅ 已对齐（除 sandbox）**：`getDescription()` 扩成完整结构——working-dir 持久说明 + 工具替代清单 + `# Instructions`（Windows/Git Bash 路径规则、绝对路径优先、内联脚本警告、多命令并行/`&&`、run_in_background 不轮询、git safety、不删源文件）。 | 与 JackProAi 段落结构一致；模型行为引导完整。 | 未含 sandbox 段——CloseCrab 没有命令沙箱机制，照搬无意义（合理省略）。 |
+| 禁用清单 | File search→Glob；Content→Grep；Read→Read；Edit→Edit；Write→Write。 | 无。 | **✅ 已对齐**：同款 + 额外 Windows findstr/cmd 警告（本项目事故的合理扩展）。 | 模式一致。 | — |
+| 结论 | 完整 prompt 结构。 | 原来一句话。 | **✅ 已完全对齐**（sandbox 段不适用，合理省略）。 |  | — |
 
 ---
 

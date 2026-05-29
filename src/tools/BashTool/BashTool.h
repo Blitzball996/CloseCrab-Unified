@@ -27,16 +27,43 @@ class BashTool : public Tool {
 public:
     std::string getName() const override { return "Bash"; }
     std::string getDescription() const override {
-        return "Execute a shell command. IMPORTANT — use dedicated tools instead of these commands:\n"
-               "- File search: use Glob (NOT find/dir/ls)\n"
-               "- Content search: use Grep (NOT grep/rg/findstr)\n"
-               "- Read files: use Read (NOT cat/head/tail/type)\n"
-               "- Edit files: use Edit (NOT sed/awk)\n"
-               "- Write files: use Write (NOT echo >/cat <<EOF)\n"
-               "On Windows (Git Bash): use POSIX paths (/g/CMakePJ/...) NOT G:\\...; "
-               "NEVER call Windows native commands (findstr, cmd builtins) — their /flag gets mangled to I:/, N:/. "
-               "Prefer writing a temp script file over inline node -e / python -c / sed -i (shell quote mangling). "
-               "Destructive commands (rm, del, rmdir) require confirmation.";
+        // Mirrors JackProAi tools/BashTool/prompt.ts getSimplePrompt structure:
+        // tool-preference list, then # Instructions (working dir, multi-command,
+        // git safety, sleep/background). Kept to what CloseCrab actually supports
+        // (no sandbox section — CloseCrab has no command sandbox).
+        return
+            "Executes a given bash command and returns its output. The working "
+            "directory persists between commands (cd carries over), but shell "
+            "state does not.\n"
+            "\n"
+            "IMPORTANT: Avoid using this tool for the operations below — use the "
+            "dedicated tool instead, for a better experience and easier review:\n"
+            "- File search: use Glob (NOT find/dir/ls)\n"
+            "- Content search: use Grep (NOT grep/rg/findstr)\n"
+            "- Read files: use Read (NOT cat/head/tail/type)\n"
+            "- Edit files: use Edit (NOT sed/awk)\n"
+            "- Write files: use Write (NOT echo >/cat <<EOF)\n"
+            "\n"
+            "# Instructions\n"
+            "- On Windows (Git Bash): use POSIX paths (/g/CMakePJ/...) NOT G:\\...; "
+            "NEVER call Windows native commands (findstr, cmd builtins) — their /flag "
+            "gets mangled to I:/, N:/.\n"
+            "- Prefer absolute paths; avoid `cd` unless the user asks (it does carry "
+            "over, but absolute paths are more robust).\n"
+            "- Inline scripts (node -e / python -c / sed -i) are quote-fragile — "
+            "prefer writing a temp script file and executing it.\n"
+            "- Quote file paths containing spaces with double quotes.\n"
+            "- Multiple independent commands: send several Bash calls in one message "
+            "(parallel). Dependent commands: chain with '&&' in one call. Do NOT use "
+            "newlines to separate commands.\n"
+            "- Long-running commands: use run_in_background and you'll be notified on "
+            "completion — do NOT poll or sleep in a loop. Diagnose failures instead of "
+            "retrying in a sleep loop.\n"
+            "- Git: prefer new commits over --amend; never use destructive ops "
+            "(reset --hard, push --force, checkout .) unless explicitly asked; never "
+            "skip hooks (--no-verify) unless asked.\n"
+            "- Destructive commands (rm, del, rmdir) require confirmation; NEVER delete "
+            "user source files to 'rebuild' after a failed write.";
     }
     std::string getCategory() const override { return "execution"; }
 
