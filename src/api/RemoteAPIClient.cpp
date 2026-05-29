@@ -1,6 +1,7 @@
 #include "RemoteAPIClient.h"
 #include "APIError.h"
 #include "../config/Config.h"
+#include "../core/PredictiveEngine.h"
 #include <curl/curl.h>
 #include <spdlog/spdlog.h>
 #include <fstream>
@@ -174,11 +175,12 @@ void RemoteAPIClient::handleSSEEvent(
                 callback({StreamEvent::EVT_THINKING, delta.value("thinking", "")});
             } else if (deltaType == "input_json_delta") {
                 currentToolJson += delta.value("partial_json", "");
-                // NOTE: streaming progress removed — calling callback() here caused
-                // a data race: the callback updates spinner.message (main thread)
-                // while the spinner display thread reads it concurrently.
-                // std::string concurrent read/write = undefined behavior = segfault.
-                // claude-code doesn't have this problem (single-threaded Node.js).
+                // Predictive execution: feed partial JSON to PredictiveEngine
+                // so it can start reading files before content_block_stop.
+                if (!currentToolName.empty()) {
+                    closecrab::PredictiveEngine::getInstance().onToolInputDelta(
+                        currentToolName, currentToolJson);
+                }
             }
         } else if (eventType == "content_block_stop") {
             if (!currentToolName.empty()) {

@@ -6,6 +6,7 @@
 #include "../tools/OutputPersistence.h"
 #include "../memory/FileMemoryManager.h"
 #include "ErrorRecovery.h"
+#include "PredictiveEngine.h"
 #include "ContextCollapse.h"
 #include "MessageSnip.h"
 #include <spdlog/spdlog.h>
@@ -621,6 +622,8 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
         std::string stopReason;
 
         // Call API (with error handling for retryable failures)
+        // Idle precomputation: preload files while waiting for API response
+        PredictiveEngine::getInstance().startPreloading(config_.cwd);
         auto start = std::chrono::steady_clock::now();
         bool apiCallFailed = false;
 
@@ -716,6 +719,7 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
         }
 
         if (apiCallFailed) break; // Don't continue the turn loop on API failure
+        PredictiveEngine::getInstance().stopPreloading();
 
         { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"[turn%d] post-stream stopReason=%s tools=%zu text=%zu\n", turnCount, stopReason.c_str(), pendingToolCalls.size(), accumulatedText.size()); fclose(t);} }
 

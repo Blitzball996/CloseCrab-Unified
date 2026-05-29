@@ -2,6 +2,7 @@
 
 #include "../Tool.h"
 #include "../../core/FileStateCache.h"
+#include "../../core/MmapCache.h"
 #include "../../utils/StringUtils.h"
 #include <fstream>
 #include <sstream>
@@ -88,34 +89,85 @@ public:
         // Only applies when no explicit limit was requested.
         constexpr size_t BYTE_CAP = 1024 * 1024; // 1MB of returned text
 
-        std::ifstream file(fsPath, std::ios::binary);
-        if (!file.is_open()) {
-            return ToolResult::fail("Cannot open file: " + path);
+        // --- Mmap-cached read path ---
+        // Try to get the file from the mmap cache. On hit with unchanged mtime,
+        // this avoids the open/read/close syscall overhead entirely.
+        auto& mmapCache = MmapCache::getInstance();
+        const char* mappedData = nullptr;
+        size_t mappedSize = 0;
+
+        bool mmapOk = mmapCache.get(path, mappedData, mappedSize);
+        if (!mmapOk) {
+            mmapOk = mmapCache.map(path, mappedData, mappedSize);
         }
 
         std::string result;
-        std::string line;
         int lineNum = 0;
         int linesRead = 0;
         bool truncatedByBytes = false;
 
-        while (std::getline(file, line)) {
-            // Strip a trailing CR so CRLF files don't leave stray \r in output.
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            if (lineNum >= offset && linesRead < limit) {
-                result += std::to_string(lineNum + 1) + "\t" + line + "\n";
-                linesRead++;
-                if (!hasExplicitLimit && result.size() > BYTE_CAP) {
-                    truncatedByBytes = true;
-                    lineNum++;
-                    break;
+        if (mmapOk && mappedData != nullptr && mappedSize > 0) {
+            // Iterate over the memory-mapped content line by line
+            const char* pos = mappedData;
+            const char* end = mappedData + mappedSize;
+
+            while (pos < end) {
+                // Find end of line
+                const char* lineEnd = static_cast<const char*>(
+                    std::memchr(pos, '\n', static_cast<size_t>(end - pos)));
+                if (!lineEnd) lineEnd = end;
+
+                if (lineNum >= offset && linesRead < limit) {
+                    size_t lineLen = static_cast<size_t>(lineEnd - pos);
+                    // Strip trailing CR for CRLF
+                    if (lineLen > 0 && pos[lineLen - 1] == '\r') lineLen--;
+
+                    result += std::to_string(lineNum + 1);
+                    result += '\t';
+                    result.append(pos, lineLen);
+                    result += '\n';
+                    linesRead++;
+
+                    if (!hasExplicitLimit && result.size() > BYTE_CAP) {
+                        truncatedByBytes = true;
+                        lineNum++;
+                        break;
+                    }
                 }
+                lineNum++;
+                pos = (lineEnd < end) ? lineEnd + 1 : end;
+
+                // Stop scanning for total-line count once we've read our window plus a
+                // small lookahead — avoids walking the rest of a multi-GB file.
+                if (linesRead >= limit && lineNum > offset + limit + 1000) break;
             }
-            lineNum++;
-            // Stop scanning for total-line count once we've read our window plus a
-            // small lookahead — avoids walking the rest of a multi-GB file.
-            if (linesRead >= limit && lineNum > offset + limit + 1000) break;
+        } else if (mmapOk && (mappedData == nullptr || mappedSize == 0)) {
+            // Empty file — nothing to read
+        } else {
+            // Mmap failed (e.g. file too large for cache, or permission issue).
+            // Fall back to traditional ifstream read.
+            std::ifstream file(fsPath, std::ios::binary);
+            if (!file.is_open()) {
+                return ToolResult::fail("Cannot open file: " + path);
+            }
+
+            std::string line;
+            while (std::getline(file, line)) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                if (lineNum >= offset && linesRead < limit) {
+                    result += std::to_string(lineNum + 1) + "\t" + line + "\n";
+                    linesRead++;
+                    if (!hasExplicitLimit && result.size() > BYTE_CAP) {
+                        truncatedByBytes = true;
+                        lineNum++;
+                        break;
+                    }
+                }
+                lineNum++;
+                if (linesRead >= limit && lineNum > offset + limit + 1000) break;
+            }
         }
+
         int totalLines = lineNum;
 
         // Append a truncation note so the model knows there's more and how to get it.
