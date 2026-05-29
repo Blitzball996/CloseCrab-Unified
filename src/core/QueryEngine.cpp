@@ -64,16 +64,19 @@ std::string QueryEngine::buildSystemPrompt() const {
     std::string prompt = config_.systemPrompt;
 
     // Core behavior rules (from claude-code system prompt):
-    prompt += R"(
-
-# Behavior Rules
-- Default to action: implement changes rather than only suggesting them.
-- When you know what to do, call tools immediately. Do NOT explain your plan first.
-- If a task requires multiple files, write them one at a time in sequence.
-- Keep text output minimal. The user wants results, not explanations.
-- IMPORTANT: If the content to write exceeds 150 lines, you MUST only write the first 50 lines using the Write tool, then use the Edit tool to append the remaining content in chunks of no more than 50 lines each. If needed, leave a unique placeholder to help append content. On the final chunk, do NOT include the placeholder.
-- Prefer the Edit tool for modifying existing files — it only sends the diff.
-)";
+    // Sub-agents (allowSubagents==false) skip the 50-line Write chunking rule.
+    // JackProAi/claude-code don't impose this on forks — it's a CLI UI constraint
+    // that causes sub-agents to waste turns on Read→Edit loops for large files.
+    bool isSubagent = !config_.allowSubagents;
+    prompt += "\n\n# Behavior Rules\n"
+              "- Default to action: implement changes rather than only suggesting them.\n"
+              "- When you know what to do, call tools immediately. Do NOT explain your plan first.\n"
+              "- If a task requires multiple files, write them one at a time in sequence.\n"
+              "- Keep text output minimal. The user wants results, not explanations.\n";
+    if (!isSubagent) {
+        prompt += "- IMPORTANT: If the content to write exceeds 150 lines, you MUST only write the first 50 lines using the Write tool, then use the Edit tool to append the remaining content in chunks of no more than 50 lines each. If needed, leave a unique placeholder to help append content. On the final chunk, do NOT include the placeholder.\n";
+    }
+    prompt += "- Prefer the Edit tool for modifying existing files — it only sends the diff.\n";
 
     // Append CLAUDE.md content if available
     if (config_.appState && !config_.appState->claudeMdContent.empty()) {

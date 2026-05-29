@@ -128,7 +128,8 @@ std::string AgentManager::spawnAgent(const AgentConfig& config, APIClient* apiCl
                 // Limit agent turns to prevent context bloat (proxy rejects >30KB)
                 qeConfig.maxTurns = (config.type == AgentType::EXPLORE) ? 3 : config.maxTurns;
                 qeConfig.allowedTools = allowedTools;
-                qeConfig.tokenBudget.toolResultBudget = 800;
+                // JackProAi: sub-agents use DEFAULT_MAX_RESULT_SIZE_CHARS=50_000 (same as parent).
+                // Previous 800-token budget truncated files to ~3.2KB causing repeated reads.
                 // Recursive-spawn guard: sub-agents cannot launch their own agents.
                 qeConfig.allowSubagents = false;
 
@@ -203,11 +204,12 @@ AgentResult AgentManager::getResult(const std::string& agentId, bool block) {
     }
 
     if (block && instance->future.valid()) {
-        // JackProAi: AbortController + timeout. C++ equivalent: wait_for with 300s limit.
-        auto status = instance->future.wait_for(std::chrono::seconds(300));
+        // JackProAi has no hard timeout (relies on maxTurns=200 to end naturally).
+        // C++ needs a safety net; 1800s (30min) is generous enough for any task.
+        auto status = instance->future.wait_for(std::chrono::seconds(1800));
         if (status == std::future_status::timeout) {
             instance->status = AgentStatus::FAILED;
-            instance->error = "Agent timed out after 300s";
+            instance->error = "Agent timed out after 1800s";
             instance->interrupted = true;
             spdlog::warn("Agent {} timed out after 300s", agentId);
         }

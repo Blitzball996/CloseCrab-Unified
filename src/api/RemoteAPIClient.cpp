@@ -359,8 +359,10 @@ void RemoteAPIClient::streamChat(
     while (!base.empty() && base.back() == '/') base.pop_back();
     std::string url = base + "/v1/messages";
     constexpr int MAX_RETRIES = 10;
+    constexpr int MAX_SERVER_RETRIES = 3;  // JackProAi: MAX_529_RETRIES=3 for capacity/gateway errors
     constexpr int FALLBACK_THRESHOLD = 3;
     int consecutive503 = 0;
+    int serverErrorCount = 0;
     std::string activeModel = model_;
 
     for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -403,6 +405,16 @@ void RemoteAPIClient::streamChat(
             if (!isRetryable(e.type)) throw;
 
             consecutive503++;
+
+            // JackProAi: 503/504/529 (server capacity) errors bail after 3 retries.
+            // Network errors (ECONNRESET etc.) get the full 10 retries.
+            if (e.type == APIErrorType::OVERLOADED || e.type == APIErrorType::SERVER_ERROR) {
+                serverErrorCount++;
+                if (serverErrorCount >= MAX_SERVER_RETRIES) {
+                    spdlog::warn("Server error retry limit reached ({}/{}), giving up", serverErrorCount, MAX_SERVER_RETRIES);
+                    throw;
+                }
+            }
 
             // Model fallback: after N consecutive 503/529, switch to fallback model
             if (consecutive503 >= FALLBACK_THRESHOLD && !fallbackModel_.empty() && activeModel != fallbackModel_) {
