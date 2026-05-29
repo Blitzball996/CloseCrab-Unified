@@ -697,13 +697,21 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                     continue; // Retry the turn
                 }
             }
+            // JackProAi strategy: on API failure, DON'T break the turn loop.
+            // Instead, surface the error to the user and continue waiting for
+            // input. The query loop only breaks on non-retryable errors (auth).
             spdlog::debug("API call failed: {}", e.what());
-            if (callbacks.onError) {
-                if (e.type == APIErrorType::OVERLOADED || e.type == APIErrorType::SERVER_ERROR) {
-                    callbacks.onError("API temporarily unavailable, please try again.");
-                } else {
-                    callbacks.onError(e.what());
-                }
+            if (e.type == APIErrorType::OVERLOADED || e.type == APIErrorType::SERVER_ERROR) {
+                // Transient server error — tell user and break (they can retry)
+                if (callbacks.onError) callbacks.onError(
+                    "API temporarily unavailable after retries. Your conversation is preserved — just send another message to continue.");
+            } else if (e.type == APIErrorType::AUTH_ERROR) {
+                // Auth error — can't recover
+                if (callbacks.onError) callbacks.onError(e.what());
+            } else {
+                // Network error — tell user
+                if (callbacks.onError) callbacks.onError(
+                    std::string("Network error: ") + e.what() + "\nYour conversation is preserved — send another message to retry.");
             }
             apiCallFailed = true;
         } catch (const std::exception& e) {
