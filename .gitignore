@@ -46,3 +46,6 @@ Thumbs.db
 extensions/vscode/out/
 extensions/vscode/node_modules/
 extensions/vscode/out/
+docs/COST-INTERNAL.md
+# Hide all docs from git (kept locally; installer still packages them from disk)
+docs/
