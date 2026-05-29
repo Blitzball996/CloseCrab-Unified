@@ -85,8 +85,28 @@ struct ToolContext {
     // so they share the prompt cache (claude-code cache-safe fork strategy).
     std::string systemPrompt;
 
-    // File read cache (mtime-based dedup, like JackProAi readFileState)
-    std::map<std::string, int64_t>* fileReadCache = nullptr;
+    // Per-session file read state (JackProAi readFileState / FileStateCache pattern,
+    // utils/fileStateCache.ts FileState). Tracks what the LLM has read so
+    // FileWriteTool/FileEditTool can enforce "read before write" and detect
+    // stale writes. JackProAi stores raw `content` for the staleness fallback;
+    // we store a hash+size instead (O(1) memory, same correctness for the
+    // mtime-false-positive fallback on Windows cloud-sync/antivirus).
+    struct ReadState {
+        size_t contentHash = 0;     // hash of raw on-disk bytes at read time
+        uint64_t contentSize = 0;   // raw file size at read time
+        int64_t mtimeMs = 0;        // file mtime (ms since epoch) at read time
+        bool hasOffset = false;     // true if a range read (offset set)
+        bool hasLimit = false;      // true if a range read (limit set)
+        bool isPartialView = false; // true ONLY for auto-injected content differing from disk
+                                    // (CLAUDE.md/MEMORY attachments). Normal range Read is NOT partial.
+    };
+    std::map<std::string, ReadState>* readFileState = nullptr;
+
+    // Session-mutable working directory (JackProAi cwd-tracking: each bash call
+    // runs `pwd -P` and writes the result back so `cd subdir` persists to the
+    // next call). When set, BashTool reads the post-command cwd and updates it;
+    // QueryEngine reuses it as the cwd for the next spawn. Null = no persistence.
+    std::string* sessionCwd = nullptr;
 
     // v2 extended context
     std::map<std::string, std::vector<std::string>> fileHistory;  // file -> list of operations

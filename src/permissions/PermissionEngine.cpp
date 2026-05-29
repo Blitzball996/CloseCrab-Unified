@@ -1,5 +1,6 @@
 #include "PermissionEngine.h"
 #include "BashClassifier.h"
+#include "../utils/PathValidation.h"
 #include <chrono>
 #include <ctime>
 #include <sstream>
@@ -71,6 +72,34 @@ PermissionDecision PermissionEngine::check(const std::string& toolName,
                                             bool isReadOnly,
                                             bool isDestructive) const {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    // §5: Dangerous removal path check (JackProAi pathValidation.ts:713-737).
+    // Runs BEFORE bypass/allow so a protected-path rm is never auto-approved,
+    // even in BYPASS mode or with an allowlist rule. This is the one case the
+    // permission system refuses to silence.
+    if (toolName == "Bash") {
+        auto bracePos = action.find('{');
+        if (bracePos != std::string::npos) {
+            try {
+                auto j = nlohmann::json::parse(action.substr(bracePos));
+                std::string cmd = j.value("command", "");
+                if (!cmd.empty()) {
+                    for (const auto& target : extractRmTargets(cmd)) {
+                        std::string resolved = target;
+                        if (!resolved.empty() && resolved[0] != '/' &&
+                            !(resolved.size() > 1 && resolved[1] == ':')) {
+                            // resolve relative against first working dir (or skip)
+                            if (!workingDirectories_.empty())
+                                resolved = workingDirectories_.front() + "/" + resolved;
+                        }
+                        if (isDangerousRemovalPath(resolved)) {
+                            return PermissionDecision::ASK_USER;
+                        }
+                    }
+                }
+            } catch (...) { /* not JSON, fall through */ }
+        }
+    }
 
     // Bypass mode: allow everything
     if (mode_ == PermissionMode::BYPASS) return PermissionDecision::ALLOWED;

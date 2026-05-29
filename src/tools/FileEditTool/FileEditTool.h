@@ -67,10 +67,41 @@ public:
             return ToolResult::fail("File not found: " + path);
         }
 
+        // §6: Read-before-write enforcement (JackProAi FileEditTool.ts:275-294)
+        if (ctx.readFileState) {
+            std::string key = normalizePathKey(path);
+            auto it = ctx.readFileState->find(key);
+            if (it == ctx.readFileState->end() || it->second.isPartialView) {
+                return ToolResult::fail(
+                    "File has not been read yet. You MUST use the Read tool to read "
+                    "the file before editing it.");
+            }
+            auto currentMtime = fs::last_write_time(fsPath, ec);
+            if (!ec) {
+                int64_t currentMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    currentMtime.time_since_epoch()).count();
+                if (currentMs > it->second.mtimeMs) {
+                    // mtime false-positive fallback via content hash (JackProAi).
+                    auto [curHash, curSize] = fileContentHash(fsPath);
+                    bool contentMatches = (curSize == it->second.contentSize &&
+                                           curHash == it->second.contentHash &&
+                                           it->second.contentSize > 0);
+                    if (!contentMatches) {
+                        return ToolResult::fail(
+                            "File has been modified since you last read it (by user or another process). "
+                            "Read it again before attempting to edit.");
+                    }
+                }
+            }
+        }
+
         // Read file
         std::ifstream inFile(fsPath, std::ios::binary);
         if (!inFile.is_open()) {
-            return ToolResult::fail("Cannot open file: " + path);
+            return ToolResult::fail(
+                "Cannot open file: " + path +
+                " (likely locked by editor/Live Server/another process). "
+                "DO NOT delete the file. Ask the user to close the application, then retry.");
         }
         std::string content((std::istreambuf_iterator<char>(inFile)), {});
         inFile.close();
@@ -104,12 +135,29 @@ public:
 
             std::ofstream outFile(fsPath, std::ios::binary);
             if (!outFile.is_open()) {
-                return ToolResult::fail("Cannot write to file: " + path);
+                return ToolResult::fail(
+                    "Cannot write to file: " + path +
+                    " (likely locked by editor/Live Server/another process). "
+                    "DO NOT delete the file. Ask the user to close the application, then retry.");
             }
             outFile << modified;
             outFile.close();
 
             FileStateCache::getInstance().invalidate(path);
+            // Update readFileState after successful write
+            if (ctx.readFileState) {
+                ToolContext::ReadState rs;
+                std::error_code wec;
+                try {
+                    auto mtime = fs::last_write_time(fsPath, wec);
+                    rs.mtimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        mtime.time_since_epoch()).count();
+                } catch (...) { rs.mtimeMs = 0; }
+                auto [h, sz] = fileContentHash(fsPath);
+                rs.contentHash = h; rs.contentSize = sz;
+                rs.isPartialView = false;
+                (*ctx.readFileState)[normalizePathKey(path)] = rs;
+            }
             return ToolResult::ok("Replaced lines " + std::to_string(lineStart) + "-" +
                 std::to_string(lineEnd) + " in " + path);
         }
@@ -178,6 +226,20 @@ public:
             : "The file " + path + " has been updated successfully.";
 
         FileStateCache::getInstance().invalidate(path);
+        // Update readFileState after successful write
+        if (ctx.readFileState) {
+            ToolContext::ReadState rs;
+            std::error_code wec;
+            try {
+                auto mtime = fs::last_write_time(fsPath, wec);
+                rs.mtimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    mtime.time_since_epoch()).count();
+            } catch (...) { rs.mtimeMs = 0; }
+            auto [h, sz] = fileContentHash(fsPath);
+            rs.contentHash = h; rs.contentSize = sz;
+            rs.isPartialView = false;
+            (*ctx.readFileState)[normalizePathKey(path)] = rs;
+        }
         return ToolResult::ok(msg);
     }
 

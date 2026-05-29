@@ -114,6 +114,13 @@ private:
     static constexpr int ESCALATED_MAX_TOKENS = 64000;
     BudgetTracker budgetTracker_;
 
+    // Per-session file read state (§6: write-before-read enforcement)
+    std::map<std::string, ToolContext::ReadState> readFileState_;
+
+    // Session-mutable cwd (§10: bash `cd` persistence via pwd -P writeback).
+    // Lazily initialized to config_.cwd on first tool call.
+    std::string sessionCwd_;
+
     // Real token usage from last API response (for accurate pre-flight checks)
     int64_t lastKnownInputTokens_ = 0;
     int lastKnownTokensAtMessageIndex_ = 0;

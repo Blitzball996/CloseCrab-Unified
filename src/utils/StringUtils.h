@@ -3,12 +3,26 @@
 #include <string>
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
+#include <cstdint>
 
 #ifdef _WIN32
 #include <windows.h>
 #endif
 
 namespace closecrab {
+
+// Hash the raw on-disk bytes of a file. Used by the read-before-write staleness
+// check (JackProAi FileWriteTool.ts:282-294 content fallback): when mtime
+// changed but the content hash matches, the write is allowed (mtime false
+// positive from cloud sync / antivirus on Windows). Returns {hash, size};
+// hash==0 && size==0 on failure.
+inline std::pair<size_t, uint64_t> fileContentHash(const std::filesystem::path& p) {
+    std::ifstream f(p, std::ios::binary);
+    if (!f) return {0, 0};
+    std::string data((std::istreambuf_iterator<char>(f)), {});
+    return { std::hash<std::string>{}(data), (uint64_t)data.size() };
+}
 
 // Build a std::filesystem::path from a UTF-8 string without going through the
 // ANSI code page. On Windows, constructing fs::path from a narrow std::string
@@ -22,6 +36,25 @@ inline std::filesystem::path utf8Path(const std::string& p) {
     } catch (...) {
         return std::filesystem::path(p);
     }
+}
+
+// Normalize a path key for readFileState lookups so the same file resolves to
+// the same key regardless of forward/back slashes or case (Windows).
+// Mirrors JackProAi fileStateCache.ts path normalization (normalize() before
+// access). Without this, a Read of "G:/foo/x" and a Write of "G:\foo\x" would
+// miss each other in the map.
+inline std::string normalizePathKey(const std::string& p) {
+    std::string out;
+    out.reserve(p.size());
+    for (char c : p) {
+        out.push_back(c == '\\' ? '/' : c);
+    }
+#ifdef _WIN32
+    // Windows filesystem is case-insensitive — lowercase for stable keys.
+    std::transform(out.begin(), out.end(), out.begin(),
+                   [](unsigned char ch) { return (char)std::tolower(ch); });
+#endif
+    return out;
 }
 
 // Sanitize a string to valid UTF-8 by replacing invalid bytes with '?'

@@ -2,6 +2,8 @@
 
 #include "../Tool.h"
 #include "../../utils/StringUtils.h"
+#include "../../utils/PathValidation.h"
+#include "../../utils/ShellQuoting.h"
 #include "../../tools/TaskTools/TaskTools.h"
 #include <array>
 #include <memory>
@@ -25,8 +27,16 @@ class BashTool : public Tool {
 public:
     std::string getName() const override { return "Bash"; }
     std::string getDescription() const override {
-        return "Execute a shell command and return its output. "
-               "Destructive commands require confirmation.";
+        return "Execute a shell command. IMPORTANT — use dedicated tools instead of these commands:\n"
+               "- File search: use Glob (NOT find/dir/ls)\n"
+               "- Content search: use Grep (NOT grep/rg/findstr)\n"
+               "- Read files: use Read (NOT cat/head/tail/type)\n"
+               "- Edit files: use Edit (NOT sed/awk)\n"
+               "- Write files: use Write (NOT echo >/cat <<EOF)\n"
+               "On Windows (Git Bash): use POSIX paths (/g/CMakePJ/...) NOT G:\\...; "
+               "NEVER call Windows native commands (findstr, cmd builtins) — their /flag gets mangled to I:/, N:/. "
+               "Prefer writing a temp script file over inline node -e / python -c / sed -i (shell quote mangling). "
+               "Destructive commands (rm, del, rmdir) require confirmation.";
     }
     std::string getCategory() const override { return "execution"; }
 
@@ -48,6 +58,8 @@ public:
     PermissionResult checkPermissions(const ToolContext& ctx, const nlohmann::json& input) const override {
         std::string cmd = input.value("command", "");
         if (isSafeCommand(cmd)) return PermissionResult::ALLOWED;
+        // §5: Dangerous rm path detection now lives in PermissionEngine::check()
+        // (JackProAi pathValidation.ts:713-737 flow). Tool layer just returns ASK_USER.
         return PermissionResult::ASK_USER;
     }
 
@@ -64,7 +76,7 @@ public:
             return runInBackground(cmd, ctx);
         }
 
-        return executeWithTimeout(cmd, timeout, ctx.abortFlag, ctx.onStreamOutput);
+        return executeWithTimeout(cmd, timeout, ctx.abortFlag, ctx.onStreamOutput, ctx.cwd, ctx.sessionCwd);
     }
 
     std::string getActivityDescription(const nlohmann::json& input) const override {
@@ -84,7 +96,14 @@ private:
         std::thread([cmd, taskId]() {
             std::string output;
 #ifdef _WIN32
-            std::string fullCmd = "\"C:/Program Files/Git/bin/bash.exe\" -c \"" + cmd + "\" 2>&1";
+            // Apply the same JackProAi normalization (>nul rewrite + eval wrap).
+            // NOTE: background uses _popen which adds a cmd.exe layer; the bash
+            // layer is now quote-safe via eval single-quoting. Foreground path
+            // (executeWithTimeoutWin32) is fully Windows-argv-escaped.
+            std::string normalized = rewriteWindowsNullRedirect(cmd);
+            std::string evalCmd = buildEvalCommand(normalized);
+            std::string fullCmd = "\"C:/Program Files/Git/bin/bash.exe\" -c " +
+                                  windowsQuoteArg(evalCmd) + " 2>&1";
             std::unique_ptr<FILE, decltype(&_pclose)> pipe(_popen(fullCmd.c_str(), "r"), _pclose);
 #else
             std::string fullCmd = cmd + " 2>&1";
@@ -113,9 +132,11 @@ private:
 
     ToolResult executeWithTimeout(const std::string& cmd, int timeoutMs,
                                    std::atomic<bool>* abortFlag,
-                                   std::function<void(const std::string&)> streamCb = nullptr) {
+                                   std::function<void(const std::string&)> streamCb = nullptr,
+                                   const std::string& cwd = "",
+                                   std::string* sessionCwdOut = nullptr) {
 #ifdef _WIN32
-        return executeWithTimeoutWin32(cmd, timeoutMs, abortFlag, streamCb);
+        return executeWithTimeoutWin32(cmd, timeoutMs, abortFlag, streamCb, cwd, sessionCwdOut);
 #else
         return executeWithTimeoutPosix(cmd, timeoutMs, abortFlag);
 #endif
@@ -124,7 +145,9 @@ private:
 #ifdef _WIN32
     ToolResult executeWithTimeoutWin32(const std::string& cmd, int timeoutMs,
                                        std::atomic<bool>* abortFlag,
-                                       std::function<void(const std::string&)> streamCb) {
+                                       std::function<void(const std::string&)> streamCb,
+                                       const std::string& cwd = "",
+                                       std::string* sessionCwdOut = nullptr) {
         // Create pipes for stdout
         SECURITY_ATTRIBUTES sa = {};
         sa.nLength = sizeof(sa);
@@ -135,10 +158,77 @@ private:
         }
         SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
 
-        // Build command line — use Git Bash for Unix command compatibility
-        std::string fullCmd = "\"C:/Program Files/Git/bin/bash.exe\" -c \"" + cmd + "\"";
+        // §10: Auto-discover Git Bash path
+        static std::string gitBashPath;
+        if (gitBashPath.empty()) {
+            const char* envPath = std::getenv("CLAUDE_CODE_GIT_BASH_PATH");
+            if (envPath && std::filesystem::exists(envPath)) {
+                gitBashPath = envPath;
+            } else {
+                // Default locations
+                std::vector<std::string> candidates = {
+                    "C:/Program Files/Git/bin/bash.exe",
+                    "C:/Program Files (x86)/Git/bin/bash.exe",
+                    "D:/Program Files/Git/bin/bash.exe",
+                };
+                for (const auto& c : candidates) {
+                    if (std::filesystem::exists(c)) { gitBashPath = c; break; }
+                }
+                if (gitBashPath.empty()) gitBashPath = "C:/Program Files/Git/bin/bash.exe";
+            }
+        }
+
+        // §10: Build command line the JackProAi way (shellQuoting.ts + bashProvider.ts):
+        //   1. rewrite Windows `>nul` redirects → /dev/null
+        //   2. wrap in `eval '<single-quote-escaped>'` so inner quotes survive
+        //   3. escape the whole eval string as ONE Windows argv element
+        // This fixes the bug.txt failures where `node -e "..."` / `sed -i "..."`
+        // inner double quotes shredded the outer -c "..." wrapper.
+        std::string normalized = rewriteWindowsNullRedirect(cmd);
+        std::string evalCmd = buildEvalCommand(normalized);
+
+        // §10: cwd persistence (JackProAi bashProvider.ts: `eval ... && pwd -P >| file`).
+        // Append a pwd capture that ALWAYS runs (`;` not `&&`) and preserves the
+        // real exit code, so `cd subdir` carries to the next bash call.
+        std::string cwdFile;
+        if (sessionCwdOut) {
+            char tmp[MAX_PATH];
+            DWORD tlen = GetTempPathA(MAX_PATH, tmp);
+            if (tlen > 0 && tlen < MAX_PATH) {
+                cwdFile = std::string(tmp) + "crab-cwd-" +
+                          std::to_string(GetCurrentProcessId()) + "-" +
+                          std::to_string((unsigned long long)GetTickCount64()) + ".txt";
+                // POSIX path for the bash redirect (C:\ -> /c/)
+                std::string posixCwdFile = windowsToPosixPath(cwdFile);
+                evalCmd += "; __cc_ec=$?; pwd -P > " + bashSingleQuote(posixCwdFile) +
+                           " 2>/dev/null; exit $__cc_ec";
+            }
+        }
+
+        std::string fullCmd = windowsQuoteArg(gitBashPath) + " -c " + windowsQuoteArg(evalCmd);
         std::vector<char> cmdBuf(fullCmd.begin(), fullCmd.end());
         cmdBuf.push_back('\0');
+
+        // §10: Build environment block with CLAUDECODE, GIT_EDITOR, LANG for UTF-8
+        std::string envBlock;
+        // Inherit current environment
+        char* currentEnv = GetEnvironmentStringsA();
+        if (currentEnv) {
+            char* p = currentEnv;
+            while (*p) {
+                envBlock.append(p);
+                envBlock.push_back('\0');
+                p += strlen(p) + 1;
+            }
+            FreeEnvironmentStringsA(currentEnv);
+        }
+        envBlock += "CLAUDECODE=1"; envBlock.push_back('\0');
+        envBlock += "GIT_EDITOR=true"; envBlock.push_back('\0');
+        envBlock += "SHELL=" + gitBashPath; envBlock.push_back('\0');
+        // LANG: not set by JackProAi, but CloseCrab has CJK paths/content that
+        // need UTF-8 locale to round-trip cleanly through bash. Harmless add-on.
+        envBlock += "LANG=en_US.UTF-8"; envBlock.push_back('\0');
+        envBlock.push_back('\0'); // Double null terminator
 
         STARTUPINFOA si = {};
         si.cb = sizeof(si);
@@ -147,8 +237,11 @@ private:
         si.hStdError = hWritePipe;
         PROCESS_INFORMATION pi = {};
 
+        // §10: Pass cwd as lpCurrentDirectory, env block as lpEnvironment
+        const char* lpCwd = cwd.empty() ? nullptr : cwd.c_str();
+
         if (!CreateProcessA(nullptr, cmdBuf.data(), nullptr, nullptr, TRUE,
-                            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+                            CREATE_NO_WINDOW, envBlock.data(), lpCwd, &si, &pi)) {
             CloseHandle(hReadPipe);
             CloseHandle(hWritePipe);
             return ToolResult::fail("Failed to create process");
@@ -197,6 +290,25 @@ private:
 
         if (timedOut) {
             output += "\n... (command timed out after " + std::to_string(timeoutMs / 1000) + "s)";
+        }
+
+        // §10: cwd persistence — read back the `pwd -P` capture and update the
+        // session cwd so the next bash call inherits any `cd`.
+        if (sessionCwdOut && !cwdFile.empty()) {
+            std::ifstream cf(cwdFile, std::ios::binary);
+            if (cf) {
+                std::string newCwd((std::istreambuf_iterator<char>(cf)), {});
+                cf.close();
+                while (!newCwd.empty() &&
+                       (newCwd.back() == '\n' || newCwd.back() == '\r' || newCwd.back() == ' '))
+                    newCwd.pop_back();
+                if (!newCwd.empty()) {
+                    // bash emits a POSIX path (/g/...); CreateProcessA's
+                    // lpCurrentDirectory needs a Windows path (G:\...).
+                    *sessionCwdOut = posixToWindowsPath(newCwd);
+                }
+            }
+            std::remove(cwdFile.c_str());
         }
 
         return ToolResult::ok(ensureUtf8(output));

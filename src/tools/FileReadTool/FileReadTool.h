@@ -199,6 +199,30 @@ public:
             readState_[dedupKey] = entry;
         }
 
+        // §6: Update session-level readFileState for write-before-read enforcement.
+        // JackProAi FileState semantics (utils/fileStateCache.ts:4-15):
+        //   timestamp - file mtime at read time
+        //   offset/limit - set for range reads (used for read dedup, NOT to block writes)
+        //   isPartialView - ONLY true for auto-injected content differing from disk;
+        //                   a normal range Read is NOT partial.
+        // We store contentHash+size (instead of JackProAi's raw `content`) for the
+        // Windows mtime-false-positive fallback (StringUtils fileContentHash).
+        if (ctx.readFileState) {
+            ToolContext::ReadState rs;
+            try {
+                auto mtime = fs::last_write_time(fsPath, ec);
+                rs.mtimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    mtime.time_since_epoch()).count();
+            } catch (...) { rs.mtimeMs = 0; }
+            auto [h, sz] = fileContentHash(fsPath);
+            rs.contentHash = h;
+            rs.contentSize = sz;
+            rs.hasOffset = (offset > 0);
+            rs.hasLimit = hasExplicitLimit;
+            rs.isPartialView = false;  // FileReadTool always shows real disk content
+            (*ctx.readFileState)[normalizePathKey(path)] = rs;
+        }
+
         return ToolResult::ok(ensureUtf8(result), data);
     }
 

@@ -386,7 +386,8 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
 
     // Execute tool
     ToolContext ctx;
-    ctx.cwd = config_.cwd;
+    if (sessionCwd_.empty()) sessionCwd_ = config_.cwd;
+    ctx.cwd = sessionCwd_;
     ctx.messages = &messages_;
     ctx.appState = config_.appState;
     ctx.permissionEngine = config_.permissionEngine;
@@ -394,6 +395,8 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
     ctx.apiClient = config_.apiClient;
     ctx.toolRegistry = config_.toolRegistry;
     ctx.systemPrompt = buildSystemPrompt(); // For AgentTool cache sharing
+    ctx.readFileState = &readFileState_;
+    ctx.sessionCwd = &sessionCwd_;
 
     // Stream output callback for execution tools (Bash/PowerShell)
     if (callbacks.onToolUse) {
@@ -845,13 +848,16 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                         if (!tool) return {localEvent, ToolResult::fail("Unknown tool: " + localEvent.toolName)};
 
                         ToolContext ctx;
-                        ctx.cwd = config_.cwd;
+                        ctx.cwd = sessionCwd_.empty() ? config_.cwd : sessionCwd_;
                         ctx.messages = &messages_;
                         ctx.appState = config_.appState;
                         ctx.permissionEngine = config_.permissionEngine;
                         ctx.abortFlag = &interrupted_;
                         ctx.apiClient = config_.apiClient;
                         ctx.toolRegistry = config_.toolRegistry;
+                        ctx.readFileState = &readFileState_;
+                        // No sessionCwd pointer in parallel mode — avoid concurrent
+                        // writes to sessionCwd_ from multiple tool threads.
 
                         ToolResult result;
                         try {
