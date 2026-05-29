@@ -54,7 +54,7 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
             -DUSE_CUDA=OFF \
-            -DUSE_LOCAL_LLM=ON \
+            -DUSE_LOCAL_LLM=OFF \
             -DUSE_FAISS=OFF \
             -DUSE_ONNX=OFF
 
@@ -79,7 +79,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
             -DCMAKE_OSX_ARCHITECTURES="arm64" \
             -DUSE_CUDA=OFF \
-            -DUSE_LOCAL_LLM=ON \
+            -DUSE_LOCAL_LLM=OFF \
             -DUSE_FAISS=OFF \
             -DUSE_ONNX=OFF
 

@@ -1,13 +1,44 @@
 #include "LLMEngine.h"
 #include <spdlog/spdlog.h>
+#ifdef CLOSECRAB_HAS_LOCAL_LLM
 #include <llama.h>
 #include <ggml.h>
+#endif
 #include <cstring>
 #include <random>
 #include <algorithm>
 #include <vector>
 #include "../ssd/SSDExpertStreamer.h"
 #include <fstream>
+
+#ifndef CLOSECRAB_HAS_LOCAL_LLM
+// Stub implementations when local LLM is disabled
+LLMEngine::LLMEngine(const std::string&, int nParallel, int cpuMoeLayers)
+    : m_cpuMoeLayers(cpuMoeLayers), m_nParallel(nParallel) {
+    spdlog::warn("LLMEngine: built without local LLM support");
+}
+LLMEngine::~LLMEngine() = default;
+std::string LLMEngine::generate(const std::string&, const std::string&, int, float) { return ""; }
+void LLMEngine::generateStreaming(const std::string&, const std::string&, int, float,
+    std::function<void(const std::string&)>, std::function<void()>) {}
+std::string LLMEngine::generateRaw(const std::string&, int, float) { return ""; }
+void LLMEngine::generateRaw(const std::string&, int, float,
+    std::function<void(const std::string&)>, std::function<void()>) {}
+int LLMEngine::acquireSequenceSlot() { return -1; }
+void LLMEngine::releaseSequenceSlot(int) {}
+int LLMEngine::activeSlots() const { return 0; }
+void LLMEngine::generateForSequence(int, const std::string&, int, float,
+    std::function<void(const std::string&)>, std::function<void()>) {}
+std::string LLMEngine::getModelInfo() const { return "Local LLM not available in this build"; }
+int LLMEngine::countTokens(const std::string& text) const { return static_cast<int>(text.size() / 4); }
+bool LLMEngine::initSSDStreaming(const std::string&, size_t, size_t) { return false; }
+std::string LLMEngine::getSSDStreamerStatus() const { return "disabled"; }
+bool LLMEngine::isSSDStreamingEnabled() const { return false; }
+std::vector<int> LLMEngine::stringToTokens(const std::string&) const { return {}; }
+std::string LLMEngine::tokensToString(const std::vector<int>&) const { return ""; }
+void LLMEngine::generateTokensStreaming(const std::vector<int>&, int, float,
+    std::function<void(const std::string&)>) {}
+#else
 #include <thread>
 
 
@@ -617,3 +648,4 @@ std::string LLMEngine::getSSDStreamerStatus() const {
 bool LLMEngine::isSSDStreamingEnabled() const {
     return m_ssdStreamer != nullptr && m_ssdStreamer->isInitialized();
 }
+#endif  // CLOSECRAB_HAS_LOCAL_LLM

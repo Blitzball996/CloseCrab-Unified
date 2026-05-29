@@ -13,22 +13,22 @@ YAML::Node Config::getNode(const std::string& key) const {
         return YAML::Node();
     }
 
-    const YAML::Node* current = &root;
+    YAML::Node current = root;
     size_t start = 0;
     size_t dot;
     do {
         dot = key.find('.', start);
         std::string part = key.substr(start, dot - start);
-        if (!current->IsMap() || !(*current)[part].IsDefined()) {
+        if (!current.IsMap() || !current[part].IsDefined()) {
             spdlog::debug("getNode: part '{}' not found", part);
             return YAML::Node();
         }
-        current = &((*current)[part]);
+        current = current[part];
         start = dot + 1;
     } while (dot != std::string::npos);
 
-    spdlog::debug("getNode: success, node is scalar? {}", current->IsScalar());
-    return *current;
+    spdlog::debug("getNode: success, node is scalar? {}", current.IsScalar());
+    return current;
 }
 
 bool Config::load(const std::string& filename) {
