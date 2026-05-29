@@ -6,7 +6,9 @@
 #include <map>
 #include <mutex>
 #include <system_error>
+#ifdef _WIN32
 #include <winsock2.h>
+#endif
 
 class WebSocketServer::Impl {
 public:
@@ -78,14 +80,14 @@ void WebSocketServer::start() {
 
             auto res = pImpl->server->listen();
             if (!res.first) {
-                // »ñÈ¡ÏêÏ¸´íÎóÐÅÏ¢
+                // ï¿½ï¿½È¡ï¿½ï¿½Ï¸ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ï¢
                 int errorCode = WSAGetLastError();
                 spdlog::error("========================================");
                 spdlog::error("WebSocket server failed to start");
                 spdlog::error("  Error message: {}", res.second);
                 spdlog::error("  Windows error code: {}", errorCode);
 
-                // ·ÖÎö´íÎóÔ­Òò
+                // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ô­ï¿½ï¿½
                 if (errorCode == WSAEADDRINUSE) {
                     spdlog::error("  Cause: Port {} is already in use", pImpl->port);
                     spdlog::error("  Solution: Use a different port with --ws-port <port>");
@@ -132,7 +134,7 @@ void WebSocketServer::stop() {
 
     pImpl->running = false;
 
-    // ÇåÀí Winsock
+    // ï¿½ï¿½ï¿½ï¿½ Winsock
     WSACleanup();
 
     spdlog::info("WebSocket server stopped");
