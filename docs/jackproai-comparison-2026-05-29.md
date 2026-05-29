@@ -14,7 +14,7 @@
 | 项 | JackProAi 实现 | CloseCrab 原实现 | 最终状态 | 一致度 |
 |---|---|---|---|---|
 | §1 缓存断点 | system 静/动态拆分；message 1 个断点；tools 前缀稳定 | system 整块缓存；cwd/model 混入 | ✅ system 按 boundary 拆 2 块，cache_control 只在静态块 | 已对齐 |
-| §2 tools 稳定 | session-cache schema + defer_loading overlay | discovered 动态扩 tools 数组 | ✅ 全量发 + name 排序固定（删动态发现） | 已对齐目标 |
+| §2 tools 稳定 | session-cache schema + defer_loading overlay（聚焦核心集，非全量） | ALWAYS_LOAD 10 核心 + ToolSearch 发现（已是 JackProAi-style） | ✅ 保持原版（10 核心+发现）。⚠️ 我曾误改为"全发 58 工具"→模型被 Workflow 等元工具带偏、一调工具就停，已还原 | 已对齐(原版即对) |
 | §3 API microcompact | A:服务端 context_management；B:本地确定性 replacement | 每轮 in-place 改写 = cache killer | ✅ B 路：clearedToolUseIds_ 冻结决策，单调不回退 | 已对齐(B路) |
 | §4 BashTool prompt | 完整 prompt（工具替代+instructions+git+sleep） | 一句话 | ✅ 完整结构（除不适用的 sandbox 段） | 已对齐 |
 | §5 rm 拦截 | path validate → dangerous removal → ask（流程前置） | 仅 PermissionEngine；auto-approve 可绕 | ✅ dangerous rm 下沉 PermissionEngine::check 最前，BYPASS 也拦 | 已对齐 |
@@ -42,9 +42,9 @@
 | 维度 | JackProAi | CloseCrab 原实现 | 我刚改的 | 优点 | 缺点/风险 |
 |---|---|---|---|---|---|
 | tool schema 稳定 | `utils/api.ts:136-180`：`toolToAPISchema` 用 `getToolSchemaCache()`，base schema 只算一次，避免中途变导致工具数组字节 churn。 | 每轮从 ToolRegistry 生成 JSON schema。 | **✅ 已对齐（目标层面）**：`QueryEngine::buildModelConfig` 改为发**全部** enabled 工具，按 name 排序保证确定性顺序，描述稳定（getDescription 是 const 字面量）→ tools 数组字节稳定。 | 达成 JackProAi 的 verified 目标（稳定 tools 前缀 → cache 命中）。 | 工具描述若运行时动态变仍会破 cache（当前都是静态字面量，无此问题）。 |
-| defer_loading | `utils/api.ts:211-260`：deferLoading 是 per-request overlay；`CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` 剥掉非标准字段。 | `QueryEngine.cpp:210-280` 扫 `<tool_reference>` 动态 push schema，数组每轮变。 | **✅ 已删除动态扩展**：改全量发。defer_loading 是 Anthropic beta，yikoulian 中转未确认转发（门禁 B 未过），故不用——用全量发达成同样的稳定前缀。 | 不依赖中转支持 beta；零 cache churn。 | 首轮多发 ~20-30KB（59 工具全 schema），但被后续每轮缓存命中抵消，净省。 |
+| defer_loading | `utils/api.ts:211-260`：deferLoading 是 per-request overlay；`CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` 剥掉非标准字段。 | `QueryEngine.cpp:210-280`：ALWAYS_LOAD 10 核心 + ToolSearch 发现（JackProAi-style）。 | **保持原版**。曾误改"全发 58 工具"→模型被 Workflow/Monitor/Reverse 元工具带偏（一调工具就停），已还原。正常会话 discovered 为空 → 数组就是稳定的 10 个。 | 聚焦核心集（如 JackProAi）；正常会话亦缓存稳定。 | 真用 ToolSearch 发现新工具时数组才变（罕见）。 |
 | cache hash 排除 | `claude.ts:1461-1467`：过滤 defer_loading 工具不计入 cache key。 | 无。 | N/A（不用 defer_loading 就无需排除）。 | — | — |
-| 结论 | JackProAi：稳定 base schema + defer_loading overlay（exclude from hash）。 | CloseCrab：发现一个加一个，数组每轮变 = cache killer。 | **✅ 已对齐目标**：全量发 + 排序固定 → 字节稳定的 tools 前缀。机制不同（全量 vs defer），但 JackProAi 的 verified 结果（cache 命中）已达成。 |  | 若将来确认中转支持 defer_loading 且 token 预算吃紧，可再切 overlay 方案。 |
+| 结论 | JackProAi：稳定 base schema + defer_loading overlay（聚焦核心）。 | CloseCrab：ALWAYS_LOAD 10 核心 + 按需发现（原本就对）。 | **✅ 还原原版**：核心集聚焦 + 按需发现，与 JackProAi 聚焦理念一致。教训：勿"全发 58"过度修改。 |  | — |
 
 ---
 

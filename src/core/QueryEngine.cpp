@@ -217,39 +217,85 @@ ModelConfig QueryEngine::buildModelConfig() const {
                 }
             }
         } else {
-            // §2 tools 固定 (cache stability): send ALL enabled tools every turn
-            // in a deterministic order with stable descriptions. JackProAi achieves
-            // a stable tools prefix via session-cached schemas + defer_loading that
-            // is EXCLUDED from the cache hash (claude.ts:1461-1467). Since our proxy
-            // (yikoulian) is not confirmed to forward the defer_loading beta field
-            // (门禁 B), the faithful way to hit JackProAi's verified outcome — a
-            // byte-stable tools prefix → prompt-cache hits — is to send the full,
-            // fixed tool set. The prior dynamic ToolSearch discovery GREW the array
-            // and MUTATED ToolSearch's description across turns, busting the cache
-            // (the ~77K-per-request re-write in the billing report). Sending ~20-30KB
-            // more on turn 1 is dwarfed by caching it on every subsequent turn.
+            // JackProAi-style ToolSearch + defer_loading:
+            // - Always-loaded tools (core) get full schema in initial request
+            // - Deferred tools get full schema only after model calls ToolSearch with their name
+            //   (we scan message history for "tool_reference" markers from ToolSearch results)
+            // This keeps proxy-facing request small while exposing all tools via discovery.
+            //
+            // NOTE: this is the KNOWN-GOOD original (commit b43bbb1). A prior "send all
+            // 58 tools" rewrite regressed model behavior — flooding the model with
+            // meta/niche tools (Workflow, Monitor, Reverse...) made it mis-select them
+            // and stall. Restored verbatim. In normal sessions `discovered` stays empty,
+            // so the tools array is just the 10 ALWAYS_LOAD entries → already cache-stable.
+            static const std::set<std::string> ALWAYS_LOAD = {
+                "Read", "Write", "Edit", "Glob", "Grep", "Bash",
+                "AskUserQuestion", "Agent", "WebSearch",
+                "ToolSearch"  // ToolSearch itself must always be available
+            };
+
+            // Extract discovered tools from message history — JackProAi extractDiscoveredToolNames()
+            std::set<std::string> discovered;
+            for (const auto& msg : messages_) {
+                for (const auto& block : msg.content) {
+                    if (block.type != ContentBlockType::TOOL_RESULT) continue;
+                    std::string text = block.toolResult.is_string()
+                        ? block.toolResult.get<std::string>()
+                        : block.toolResult.dump();
+                    // Scan for <tool_reference name="X"/> markers
+                    size_t pos = 0;
+                    while ((pos = text.find("<tool_reference name=\"", pos)) != std::string::npos) {
+                        pos += 22;
+                        size_t end = text.find("\"", pos);
+                        if (end == std::string::npos) break;
+                        discovered.insert(text.substr(pos, end - pos));
+                        pos = end + 1;
+                    }
+                }
+            }
+
             bool planMode = config_.appState && config_.appState->planMode;
             bool coordMode = config_.appState && config_.appState->coordinatorMode;
             static const std::set<std::string> COORD_TOOLS = {"Agent", "TaskStop", "AskUserQuestion", "TodoWrite"};
-
-            // Collect eligible tools, then sort by name for a deterministic,
-            // byte-stable array order regardless of registry iteration order.
-            std::vector<Tool*> eligible;
             for (Tool* t : config_.toolRegistry->getAllTools()) {
                 if (!t || !t->isEnabled() || t->isHidden()) continue;
                 if (planMode && !t->isReadOnly()) continue;
+                // Coordinator mode: only orchestration tools
                 if (coordMode && COORD_TOOLS.find(t->getName()) == COORD_TOOLS.end()) continue;
-                eligible.push_back(t);
-            }
-            std::sort(eligible.begin(), eligible.end(),
-                      [](Tool* a, Tool* b) { return a->getName() < b->getName(); });
 
-            for (Tool* t : eligible) {
+                bool isAlwaysLoad = ALWAYS_LOAD.find(t->getName()) != ALWAYS_LOAD.end();
+                bool isDiscovered = discovered.count(t->getName()) > 0;
+
+                // Only send tool schema if it's always-loaded OR has been discovered via ToolSearch
+                if (!isAlwaysLoad && !isDiscovered) continue;
+
                 nlohmann::json def;
                 def["name"] = t->getName();
                 def["description"] = t->getDescription();
                 def["input_schema"] = t->getInputSchema();
                 toolDefs.push_back(std::move(def));
+            }
+
+            // For deferred (not-yet-discovered) tools: append their names to ToolSearch's
+            // description so the model knows what's available to discover.
+            // JackProAi does this via <available-deferred-tools> system reminder.
+            std::vector<std::string> deferredNames;
+            for (Tool* t : config_.toolRegistry->getAllTools()) {
+                if (!t || !t->isEnabled() || t->isHidden()) continue;
+                if (planMode && !t->isReadOnly()) continue;
+                if (ALWAYS_LOAD.count(t->getName())) continue;
+                if (discovered.count(t->getName())) continue;
+                deferredNames.push_back(t->getName());
+            }
+            if (!deferredNames.empty()) {
+                for (auto& def : toolDefs) {
+                    if (def.value("name", "") == "ToolSearch") {
+                        std::string extra = "\n\nAvailable deferred tools (call ToolSearch to load schema):\n";
+                        for (const auto& n : deferredNames) extra += "- " + n + "\n";
+                        def["description"] = def["description"].get<std::string>() + extra;
+                        break;
+                    }
+                }
             }
         }
 
