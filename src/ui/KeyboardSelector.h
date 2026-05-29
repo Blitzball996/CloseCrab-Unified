@@ -16,10 +16,14 @@ struct SelectorResult {
 
 class KeyboardSelector {
 public:
-    // Select from vertical list with optional custom text input
+    // Select from vertical list with optional custom text input.
+    // enableShortcuts: y/n/a quick keys (for the Allow/Deny/AllowAll permission
+    // prompt). Disable for general questions where the user may type a free-text
+    // answer that legitimately starts with y/n/a.
     static SelectorResult select(const std::vector<std::string>& options,
                                   int defaultIdx = 0,
-                                  bool allowCustom = true) {
+                                  bool allowCustom = true,
+                                  bool enableShortcuts = true) {
         SelectorResult result;
 #ifdef _WIN32
         // Check if stdin is a real console
@@ -69,15 +73,15 @@ public:
                 int arrow = _getch();
                 if (arrow == 72) current = (current - 1 + totalOptions) % totalOptions; // Up
                 else if (arrow == 80) current = (current + 1) % totalOptions; // Down
-            } else if (ch == 'y' || ch == 'Y') {
+            } else if (enableShortcuts && (ch == 'y' || ch == 'Y')) {
                 clearLines(totalOptions);
                 result.index = 0;
                 return result;
-            } else if (ch == 'n' || ch == 'N') {
+            } else if (enableShortcuts && (ch == 'n' || ch == 'N')) {
                 clearLines(totalOptions);
                 result.index = 1;
                 return result;
-            } else if (ch == 'a' || ch == 'A') {
+            } else if (enableShortcuts && (ch == 'a' || ch == 'A')) {
                 clearLines(totalOptions);
                 result.index = (int)options.size() > 2 ? 2 : 0;
                 return result;

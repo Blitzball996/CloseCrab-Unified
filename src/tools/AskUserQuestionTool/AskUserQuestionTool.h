@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../Tool.h"
+#include "../../ui/KeyboardSelector.h"
 #include <iostream>
 
 namespace closecrab {
@@ -49,32 +50,35 @@ public:
             std::string question = q.value("question", "");
             std::cout << "\n\033[33m" << question << "\033[0m\n";
 
-            if (q.contains("options") && q["options"].is_array()) {
-                int i = 1;
+            if (q.contains("options") && q["options"].is_array() && !q["options"].empty()) {
+                // Use the SAME interactive selector as the permission prompt
+                // (KeyboardSelector: arrow keys + raw _getch). The old
+                // std::getline path conflicted with the ReadConsoleW-based main
+                // input and the spinner thread — that's why typed input landed
+                // before the colon and was capped at one char.
+                std::vector<std::string> labels;
                 for (const auto& opt : q["options"]) {
-                    std::cout << "  " << i << ". " << opt.value("label", "")
-                              << " - " << opt.value("description", "") << "\n";
-                    i++;
+                    std::string label = opt.value("label", "");
+                    std::string desc = opt.value("description", "");
+                    labels.push_back(desc.empty() ? label : (label + " — " + desc));
                 }
-                std::cout << "  " << i << ". Other (type your answer)\n";
-                std::cout << "\033[33mChoice: \033[0m";
 
-                std::string choice;
-                std::getline(std::cin, choice);
+                // allowCustom=true gives a "[Type response...]" entry → index -1
+                // with the typed text (the "Other" path). enableShortcuts=false so
+                // a free-text answer starting with y/n/a isn't hijacked.
+                SelectorResult sel = KeyboardSelector::select(labels, 0, true, false);
 
-                int idx = 0;
-                try { idx = std::stoi(choice); } catch (...) {}
-
-                if (idx >= 1 && idx <= (int)q["options"].size()) {
-                    answers[question] = q["options"][idx - 1].value("label", choice);
+                if (sel.index >= 0 && sel.index < (int)q["options"].size()) {
+                    answers[question] = q["options"][sel.index].value("label", "");
                 } else {
-                    answers[question] = choice;
+                    // Custom typed answer (or escape fallback)
+                    answers[question] = sel.customText;
                 }
             } else {
-                std::cout << "\033[33mAnswer: \033[0m";
-                std::string answer;
-                std::getline(std::cin, answer);
-                answers[question] = answer;
+                // Free-text question: full-line custom input via the selector's
+                // text path (consistent console handling).
+                SelectorResult sel = KeyboardSelector::select({}, 0, true, false);
+                answers[question] = sel.customText;
             }
         }
 

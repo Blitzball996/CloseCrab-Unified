@@ -8,6 +8,7 @@
 #include "ErrorRecovery.h"
 #include "PredictiveEngine.h"
 #include "ContextCollapse.h"
+#include "TranscriptStore.h"
 #include "MessageSnip.h"
 #include <spdlog/spdlog.h>
 #include <fstream>
@@ -498,6 +499,10 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
     if (config_.memorySystem && !sessionId_.empty()) {
         config_.memorySystem->addMemory(sessionId_, "user", prompt);
     }
+
+    // Bug C: append the user message to the JSONL transcript immediately
+    // (JackProAi appends each entry as it happens — survives a mid-turn crash).
+    persistTranscriptDelta();
 
     std::string systemPrompt = buildSystemPrompt();
     ModelConfig modelConfig = buildModelConfig();
@@ -1235,7 +1240,17 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
     }
 
     budgetTracker_.resetQueryBudget();
+    // Bug C: flush any assistant/tool messages added during this turn to the
+    // JSONL transcript (append-only, JackProAi sessionStorage behavior).
+    persistTranscriptDelta();
     if (callbacks.onComplete) callbacks.onComplete();
+}
+
+void QueryEngine::persistTranscriptDelta() {
+    if (sessionId_.empty()) return;
+    try {
+        lastPersistedIndex_ = TranscriptStore::appendDelta(sessionId_, messages_, lastPersistedIndex_);
+    } catch (...) { /* persistence is best-effort, never break the turn */ }
 }
 
 void QueryEngine::interrupt() {
@@ -1285,6 +1300,20 @@ void QueryEngine::deserializeMessages(const nlohmann::json& data) {
     for (const auto& m : data) {
         std::string role = m.value("role", "user");
         std::string text = m.value("text", "");
+        // Fallback for the old toApiJson shape (no top-level "text"): pull the
+        // first text block out of content[].
+        if (text.empty() && m.contains("content")) {
+            if (m["content"].is_string()) {
+                text = m["content"].get<std::string>();
+            } else if (m["content"].is_array()) {
+                for (const auto& b : m["content"]) {
+                    if (b.contains("text") && b["text"].is_string()) {
+                        text = b["text"].get<std::string>();
+                        break;
+                    }
+                }
+            }
+        }
         if (text.empty()) continue;
 
         if (role == "user") {
@@ -1296,6 +1325,9 @@ void QueryEngine::deserializeMessages(const nlohmann::json& data) {
         }
     }
     spdlog::info("Restored {} messages from session", messages_.size());
+    // Restored messages are already on disk (or came from a transcript), so mark
+    // them persisted — don't re-append them to the JSONL on the next flush.
+    lastPersistedIndex_ = messages_.size();
 }
 
 } // namespace closecrab

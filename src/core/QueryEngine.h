@@ -121,6 +121,12 @@ private:
     // Lazily initialized to config_.cwd on first tool call.
     std::string sessionCwd_;
 
+    // JSONL transcript append (Bug C, JackProAi sessionStorage model): index of
+    // the next message not yet written to the .jsonl. persistTranscriptDelta()
+    // appends messages_[lastPersistedIndex_..] and advances it.
+    size_t lastPersistedIndex_ = 0;
+    void persistTranscriptDelta();
+
     // Real token usage from last API response (for accurate pre-flight checks)
     int64_t lastKnownInputTokens_ = 0;
     int lastKnownTokensAtMessageIndex_ = 0;

@@ -5,6 +5,7 @@
 #include "../memory/MemorySystem.h"
 #include "../memory/SessionSearch.h"
 #include "../core/SessionManager.h"
+#include "../core/TranscriptStore.h"
 #include "../services/CompactSummary.h"
 #include <filesystem>
 #include <fstream>
@@ -49,22 +50,18 @@ public:
     std::string getDescription() const override { return "List recent sessions and restore one"; }
 
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
-        std::string dbPath = "data/closecrab.db";
-        SessionManager mgr(dbPath);
-
-        // If a specific session/fork ID is passed directly, try to restore it
+        // If a specific fork/session ID is passed directly, try to restore it.
         if (!args.empty() && args.find_first_not_of("0123456789") != std::string::npos) {
-            // Check if it's a fork file first
             namespace fs = std::filesystem;
             std::string forkPath = "data/forks/" + args + ".json";
             if (fs::exists(forkPath)) {
                 return restoreFork(forkPath, args, ctx);
             }
-            return restoreSession(args, mgr, ctx);
+            return restoreSessionId(args, ctx);
         }
 
-        // List recent sessions
-        auto sessions = mgr.listSessions(10);
+        // List recent sessions from the JSONL transcripts (JackProAi model).
+        auto sessions = TranscriptStore::list(10);
         if (sessions.empty()) {
             ctx.print("No saved sessions found.\n");
             return CommandResult::ok();
@@ -73,24 +70,17 @@ public:
         ctx.print("\n\033[1mRecent sessions:\033[0m\n");
         for (size_t i = 0; i < sessions.size(); i++) {
             auto& s = sessions[i];
-            std::string timestamp = formatTimestamp(s->updatedAt);
-            std::string preview = extractPreview(s->context);
-            int msgCount = countMessages(s->context);
-
+            std::string timestamp = formatTimestamp(s.mtime);
+            std::string preview = s.firstUserPreview.empty() ? "(session data)" : s.firstUserPreview;
             ctx.print("  \033[36m" + std::to_string(i + 1) + ".\033[0m [" + timestamp + "] ");
             ctx.print("\"" + preview + "\"");
-            if (msgCount > 0) {
-                ctx.print(" (" + std::to_string(msgCount) + " messages)");
-            }
-            ctx.print("\n");
+            ctx.print(" (" + std::to_string(s.messageCount) + " messages)\n");
         }
         ctx.print("\nEnter number to restore (or press Enter for most recent): ");
 
-        // Read user choice
         std::string input;
         std::getline(std::cin, input);
 
-        // Default to most recent
         int choice = 0;
         if (!input.empty()) {
             try {
@@ -100,13 +90,12 @@ public:
                 return CommandResult::ok();
             }
         }
-
         if (choice < 0 || choice >= (int)sessions.size()) {
             ctx.print("Invalid selection.\n");
             return CommandResult::ok();
         }
 
-        return restoreSession(sessions[choice]->id, mgr, ctx);
+        return restoreSessionId(sessions[choice].sessionId, ctx);
     }
 
 private:
@@ -123,6 +112,25 @@ private:
             ctx.print("Failed to restore fork: " + std::string(e.what()) + "\n");
         }
         return CommandResult::ok();
+    }
+
+    // Restore from the JSONL transcript (JackProAi sessionStorage model).
+    // Falls back to the legacy SQLite context blob for sessions saved before
+    // the transcript switch.
+    CommandResult restoreSessionId(const std::string& sessionId, CommandContext& ctx) {
+        auto msgs = TranscriptStore::load(sessionId);
+        if (!msgs.empty()) {
+            // Serialize to the deserializeMessages shape and hand off.
+            nlohmann::json arr = nlohmann::json::array();
+            for (const auto& m : msgs) arr.push_back(TranscriptStore::messageToEntry(m));
+            ctx.queryEngine->deserializeMessages(arr);
+            ctx.print("Restored " + std::to_string(ctx.queryEngine->getMessages().size()) +
+                      " messages from session [" + sessionId + "]\n");
+            return CommandResult::ok();
+        }
+        // Legacy fallback: SQLite context blob.
+        SessionManager mgr("data/closecrab.db");
+        return restoreSession(sessionId, mgr, ctx);
     }
 
     CommandResult restoreSession(const std::string& sessionId, SessionManager& mgr, CommandContext& ctx) {
@@ -156,14 +164,18 @@ private:
         if (context.empty() || context == "{}") return "(empty)";
         try {
             auto data = nlohmann::json::parse(context);
-            // Try to find the first user message as preview
-            if (data.contains("messages") && data["messages"].is_array() && !data["messages"].empty()) {
-                for (const auto& msg : data["messages"]) {
-                    if (msg.contains("role") && msg["role"] == "user" && msg.contains("content")) {
-                        std::string text = msg["content"].get<std::string>();
-                        if (text.size() > 50) text = text.substr(0, 50) + "...";
-                        return text;
-                    }
+            // Stored format is a bare ARRAY of {role, text, content:[...]}
+            // (QueryEngine::serializeMessages). Find the first user message.
+            const nlohmann::json* arr = nullptr;
+            if (data.is_array()) arr = &data;
+            else if (data.contains("messages") && data["messages"].is_array()) arr = &data["messages"];
+            if (arr) {
+                for (const auto& msg : *arr) {
+                    if (msg.value("role", "") != "user") continue;
+                    std::string text = msgText(msg);
+                    if (text.empty()) continue;
+                    if (text.size() > 50) text = text.substr(0, 50) + "...";
+                    return text;
                 }
             }
         } catch (...) {}
@@ -174,11 +186,28 @@ private:
         if (context.empty() || context == "{}") return 0;
         try {
             auto data = nlohmann::json::parse(context);
-            if (data.contains("messages") && data["messages"].is_array()) {
+            if (data.is_array()) return (int)data.size();
+            if (data.contains("messages") && data["messages"].is_array())
                 return (int)data["messages"].size();
-            }
         } catch (...) {}
         return 0;
+    }
+
+    // Extract display text from a stored message in either shape:
+    // {text:"..."} (serializeMessages) or {content:[{text:"..."}]} (toApiJson).
+    static std::string msgText(const nlohmann::json& msg) {
+        if (msg.contains("text") && msg["text"].is_string())
+            return msg["text"].get<std::string>();
+        if (msg.contains("content")) {
+            if (msg["content"].is_string()) return msg["content"].get<std::string>();
+            if (msg["content"].is_array()) {
+                for (const auto& b : msg["content"]) {
+                    if (b.contains("text") && b["text"].is_string())
+                        return b["text"].get<std::string>();
+                }
+            }
+        }
+        return "";
     }
 };
 
