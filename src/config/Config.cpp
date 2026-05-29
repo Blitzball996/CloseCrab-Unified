@@ -13,22 +13,46 @@ YAML::Node Config::getNode(const std::string& key) const {
         return YAML::Node();
     }
 
-    YAML::Node current = root;
-    size_t start = 0;
-    size_t dot;
-    do {
-        dot = key.find('.', start);
-        std::string part = key.substr(start, dot - start);
-        if (!current.IsMap() || !current[part].IsDefined()) {
-            spdlog::debug("getNode: part '{}' not found", part);
-            return YAML::Node();
+    // Use direct bracket access without reassigning Node references.
+    // yaml-cpp Node has reference semantics — "Node current = root" creates
+    // a reference, and "current = current[part]" can corrupt the original root
+    // in some versions. Access via root["a"]["b"] directly instead.
+    size_t dot = key.find('.');
+    if (dot == std::string::npos) {
+        // Simple key (no dots)
+        if (root[key].IsDefined()) {
+            return root[key];
         }
-        current = current[part];
-        start = dot + 1;
-    } while (dot != std::string::npos);
+        spdlog::debug("getNode: part '{}' not found", key);
+        return YAML::Node();
+    }
 
-    spdlog::debug("getNode: success, node is scalar? {}", current.IsScalar());
-    return current;
+    // Dotted key: split into parts and access nested
+    std::string first = key.substr(0, dot);
+    std::string rest = key.substr(dot + 1);
+    if (!root[first].IsDefined() || !root[first].IsMap()) {
+        spdlog::debug("getNode: part '{}' not found", first);
+        return YAML::Node();
+    }
+
+    // Second level
+    size_t dot2 = rest.find('.');
+    if (dot2 == std::string::npos) {
+        if (root[first][rest].IsDefined()) {
+            return root[first][rest];
+        }
+        spdlog::debug("getNode: part '{}' not found in '{}'", rest, first);
+        return YAML::Node();
+    }
+
+    // Third level (max depth we need)
+    std::string second = rest.substr(0, dot2);
+    std::string third = rest.substr(dot2 + 1);
+    if (root[first][second].IsDefined() && root[first][second][third].IsDefined()) {
+        return root[first][second][third];
+    }
+    spdlog::debug("getNode: deep key '{}' not found", key);
+    return YAML::Node();
 }
 
 bool Config::load(const std::string& filename) {
