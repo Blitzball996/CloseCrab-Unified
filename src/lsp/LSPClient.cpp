@@ -1,6 +1,11 @@
 #include "LSPClient.h"
 #include <spdlog/spdlog.h>
 #include <sstream>
+#ifndef _WIN32
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace closecrab {
 
