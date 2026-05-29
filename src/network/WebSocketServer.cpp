@@ -80,14 +80,13 @@ void WebSocketServer::start() {
 
             auto res = pImpl->server->listen();
             if (!res.first) {
-                // ��ȡ��ϸ������Ϣ
+#ifdef _WIN32
                 int errorCode = WSAGetLastError();
                 spdlog::error("========================================");
                 spdlog::error("WebSocket server failed to start");
                 spdlog::error("  Error message: {}", res.second);
                 spdlog::error("  Windows error code: {}", errorCode);
 
-                // ��������ԭ��
                 if (errorCode == WSAEADDRINUSE) {
                     spdlog::error("  Cause: Port {} is already in use", pImpl->port);
                     spdlog::error("  Solution: Use a different port with --ws-port <port>");
@@ -104,6 +103,9 @@ void WebSocketServer::start() {
                     spdlog::error("  Cause: Unknown error");
                 }
                 spdlog::error("========================================");
+#else
+                spdlog::error("WebSocket server failed to start: {}", res.second);
+#endif
                 spdlog::error("WebSocket server will be disabled. Use --no-ws to suppress this message.");
 
                 pImpl->running = false;
@@ -134,8 +136,9 @@ void WebSocketServer::stop() {
 
     pImpl->running = false;
 
-    // ���� Winsock
+#ifdef _WIN32
     WSACleanup();
+#endif
 
     spdlog::info("WebSocket server stopped");
 }
