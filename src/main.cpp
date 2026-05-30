@@ -110,6 +110,8 @@
 #endif
 #include <thread>
 #include <atomic>
+#include <deque>
+#include <mutex>
 
 namespace fs = std::filesystem;
 using namespace closecrab;
@@ -1051,6 +1053,12 @@ Then work step by step using your tools to complete the task.)";
     }
 
     bool running = true;
+    // Bug B (route A): inputs typed WHILE a turn is running are collected by the
+    // Esc-watcher into this queue (JackProAi messageQueueManager behavior — type
+    // ahead / queue the next message, run /commands like /btw). Drained at the top
+    // of the loop before reading the console.
+    std::deque<std::string> queuedInputs;
+    std::mutex queueMtx;
     while (running) {
         // Sync vim mode with appState (toggled by /vim command)
         vimInput.setEnabled(appState.vimMode);
@@ -1073,8 +1081,21 @@ Then work step by step using your tools to complete the task.)";
         std::cout << vimInput.getModeIndicator() << tokenHint
                   << ansi::cyan() << "> " << ansi::reset() << std::flush;
 
-        // Voice input: if ASR is active and has a transcript, use it instead of keyboard
+        // Bug B: if the user queued input during the previous turn, process that
+        // first instead of blocking on the console.
         std::string input;
+        {
+            std::lock_guard<std::mutex> lk(queueMtx);
+            if (!queuedInputs.empty()) {
+                input = queuedInputs.front();
+                queuedInputs.pop_front();
+            }
+        }
+        if (!input.empty()) {
+            std::cout << ansi::dim() << "[queued] " << ansi::reset() << input << "\n";
+        } else {
+
+        // Voice input: if ASR is active and has a transcript, use it instead of keyboard
         auto& voiceEng = VoiceEngine::getInstance();
         if (voiceEng.isListening()) {
             std::string transcript = voiceEng.getLastTranscript();
@@ -1102,6 +1123,7 @@ Then work step by step using your tools to complete the task.)";
             if (std::cin.eof()) break;
             input += cont;
         }
+        } // end: not-queued console-input branch
 
         // Vim mode processing
         if (vimInput.isEnabled()) {
@@ -1141,14 +1163,18 @@ Then work step by step using your tools to complete the task.)";
         firstToken = true;
         spinner.start("Waiting for response...");
 
-        // Esc-to-abort: a background watcher polls for the Esc key WHILE the turn
-        // runs. On Esc it calls interrupt() (→ interrupted_ → curl XFERINFO aborts
-        // the in-flight stream + the turn/tool loop stops) and tells the user.
-        // Stopped right after submitMessage returns so it never eats normal input.
+        // Esc-to-abort + type-ahead queue (Bug B route A, JackProAi
+        // messageQueueManager behavior). While the turn runs, a background watcher:
+        //  - Esc → interrupt() (aborts stream + turn loop) and notifies the user
+        //  - printable keys → collected into a line buffer (echoed dim) and, on
+        //    Enter, pushed to queuedInputs to run after the current turn.
+        // Stopped/joined right after submitMessage returns so it never races the
+        // console read of the next prompt.
         std::atomic<bool> watching{true};
         std::atomic<bool> aborted{false};
-        std::thread escWatcher([&watching, &aborted, &spinner]() {
+        std::thread escWatcher([&watching, &aborted, &spinner, &queuedInputs, &queueMtx]() {
 #ifdef _WIN32
+            std::string lineBuf;
             while (watching.load()) {
                 if (_kbhit()) {
                     int ch = _getch();
@@ -1159,12 +1185,32 @@ Then work step by step using your tools to complete the task.)";
                         std::cout << "\n" << ansi::yellow()
                                   << "  [Aborted by Esc — stopping current task...]"
                                   << ansi::reset() << "\n" << std::flush;
+                        lineBuf.clear();
+                    } else if (ch == '\r' || ch == '\n') { // Enter → queue the line
+                        if (!lineBuf.empty()) {
+                            {
+                                std::lock_guard<std::mutex> lk(queueMtx);
+                                queuedInputs.push_back(lineBuf);
+                            }
+                            std::cout << "\n" << ansi::dim()
+                                      << "  [queued for after this turn: " << lineBuf << "]"
+                                      << ansi::reset() << "\n" << std::flush;
+                            lineBuf.clear();
+                        }
+                    } else if (ch == 8 || ch == 127) { // Backspace
+                        if (!lineBuf.empty()) {
+                            lineBuf.pop_back();
+                            std::cout << "\b \b" << std::flush;
+                        }
+                    } else if (ch == 0 || ch == 224) { // arrow/function keys
+                        _getch(); // swallow the second byte
+                    } else if (ch >= 32 && ch < 127) { // printable
+                        lineBuf.push_back((char)ch);
+                        // Echo dimly so the user sees what they're queuing.
+                        std::cout << ansi::dim() << (char)ch << ansi::reset() << std::flush;
                     }
-                    // swallow other keys while running (avoid them leaking into
-                    // the next prompt); arrow/function keys send 0/224 prefix.
-                    else if (ch == 0 || ch == 224) { _getch(); }
                 }
-                std::this_thread::sleep_for(std::chrono::milliseconds(40));
+                std::this_thread::sleep_for(std::chrono::milliseconds(30));
             }
 #endif
         });
