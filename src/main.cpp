@@ -1068,34 +1068,30 @@ Then work step by step using your tools to complete the task.)";
     }
 
     bool running = true;
-    // Bug B (route A): inputs typed WHILE a turn is running are collected by the
-    // key-watcher into this queue (JackProAi messageQueueManager behavior — type
-    // ahead / queue the next message, run /commands like /btw). Drained at the top
-    // of the loop before reading the console.
+    // NOTE: type-ahead (queuing input typed WHILE a turn runs) is DISABLED — it
+    // crashed mid-turn on Windows. These remain only so the (now always-empty)
+    // drain code below is a harmless no-op. Type at the prompt between turns.
     std::deque<std::string> queuedInputs;
     std::mutex queueMtx;
 
-    // ---- Persistent key-watcher thread (Esc-abort + type-ahead) ----
+    // ---- Persistent key-watcher thread (Esc-abort ONLY) ----
     // LESSON FROM commit eb6540c: on Windows/MSVC, creating+joining a std::thread
-    // per turn corrupts the CRT heap (deterministic 0x000003E8.. fault). So — like
-    // the Spinner — this watcher is ONE thread that lives for the whole session and
-    // is merely armed/disarmed per turn via an atomic flag.
-    // IT IS ALSO FORBIDDEN from touching std::cout or the spinner: the spinner has
-    // its own writer thread and the main thread streams output; an unsynchronized
-    // 3-way console write hard-crashes (ACCESS_VIOLATION, no C++ exception — that's
-    // the "闪退" on Esc/typing). The watcher therefore only does atomic / queue-
-    // locked work; ALL display for it happens on the main thread after disarm.
+    // per turn corrupts the CRT heap. So — like the Spinner — this is ONE thread
+    // that lives for the whole session, armed/disarmed per turn via an atomic.
+    // It does the ABSOLUTE MINIMUM: read a key, and if it's Esc, set an atomic to
+    // abort. It NEVER allocates (no line buffer), NEVER writes std::cout, and
+    // NEVER touches the spinner. Type-ahead was removed because collecting typed
+    // keys (heap push_back) + streaming output concurrently hard-crashed; every
+    // key now takes the same trivial no-heap path that Esc always did safely.
     std::atomic<bool> kwTurnActive{false}; // armed only while a turn is in flight
     std::atomic<bool> kwAborted{false};    // set when Esc was pressed this turn
     std::atomic<bool> kwShutdown{false};   // set once at program exit
     std::thread keyWatcher([&]() {
 #ifdef _WIN32
-        std::string lineBuf;
         while (!kwShutdown.load()) {
             if (!kwTurnActive.load()) {
                 // Idle between turns: the main thread owns the console
                 // (ReadConsoleW), so we must NOT call _getch here.
-                if (!lineBuf.empty()) lineBuf.clear();
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 continue;
             }
@@ -1110,20 +1106,10 @@ Then work step by step using your tools to complete the task.)";
                 if (ch == 27) {                        // Esc → abort the turn
                     if (g_queryEngine) g_queryEngine->interrupt();
                     kwAborted = true;
-                    lineBuf.clear();
-                } else if (ch == '\r' || ch == '\n') { // Enter → queue the line
-                    if (!lineBuf.empty()) {
-                        std::lock_guard<std::mutex> lk(queueMtx);
-                        queuedInputs.push_back(lineBuf);
-                        lineBuf.clear();
-                    }
-                } else if (ch == 8 || ch == 127) {     // Backspace
-                    if (!lineBuf.empty()) lineBuf.pop_back();
                 } else if (ch == 0 || ch == 224) {     // arrow/function key
-                    _getch();                          // swallow the second byte
-                } else if (ch >= 32 && ch < 127) {     // printable
-                    lineBuf.push_back((char)ch);
+                    _getch();                          // swallow the 2nd byte
                 }
+                // Any other key is read and discarded (type-ahead disabled).
             } else {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
@@ -1235,7 +1221,7 @@ Then work step by step using your tools to complete the task.)";
         firstToken = true;
         spinner.start("Waiting for response...");
 
-        // Arm the persistent key-watcher for this turn (Esc-abort + type-ahead).
+        // Arm the persistent key-watcher for this turn (Esc-abort only).
         // No thread is created here — see keyWatcher declared before the loop.
         kwAborted = false;
         kwTurnActive = true;
