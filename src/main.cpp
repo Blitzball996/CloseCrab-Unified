@@ -92,6 +92,7 @@
 #include "network/MobileWebSocket.h"
 #include "ui/KeyboardSelector.h"
 #include "ui/OutputCollapse.h"
+#include "utils/SyntaxHighlight.h"
 
 // Commands
 #include "commands/GitCommands.h"
@@ -840,16 +841,25 @@ Then work step by step using your tools to complete the task.)";
                     std::cout << ansi::dim() << "  [" << collapsed.totalLines << " total lines]" << ansi::reset();
                 }
             }
-            // 3.1: render the Edit/Write diff so the user SEES what changed
-            // (green +, red -, dim context). The diff lives in result.data only.
+            // 3.1/3.2: render the Edit/Write diff with syntax highlighting so the
+            // user SEES what changed (green +, red -, dim context) AND the code is
+            // colored. The diff lives in result.data only.
             if ((name == "Edit" || name == "Write") && result.data.is_object()
                 && result.data.contains("diff") && result.data["diff"].is_array()) {
+                // Language from file extension for highlighting.
+                std::string fp = result.data.value("filePath", "");
+                std::string ext;
+                { size_t dot = fp.find_last_of('.'); if (dot != std::string::npos) ext = fp.substr(dot + 1); }
+                std::string lang = SyntaxHighlight::langFromHint(ext);
+                bool blk = false;
                 std::cout << "\n";
                 for (const auto& d : result.data["diff"]) {
                     std::string op = d.value("op", " ");
                     std::string text = d.value("text", "");
-                    if (op == "+")      std::cout << ansi::green() << "  + " << text << ansi::reset() << "\n";
-                    else if (op == "-") std::cout << ansi::red()   << "  - " << text << ansi::reset() << "\n";
+                    std::string hl = lang.empty() ? text : SyntaxHighlight::line(text, lang, blk);
+                    if (op == "+")      std::cout << ansi::green() << "  + " << ansi::reset() << hl << "\n";
+                    else if (op == "-") std::cout << ansi::red()   << "  - " << ansi::reset()
+                                                  << ansi::red() << text << ansi::reset() << "\n";
                     else                std::cout << ansi::dim()   << "    " << text << ansi::reset() << "\n";
                 }
                 std::cout << std::flush;
