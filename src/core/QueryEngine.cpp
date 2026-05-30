@@ -205,6 +205,9 @@ ModelConfig QueryEngine::buildModelConfig() const {
     // a future fire-and-forget code path; we leave the default false here.
     mc.skipCacheWrite = false;
 
+    // Esc/abort: let curl abort the in-flight stream the moment interrupt() fires.
+    mc.abortFlag = &interrupted_;
+
     if (config_.appState) {
         mc.thinkingEnabled = config_.appState->thinkingConfig.enabled;
         mc.thinkingBudgetTokens = config_.appState->thinkingConfig.budgetTokens;

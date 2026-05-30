@@ -414,7 +414,8 @@ static void performCurlSSE(
     const std::string& url,
     const std::string& bodyStr,
     const std::string& apiKey,
-    CurlStreamCtx& curlCtx
+    CurlStreamCtx& curlCtx,
+    const std::atomic<bool>* abortFlag = nullptr
 ) {
     CURL* curl = curl_easy_init();
     if (!curl) {
@@ -456,10 +457,22 @@ static void performCurlSSE(
     curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
 
     // Timeouts: 600s overall, 30s connect. No LOW_SPEED (kills thinking pauses).
-    // No progress callback (caused ACCESS_VIOLATION segfault).
-    // claude-code's 90s idle watchdog uses JS setTimeout, not CURL callbacks.
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+
+    // Esc/abort: a MINIMAL progress callback that only reads the atomic abort
+    // flag and returns 1 to abort. (The historical ACCESS_VIOLATION was from a
+    // complex idle-watchdog callback doing timing work on possibly-freed state —
+    // not from the progress mechanism itself. This one touches nothing else.)
+    if (abortFlag) {
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, (void*)abortFlag);
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION,
+            +[](void* p, curl_off_t, curl_off_t, curl_off_t, curl_off_t) -> int {
+                auto* flag = static_cast<const std::atomic<bool>*>(p);
+                return (flag && flag->load()) ? 1 : 0; // non-zero → abort transfer
+            });
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    }
 
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
@@ -554,7 +567,7 @@ void RemoteAPIClient::streamChat(
                 FILE* trace = fopen("trace.log", "a");
                 if (trace) { fprintf(trace, "[%d] pre-curl bodySize=%zu\n", attempt, bodyStr.size()); fclose(trace); }
             }
-            performCurlSSE(url, bodyStr, apiKey_, curlCtx);
+            performCurlSSE(url, bodyStr, apiKey_, curlCtx, config.abortFlag);
             {
                 FILE* trace = fopen("trace.log", "a");
                 if (trace) { fprintf(trace, "[%d] post-curl OK\n", attempt); fclose(trace); }
@@ -562,6 +575,12 @@ void RemoteAPIClient::streamChat(
             parser.finish();
             return; // Success
         } catch (const APIError& e) {
+            // Esc/abort: if the user interrupted, the curl abort surfaces as a
+            // retryable network error — do NOT retry, stop immediately.
+            if (config.abortFlag && config.abortFlag->load()) {
+                spdlog::info("Stream aborted by user (Esc)");
+                return;
+            }
             if (!isRetryable(e.type)) throw;
 
             consecutive503++;

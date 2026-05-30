@@ -104,8 +104,11 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <conio.h>
 #pragma comment(lib, "ws2_32.lib")
 #endif
+#include <thread>
+#include <atomic>
 
 namespace fs = std::filesystem;
 using namespace closecrab;
@@ -1113,6 +1116,35 @@ Then work step by step using your tools to complete the task.)";
         streamState = StreamState::WAITING;
         firstToken = true;
         spinner.start("Waiting for response...");
+
+        // Esc-to-abort: a background watcher polls for the Esc key WHILE the turn
+        // runs. On Esc it calls interrupt() (→ interrupted_ → curl XFERINFO aborts
+        // the in-flight stream + the turn/tool loop stops) and tells the user.
+        // Stopped right after submitMessage returns so it never eats normal input.
+        std::atomic<bool> watching{true};
+        std::atomic<bool> aborted{false};
+        std::thread escWatcher([&watching, &aborted, &spinner]() {
+#ifdef _WIN32
+            while (watching.load()) {
+                if (_kbhit()) {
+                    int ch = _getch();
+                    if (ch == 27) { // Esc
+                        if (g_queryEngine) g_queryEngine->interrupt();
+                        aborted = true;
+                        spinner.stop();
+                        std::cout << "\n" << ansi::yellow()
+                                  << "  [Aborted by Esc — stopping current task...]"
+                                  << ansi::reset() << "\n" << std::flush;
+                    }
+                    // swallow other keys while running (avoid them leaking into
+                    // the next prompt); arrow/function keys send 0/224 prefix.
+                    else if (ch == 0 || ch == 224) { _getch(); }
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(40));
+            }
+#endif
+        });
+
         try {
             g_queryEngine->submitMessage(input, callbacks);
         } catch (const std::exception& e) {
@@ -1127,6 +1159,13 @@ Then work step by step using your tools to complete the task.)";
             std::cerr << ansi::red() << "Error: unexpected exception" << ansi::reset() << "\n";
             std::cerr << ansi::dim() << "(Returned to prompt.)" << ansi::reset() << "\n";
             spdlog::error("submitMessage unknown exception");
+        }
+
+        // Stop the watcher before reading the next prompt.
+        watching = false;
+        if (escWatcher.joinable()) escWatcher.join();
+        if (aborted.load()) {
+            std::cout << ansi::dim() << "  (Stopped. Returned to prompt.)" << ansi::reset() << "\n";
         }
     }
 

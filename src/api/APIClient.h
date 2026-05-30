@@ -4,6 +4,7 @@
 #include <vector>
 #include <functional>
 #include <memory>
+#include <atomic>
 #include <nlohmann/json.hpp>
 #include "../core/Message.h"
 
@@ -68,6 +69,11 @@ struct ModelConfig {
     // the SECOND-to-last message instead of the last, so the fork READS the
     // parent's cached prefix but does not WRITE its own tail into the cache.
     bool skipCacheWrite = false;
+
+    // Esc/abort signal: when set true mid-stream, the curl transfer aborts
+    // immediately (CURLOPT_XFERINFOFUNCTION). Points at QueryEngine::interrupted_.
+    // const because we only ever READ it on the API side.
+    const std::atomic<bool>* abortFlag = nullptr;
 };
 
 // ============================================================
