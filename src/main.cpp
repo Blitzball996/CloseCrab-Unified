@@ -1054,11 +1054,62 @@ Then work step by step using your tools to complete the task.)";
 
     bool running = true;
     // Bug B (route A): inputs typed WHILE a turn is running are collected by the
-    // Esc-watcher into this queue (JackProAi messageQueueManager behavior — type
+    // key-watcher into this queue (JackProAi messageQueueManager behavior — type
     // ahead / queue the next message, run /commands like /btw). Drained at the top
     // of the loop before reading the console.
     std::deque<std::string> queuedInputs;
     std::mutex queueMtx;
+
+    // ---- Persistent key-watcher thread (Esc-abort + type-ahead) ----
+    // LESSON FROM commit eb6540c: on Windows/MSVC, creating+joining a std::thread
+    // per turn corrupts the CRT heap (deterministic 0x000003E8.. fault). So — like
+    // the Spinner — this watcher is ONE thread that lives for the whole session and
+    // is merely armed/disarmed per turn via an atomic flag.
+    // IT IS ALSO FORBIDDEN from touching std::cout or the spinner: the spinner has
+    // its own writer thread and the main thread streams output; an unsynchronized
+    // 3-way console write hard-crashes (ACCESS_VIOLATION, no C++ exception — that's
+    // the "闪退" on Esc/typing). The watcher therefore only does atomic / queue-
+    // locked work; ALL display for it happens on the main thread after disarm.
+    std::atomic<bool> kwTurnActive{false}; // armed only while a turn is in flight
+    std::atomic<bool> kwAborted{false};    // set when Esc was pressed this turn
+    std::atomic<bool> kwShutdown{false};   // set once at program exit
+    std::thread keyWatcher([&]() {
+#ifdef _WIN32
+        std::string lineBuf;
+        while (!kwShutdown.load()) {
+            if (!kwTurnActive.load()) {
+                // Idle between turns: the main thread owns the console
+                // (ReadConsoleW), so we must NOT call _getch here.
+                if (!lineBuf.empty()) lineBuf.clear();
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                continue;
+            }
+            if (_kbhit()) {
+                int ch = _getch();
+                if (ch == 27) {                        // Esc → abort the turn
+                    if (g_queryEngine) g_queryEngine->interrupt();
+                    kwAborted = true;
+                    lineBuf.clear();
+                } else if (ch == '\r' || ch == '\n') { // Enter → queue the line
+                    if (!lineBuf.empty()) {
+                        std::lock_guard<std::mutex> lk(queueMtx);
+                        queuedInputs.push_back(lineBuf);
+                        lineBuf.clear();
+                    }
+                } else if (ch == 8 || ch == 127) {     // Backspace
+                    if (!lineBuf.empty()) lineBuf.pop_back();
+                } else if (ch == 0 || ch == 224) {     // arrow/function key
+                    _getch();                          // swallow the second byte
+                } else if (ch >= 32 && ch < 127) {     // printable
+                    lineBuf.push_back((char)ch);
+                }
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+        }
+#endif
+    });
+
     while (running) {
         // Sync vim mode with appState (toggled by /vim command)
         vimInput.setEnabled(appState.vimMode);
@@ -1163,57 +1214,10 @@ Then work step by step using your tools to complete the task.)";
         firstToken = true;
         spinner.start("Waiting for response...");
 
-        // Esc-to-abort + type-ahead queue (Bug B route A, JackProAi
-        // messageQueueManager behavior). While the turn runs, a background watcher:
-        //  - Esc → interrupt() (aborts stream + turn loop) and notifies the user
-        //  - printable keys → collected into a line buffer (echoed dim) and, on
-        //    Enter, pushed to queuedInputs to run after the current turn.
-        // Stopped/joined right after submitMessage returns so it never races the
-        // console read of the next prompt.
-        std::atomic<bool> watching{true};
-        std::atomic<bool> aborted{false};
-        std::thread escWatcher([&watching, &aborted, &spinner, &queuedInputs, &queueMtx]() {
-#ifdef _WIN32
-            std::string lineBuf;
-            while (watching.load()) {
-                if (_kbhit()) {
-                    int ch = _getch();
-                    if (ch == 27) { // Esc
-                        if (g_queryEngine) g_queryEngine->interrupt();
-                        aborted = true;
-                        spinner.stop();
-                        std::cout << "\n" << ansi::yellow()
-                                  << "  [Aborted by Esc — stopping current task...]"
-                                  << ansi::reset() << "\n" << std::flush;
-                        lineBuf.clear();
-                    } else if (ch == '\r' || ch == '\n') { // Enter → queue the line
-                        if (!lineBuf.empty()) {
-                            {
-                                std::lock_guard<std::mutex> lk(queueMtx);
-                                queuedInputs.push_back(lineBuf);
-                            }
-                            std::cout << "\n" << ansi::dim()
-                                      << "  [queued for after this turn: " << lineBuf << "]"
-                                      << ansi::reset() << "\n" << std::flush;
-                            lineBuf.clear();
-                        }
-                    } else if (ch == 8 || ch == 127) { // Backspace
-                        if (!lineBuf.empty()) {
-                            lineBuf.pop_back();
-                            std::cout << "\b \b" << std::flush;
-                        }
-                    } else if (ch == 0 || ch == 224) { // arrow/function keys
-                        _getch(); // swallow the second byte
-                    } else if (ch >= 32 && ch < 127) { // printable
-                        lineBuf.push_back((char)ch);
-                        // Echo dimly so the user sees what they're queuing.
-                        std::cout << ansi::dim() << (char)ch << ansi::reset() << std::flush;
-                    }
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(30));
-            }
-#endif
-        });
+        // Arm the persistent key-watcher for this turn (Esc-abort + type-ahead).
+        // No thread is created here — see keyWatcher declared before the loop.
+        kwAborted = false;
+        kwTurnActive = true;
 
         try {
             g_queryEngine->submitMessage(input, callbacks);
@@ -1231,13 +1235,32 @@ Then work step by step using your tools to complete the task.)";
             spdlog::error("submitMessage unknown exception");
         }
 
-        // Stop the watcher before reading the next prompt.
-        watching = false;
-        if (escWatcher.joinable()) escWatcher.join();
-        if (aborted.load()) {
-            std::cout << ansi::dim() << "  (Stopped. Returned to prompt.)" << ansi::reset() << "\n";
+        // Disarm the watcher before reading the next prompt. It is NOT joined per
+        // turn (that would reintroduce the eb6540c heap-corruption crash) — it just
+        // stops calling _getch, so the main thread alone owns the console and the
+        // std::cout below. All watcher-related display happens HERE.
+        kwTurnActive = false;
+        spinner.stop();
+        if (kwAborted.load()) {
+            std::cout << "\n" << ansi::yellow()
+                      << "  [Stopped by Esc. Returned to prompt.]"
+                      << ansi::reset() << "\n" << std::flush;
+        }
+        {
+            std::lock_guard<std::mutex> lk(queueMtx);
+            if (!queuedInputs.empty()) {
+                std::cout << ansi::dim() << "  ["
+                          << queuedInputs.size()
+                          << " queued message(s) will run next]" << ansi::reset()
+                          << "\n" << std::flush;
+            }
         }
     }
+
+    // Shut down the persistent key-watcher (single join for the whole session —
+    // mirrors the Spinner's lifecycle; never per-turn, per eb6540c).
+    kwShutdown = true;
+    if (keyWatcher.joinable()) keyWatcher.join();
 
     // ---- Cleanup ----
     // Auto-extract memories from conversation
