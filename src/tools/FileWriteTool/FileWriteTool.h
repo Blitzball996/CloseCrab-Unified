@@ -3,6 +3,7 @@
 #include "../Tool.h"
 #include "../../core/FileStateCache.h"
 #include "../../utils/StringUtils.h"
+#include "../../utils/DiffRender.h"
 #include <fstream>
 #include <sstream>
 #include <filesystem>
@@ -77,6 +78,17 @@ public:
             fs::create_directories(parentDir, ec);
         }
 
+        // 3.1: capture old content (if any) so we can show a diff of the overwrite.
+        std::string oldContent;
+        bool existed = false;
+        {
+            std::ifstream inFile(fsPath, std::ios::binary);
+            if (inFile.is_open()) {
+                oldContent.assign((std::istreambuf_iterator<char>(inFile)), {});
+                existed = true;
+            }
+        }
+
         std::ofstream file(fsPath, std::ios::binary);
         if (!file.is_open()) {
             return ToolResult::fail(
@@ -119,7 +131,13 @@ public:
             (*ctx.readFileState)[normalizePathKey(path)] = rs;
         }
 
-        return ToolResult::ok(msg);
+        // 3.1: attach a diff for the UI. For an overwrite, old→new; for a brand
+        // new file, show the content as all-added (capped by DiffRender).
+        nlohmann::json okData;
+        okData["diff"] = DiffRender::build(existed ? oldContent : std::string(), content);
+        okData["filePath"] = path;
+        okData["created"] = !existed;
+        return ToolResult::ok(msg, okData);
     }
 
     std::string getActivityDescription(const nlohmann::json& input) const override {

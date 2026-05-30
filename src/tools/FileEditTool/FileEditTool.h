@@ -3,6 +3,7 @@
 #include "../Tool.h"
 #include "../../core/FileStateCache.h"
 #include "../../utils/StringUtils.h"
+#include "../../utils/DiffRender.h"
 #include <fstream>
 #include <sstream>
 #include <filesystem>
@@ -158,8 +159,13 @@ public:
                 rs.isPartialView = false;
                 (*ctx.readFileState)[normalizePathKey(path)] = rs;
             }
+            // 3.1: attach a compact diff for the UI (NOT sent to the model — stays
+            // out of the tool_result text, only in .data, per the §7 token rule).
+            nlohmann::json okData;
+            okData["diff"] = DiffRender::build(content, modified);
+            okData["filePath"] = path;
             return ToolResult::ok("Replaced lines " + std::to_string(lineStart) + "-" +
-                std::to_string(lineEnd) + " in " + path);
+                std::to_string(lineEnd) + " in " + path, okData);
         }
 
         // old_string mode
@@ -240,7 +246,10 @@ public:
             rs.isPartialView = false;
             (*ctx.readFileState)[normalizePathKey(path)] = rs;
         }
-        return ToolResult::ok(msg);
+        nlohmann::json okData;
+        okData["diff"] = DiffRender::build(content, modified);
+        okData["filePath"] = path;
+        return ToolResult::ok(msg, okData);
     }
 
     std::string getActivityDescription(const nlohmann::json& input) const override {

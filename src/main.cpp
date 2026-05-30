@@ -840,6 +840,20 @@ Then work step by step using your tools to complete the task.)";
                     std::cout << ansi::dim() << "  [" << collapsed.totalLines << " total lines]" << ansi::reset();
                 }
             }
+            // 3.1: render the Edit/Write diff so the user SEES what changed
+            // (green +, red -, dim context). The diff lives in result.data only.
+            if ((name == "Edit" || name == "Write") && result.data.is_object()
+                && result.data.contains("diff") && result.data["diff"].is_array()) {
+                std::cout << "\n";
+                for (const auto& d : result.data["diff"]) {
+                    std::string op = d.value("op", " ");
+                    std::string text = d.value("text", "");
+                    if (op == "+")      std::cout << ansi::green() << "  + " << text << ansi::reset() << "\n";
+                    else if (op == "-") std::cout << ansi::red()   << "  - " << text << ansi::reset() << "\n";
+                    else                std::cout << ansi::dim()   << "    " << text << ansi::reset() << "\n";
+                }
+                std::cout << std::flush;
+            }
             std::cout << "\n" << std::flush;
         } else {
             std::cout << " " << ansi::red() << "Error: " << result.error << ansi::reset() << "\n";
