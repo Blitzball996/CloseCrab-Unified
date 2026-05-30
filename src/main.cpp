@@ -118,6 +118,12 @@ using namespace closecrab;
 
 static std::unique_ptr<QueryEngine> g_queryEngine;
 
+// True while the streaming thread is reading the console for an interactive
+// prompt (KeyboardSelector in onAskPermission). The Esc/type-ahead key-watcher
+// must NOT call _getch at the same time — two threads reading the same console
+// input crash. The watcher yields input ownership while this is set.
+static std::atomic<bool> g_consoleInputBusy{false};
+
 static void signalHandler(int) {
     if (g_queryEngine) g_queryEngine->interrupt();
 }
@@ -918,9 +924,18 @@ Then work step by step using your tools to complete the task.)";
     };
     // Track session-level permission grants
     bool autoApproveSession = false;
-    callbacks.onAskPermission = [&autoApproveSession](const std::string& toolName, const std::string& desc) -> bool {
+    callbacks.onAskPermission = [&autoApproveSession, &spinner](const std::string& toolName, const std::string& desc) -> bool {
         // If user chose "accept all" earlier, auto-approve
         if (autoApproveSession) return true;
+
+        // This callback reads the console (KeyboardSelector) on the streaming
+        // thread. Stop the spinner (so its worker isn't writing) and claim console
+        // input so the Esc/type-ahead watcher yields — otherwise two threads read
+        // the same console input and crash. The guard clears the flag on every
+        // return path.
+        spinner.stop();
+        g_consoleInputBusy = true;
+        struct InputBusyGuard { ~InputBusyGuard() { g_consoleInputBusy = false; } } _ibg;
 
         std::cout << ansi::yellow() << "  Allow " << toolName
                   << ansi::reset() << " (" << desc << ")?\n";
@@ -1081,6 +1096,12 @@ Then work step by step using your tools to complete the task.)";
                 // Idle between turns: the main thread owns the console
                 // (ReadConsoleW), so we must NOT call _getch here.
                 if (!lineBuf.empty()) lineBuf.clear();
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                continue;
+            }
+            if (g_consoleInputBusy.load()) {
+                // A permission prompt (KeyboardSelector) is reading the console on
+                // another thread — yield input ownership so we don't double-read.
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 continue;
             }

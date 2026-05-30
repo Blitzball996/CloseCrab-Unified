@@ -65,8 +65,17 @@ public:
                 while (active_.load()) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(80));
                     if (!active_.load()) break;
-                    std::lock_guard<std::mutex> lk(getStdoutMutex());
-                    std::cout << "\r" << ansi::cyan() << frames[i % 8] << ansi::reset() << std::flush;
+                    {
+                        std::lock_guard<std::mutex> lk(getStdoutMutex());
+                        // Re-check under the lock that stop() also takes: this
+                        // guarantees that once stop() has returned, the worker can
+                        // NEVER write another frame (so a callback that called
+                        // stop() owns the console alone). Without this re-check the
+                        // worker could emit one stale frame after stop() and race
+                        // the callback's write.
+                        if (!active_.load()) break;
+                        std::cout << "\r" << ansi::cyan() << frames[i % 8] << ansi::reset() << std::flush;
+                    }
                     i++;
                 }
             }
@@ -87,8 +96,16 @@ public:
             std::cout << "<<<CCSPIN:START:" << message_ << ">>>\n" << std::flush;
             return;
         }
-        std::cout << "\r" << ansi::cyan() << "|" << ansi::reset()
-                  << " " << message_ << "   " << std::flush;
+        {
+            // MUST hold the stdout mutex: the worker thread, the streaming
+            // callbacks, and start/stop all write the console. Without this the
+            // worker (which DOES lock) races the main thread (which didn't) on
+            // std::cout → streambuf/heap corruption → ACCESS_VIOLATION (the crash
+            // that shows up when typing during a turn). See getStdoutMutex() note.
+            std::lock_guard<std::mutex> lk(getStdoutMutex());
+            std::cout << "\r" << ansi::cyan() << "|" << ansi::reset()
+                      << " " << message_ << "   " << std::flush;
+        }
         active_ = true;
         cv_.notify_one();
     }
@@ -156,6 +173,12 @@ public:
 
     void stop() {
         if (!active_.exchange(false)) return;
+        // Acquire the stdout mutex AFTER clearing active_: this both serializes
+        // our own write AND guarantees the worker thread is quiescent on return
+        // (if it's mid-frame it holds the mutex, so we block until it releases,
+        // then it sees active_==false and stops). So any callback that calls
+        // stop() can safely write std::cout afterwards with no other writer.
+        std::lock_guard<std::mutex> lk(getStdoutMutex());
         if (!std::getenv("CLOSECRAB_WEB")) {
             std::cout << "\r                                                            \r" << std::flush;
         } else {
