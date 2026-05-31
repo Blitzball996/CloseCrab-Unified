@@ -334,6 +334,11 @@ add_executable(closecrab-unified
     src/network/SSEServer.cpp
     src/security/Sandbox.cpp
     src/ssd/SSDExpertStreamer.cpp
+    # License / online activation (序列号在线激活)
+    src/license/LicenseCore.cpp
+    src/license/LicenseGate.cpp
+    src/license/tweetnacl.c
+    src/license/tweetnacl_glue.c
 )
 
 if(USE_ONNX)

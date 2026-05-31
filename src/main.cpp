@@ -102,6 +102,7 @@
 #include "commands/ExtendedCommands.h"
 
 #include <curl/curl.h>
+#include "license/LicenseGate.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -369,7 +370,34 @@ int main(int argc, char* argv[]) {
     app.add_option("--api-model", apiModel, "API model name");
     app.add_option("--provider", provider, "Provider: local, anthropic, openai");
     app.add_flag("-v,--verbose", verbose, "Verbose logging");
+    // License / activation (序列号在线激活, see docs/序列号格式规范.md)
+    std::string activateKey;
+    bool deactivate = false;
+    bool licenseStatus = false;
+    app.add_option("--activate", activateKey, "Activate with a license key (CCST/CCPR-...) and exit");
+    app.add_flag("--deactivate", deactivate, "Remove local activation and exit");
+    app.add_flag("--license-status", licenseStatus, "Show license / trial status and exit");
     CLI11_PARSE(app, argc, argv);
+
+    // ---- License commands (handle and exit before loading the app) ----
+    if (!activateKey.empty()) {
+        auto res = closecrab::LicenseGate::activate(activateKey);
+        std::cout << res.message << std::endl;
+        return res.ok ? 0 : 1;
+    }
+    if (deactivate) {
+        closecrab::LicenseGate::deactivate();
+        std::cout << "已清除本机激活信息。" << std::endl;
+        return 0;
+    }
+    if (licenseStatus) {
+        closecrab::LicenseGate::printStatus();
+        return 0;
+    }
+    // ---- License gate: block / start trial countdown for unactivated copies ----
+    if (!closecrab::LicenseGate::enforceAtStartup()) {
+        return 1;
+    }
 
     spdlog::set_level(verbose ? spdlog::level::debug : spdlog::level::info);
 
