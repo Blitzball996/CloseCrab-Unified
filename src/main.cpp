@@ -1148,10 +1148,11 @@ Then work step by step using your tools to complete the task.)";
     std::atomic<bool> kwShutdown{false};   // set once at program exit
     std::thread keyWatcher([&]() {
 #ifdef _WIN32
+        HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
         while (!kwShutdown.load()) {
             if (!kwTurnActive.load()) {
                 // Idle between turns: the main thread owns the console
-                // (ReadConsoleW), so we must NOT call _getch here.
+                // (ReadConsoleW), so we must NOT read input here.
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 continue;
             }
@@ -1162,17 +1163,32 @@ Then work step by step using your tools to complete the task.)";
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 continue;
             }
-            if (_kbhit()) {
-                int ch = _getch();
-                if (ch == 27) {                        // Esc → abort the turn
+            // Read WIDE input records (NOT _getch). _getch is byte-oriented ANSI:
+            // an IME-composed Chinese char arrives as a multi-byte UTF-8 sequence
+            // whose lead byte (0xE4..) was misread as an arrow/function prefix,
+            // desyncing the stream and crashing (闪退). ReadConsoleInputW gives one
+            // record per event; we act ONLY on Esc (key-down) and DISCARD every
+            // other event — ASCII, IME/Unicode chars, key-up, mouse, focus, resize.
+            DWORD avail = 0;
+            if (!GetNumberOfConsoleInputEvents(hIn, &avail) || avail == 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                continue;
+            }
+            INPUT_RECORD recs[32];
+            DWORD got = 0;
+            if (!ReadConsoleInputW(hIn, recs, 32, &got) || got == 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                continue;
+            }
+            for (DWORD i = 0; i < got; i++) {
+                if (recs[i].EventType == KEY_EVENT &&
+                    recs[i].Event.KeyEvent.bKeyDown &&
+                    recs[i].Event.KeyEvent.wVirtualKeyCode == VK_ESCAPE) {
                     if (g_queryEngine) g_queryEngine->interrupt();
                     kwAborted = true;
-                } else if (ch == 0 || ch == 224) {     // arrow/function key
-                    _getch();                          // swallow the 2nd byte
                 }
-                // Any other key is read and discarded (type-ahead disabled).
-            } else {
-                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                // All other records are read and discarded (type-ahead disabled;
+                // IME wide chars consumed safely, never reinterpreted as bytes).
             }
         }
 #endif
