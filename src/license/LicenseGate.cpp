@@ -205,7 +205,8 @@ bool LicenseGate::enforceAtStartup() {
     if (!g_trialThreadStarted.exchange(true)) {
         std::thread([run, allowance]() {
             // Count the run as "used" only after 60s of real use (spec: >60s).
-            std::this_thread::sleep_for(std::chrono::seconds(std::min(60, allowance)));
+            int firstSleep = allowance < 60 ? allowance : 60;  // avoid std::min vs windows.h min macro
+            std::this_thread::sleep_for(std::chrono::seconds(firstSleep));
             lic::commitTrialRun(LicenseGate::kAppKey, run);
             int remain = allowance - 60;
             if (remain > 0)

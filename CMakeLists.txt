@@ -46,7 +46,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(MSVC)
-    add_compile_options(/Zc:char8_t-)
+    # /utf-8: treat source AND execution charset as UTF-8. Required because the
+    # codebase embeds UTF-8 string literals (e.g. Chinese activation messages)
+    # and the runtime sets the console to CP_UTF8; without this MSVC assumes the
+    # system code page (936/GBK on zh-CN) and miscompiles those literals (C2001).
+    add_compile_options(/utf-8 /Zc:char8_t-)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
     # Address Sanitizer: detects use-after-free, buffer overflow, stack corruption.
     # Enable for Debug builds to find the heap corruption causing crash 0xC0000005.
