@@ -2,6 +2,9 @@
 #include <string>
 #include <vector>
 #include <cstdio>
+#include <thread>
+#include <chrono>
+#include "ConsoleInputGuard.h"
 #ifdef _WIN32
 #include <windows.h>
 #include <conio.h>
@@ -26,6 +29,16 @@ public:
                                   bool enableShortcuts = true) {
         SelectorResult result;
 #ifdef _WIN32
+        // CRITICAL: claim console-input ownership for the whole prompt. The
+        // per-turn key-watcher thread (main.cpp) polls consoleInputBusy() and
+        // stops calling _getch() while this guard is held — otherwise BOTH
+        // threads read the same console and the process hard-crashes (闪退).
+        // This covers every selector caller (permission prompt, AskUserQuestion)
+        // automatically. Give the watcher one poll-interval (>20ms) to observe
+        // the flag and release the console before we read.
+        ConsoleInputGuard _consoleGuard;
+        std::this_thread::sleep_for(std::chrono::milliseconds(35));
+
         // Check if stdin is a real console
         HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
         DWORD mode;
@@ -52,10 +65,19 @@ public:
                     printf("  > ");
                     fflush(stdout);
                     result.index = -1;
+                    // The surrounding turn put the console in raw mode (no echo /
+                    // no line editing). Restore cooked mode just for this line so
+                    // the user can see and edit what they type, then set it back.
+                    DWORD prevMode = 0;
+                    bool haveMode = GetConsoleMode(hStdin, &prevMode) != 0;
+                    if (haveMode)
+                        SetConsoleMode(hStdin, prevMode | ENABLE_ECHO_INPUT |
+                                                   ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT);
                     // Read line from console
                     char buf[256] = {};
-                    DWORD read;
+                    DWORD read = 0;
                     ReadConsoleA(hStdin, buf, 255, &read, nullptr);
+                    if (haveMode) SetConsoleMode(hStdin, prevMode);
                     result.customText = std::string(buf, read);
                     // Trim trailing \r\n
                     while (!result.customText.empty() &&

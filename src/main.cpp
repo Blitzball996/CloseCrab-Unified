@@ -103,6 +103,7 @@
 
 #include <curl/curl.h>
 #include "license/LicenseGate.h"
+#include "ui/ConsoleInputGuard.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -119,11 +120,12 @@ using namespace closecrab;
 
 static std::unique_ptr<QueryEngine> g_queryEngine;
 
-// True while the streaming thread is reading the console for an interactive
-// prompt (KeyboardSelector in onAskPermission). The Esc/type-ahead key-watcher
-// must NOT call _getch at the same time — two threads reading the same console
-// input crash. The watcher yields input ownership while this is set.
-static std::atomic<bool> g_consoleInputBusy{false};
+// Console-input ownership is now tracked by the shared ConsoleInputGuard
+// (ui/ConsoleInputGuard.h): consoleInputBusy() is true while ANY interactive
+// prompt (permission prompt, AskUserQuestion — both via KeyboardSelector) is
+// reading the console. The per-turn key-watcher checks it and yields so two
+// threads never call _getch() on the same console (that races and hard-crashes
+// — the "typing during AI generation" 闪退). See KeyboardSelector::select.
 
 static void signalHandler(int) {
     if (g_queryEngine) g_queryEngine->interrupt();
@@ -291,6 +293,36 @@ static std::string getUserInput() {
     std::string line;
     std::getline(std::cin, line);
     return line;
+}
+#endif
+
+#ifdef _WIN32
+// ---- Per-turn console input mode ------------------------------------------
+// While an AI turn is streaming we put the console into "raw" input mode: no
+// echo, no line buffering. Combined with the Esc-only key-watcher this is what
+// makes "during generation you can ONLY press Esc" actually hold — typed keys
+// neither appear on screen nor pile up in the input buffer to leak into the
+// next prompt (or race the streaming output and crash). Restored after the turn.
+static DWORD g_savedConsoleMode = 0;
+static bool  g_consoleModeSaved = false;
+static void enterTurnInputMode() {
+    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD mode = 0;
+    if (GetConsoleMode(hIn, &mode)) {
+        g_savedConsoleMode = mode;
+        g_consoleModeSaved = true;
+        // Drop echo + line input; keep processed input so Ctrl-C still works.
+        SetConsoleMode(hIn, mode & ~(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT));
+    }
+    FlushConsoleInputBuffer(hIn);  // discard anything typed just before the turn
+}
+static void leaveTurnInputMode() {
+    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+    FlushConsoleInputBuffer(hIn);  // discard anything typed DURING the turn
+    if (g_consoleModeSaved) {
+        SetConsoleMode(hIn, g_savedConsoleMode);
+        g_consoleModeSaved = false;
+    }
 }
 #endif
 
@@ -819,9 +851,12 @@ Then work step by step using your tools to complete the task.)";
             std::cout << ansi::dim() << input.value("pattern", "") << ansi::reset();
         }
         std::cout << std::flush;
-        // For Agent, don't run the opaque spinner — the sub-agent streams its own
-        // activity lines (task B), which the spinner would otherwise clobber.
-        if (name != "Agent") {
+        // Don't run the spinner for tools that take over the console:
+        //  - Agent: streams its own sub-agent activity lines (task B).
+        //  - AskUserQuestion: reads the console via KeyboardSelector (raw printf,
+        //    not the stdout mutex); a running spinner worker would write cout
+        //    concurrently with the selector's draw = the typing-during-turn crash.
+        if (name != "Agent" && name != "AskUserQuestion") {
             spinner.start(name);
         } else {
             std::cout << "\n";
@@ -957,13 +992,10 @@ Then work step by step using your tools to complete the task.)";
         if (autoApproveSession) return true;
 
         // This callback reads the console (KeyboardSelector) on the streaming
-        // thread. Stop the spinner (so its worker isn't writing) and claim console
-        // input so the Esc/type-ahead watcher yields — otherwise two threads read
-        // the same console input and crash. The guard clears the flag on every
-        // return path.
+        // thread. Stop the spinner (so its worker isn't writing). KeyboardSelector
+        // now claims the ConsoleInputGuard internally, so the key-watcher yields
+        // automatically — no manual flag needed here.
         spinner.stop();
-        g_consoleInputBusy = true;
-        struct InputBusyGuard { ~InputBusyGuard() { g_consoleInputBusy = false; } } _ibg;
 
         std::cout << ansi::yellow() << "  Allow " << toolName
                   << ansi::reset() << " (" << desc << ")?\n";
@@ -1123,9 +1155,10 @@ Then work step by step using your tools to complete the task.)";
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 continue;
             }
-            if (g_consoleInputBusy.load()) {
-                // A permission prompt (KeyboardSelector) is reading the console on
-                // another thread — yield input ownership so we don't double-read.
+            if (consoleInputBusy()) {
+                // An interactive prompt (KeyboardSelector: permission prompt or
+                // AskUserQuestion) is reading the console on another thread — yield
+                // input ownership so we don't double-read (that races and crashes).
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 continue;
             }
@@ -1252,6 +1285,11 @@ Then work step by step using your tools to complete the task.)";
         // Arm the persistent key-watcher for this turn (Esc-abort only).
         // No thread is created here — see keyWatcher declared before the loop.
         kwAborted = false;
+#ifdef _WIN32
+        // Raw input mode FIRST (no echo / no line buffering), then arm the
+        // watcher. Now any typing during generation is inert except Esc.
+        enterTurnInputMode();
+#endif
         kwTurnActive = true;
 
         try {
@@ -1275,6 +1313,11 @@ Then work step by step using your tools to complete the task.)";
         // stops calling _getch, so the main thread alone owns the console and the
         // std::cout below. All watcher-related display happens HERE.
         kwTurnActive = false;
+#ifdef _WIN32
+        // Flush keystrokes typed during the turn, then restore cooked console
+        // mode for the next prompt's ReadConsoleW.
+        leaveTurnInputMode();
+#endif
         spinner.stop();
         if (kwAborted.load()) {
             std::cout << "\n" << ansi::yellow()
