@@ -338,7 +338,7 @@ bool LicenseGate::enforceAtStartup() {
                            "请激活后继续使用：closecrab --activate <序列号>\033[0m\n"),
                         allowance / 60);
             std::fflush(stdout);
-            std::quick_exit(0);
+            std::_Exit(0);  // libc++ (macOS) lacks std::quick_exit; _Exit is portable
         }).detach();
     }
     return true;
