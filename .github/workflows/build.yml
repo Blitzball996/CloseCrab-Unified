@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 env:
   BUILD_TYPE: Release
@@ -62,7 +63,16 @@ jobs:
         run: cmake --build build --config ${{env.BUILD_TYPE}} --target closecrab-unified
 
   build-macos:
-    runs-on: macos-14
+    name: build-macos (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14   # Apple Silicon (M1) — native arm64
+            arch: arm64
+          - runner: macos-13   # Intel — native x86_64
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
     env:
       MACOSX_DEPLOYMENT_TARGET: "10.15"
     steps:
@@ -71,13 +81,14 @@ jobs:
           submodules: recursive
 
       - name: Install dependencies
-        run: brew install ninja
+        run: brew install ninja curl
 
       - name: Configure CMake
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
-            -DCMAKE_OSX_ARCHITECTURES="arm64" \
+            -DCMAKE_OSX_ARCHITECTURES="${{ matrix.arch }}" \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix curl)" \
             -DUSE_CUDA=OFF \
             -DUSE_LOCAL_LLM=OFF \
             -DUSE_FAISS=OFF \

@@ -104,8 +104,17 @@ jobs:
           name: CloseCrab-Linux-x86_64
           path: CloseCrab-Linux-x86_64.tar.gz
 
-  build-macos-arm64:
-    runs-on: macos-14
+  build-macos:
+    name: build-macos (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14   # Apple Silicon (M1) — native arm64
+            arch: arm64
+          - runner: macos-13   # Intel — native x86_64
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
     env:
       MACOSX_DEPLOYMENT_TARGET: "10.15"
     steps:
@@ -114,47 +123,64 @@ jobs:
           submodules: recursive
 
       - name: Install dependencies
-        run: brew install ninja
+        run: brew install ninja curl
 
       - name: Configure CMake
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
-            -DCMAKE_OSX_ARCHITECTURES="arm64" \
+            -DCMAKE_OSX_ARCHITECTURES="${{ matrix.arch }}" \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix curl)" \
             -DUSE_CUDA=OFF \
-            -DUSE_LOCAL_LLM=ON \
+            -DUSE_LOCAL_LLM=OFF \
             -DUSE_FAISS=OFF \
             -DUSE_ONNX=OFF
 
       - name: Build
         run: cmake --build build --config ${{env.BUILD_TYPE}} --target closecrab-unified
 
-      - name: Package
+      - name: Resolve version
+        id: ver
+        run: |
+          REF="${{ github.ref_name }}"
+          case "$REF" in
+            v*) VER="${REF#v}" ;;
+            *)  VER="0.0.0-dev" ;;
+          esac
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Package (.tar.gz)
         run: |
           mkdir -p package/CloseCrab
           cp build/closecrab-unified package/CloseCrab/
-          cp config/config.yaml.example package/CloseCrab/config.yaml 2>/dev/null || true
+          cp config/config.yaml package/CloseCrab/config.yaml 2>/dev/null || true
+          cp README.md package/CloseCrab/ 2>/dev/null || true
+          cp LICENSE package/CloseCrab/ 2>/dev/null || true
+          tar -czf CloseCrab-macOS-${{ matrix.arch }}.tar.gz -C package CloseCrab
 
-          # Create .pkg installer (macOS standard for CLI tools)
+      - name: Package (.pkg)
+        run: |
           mkdir -p pkg_root/usr/local/bin
           mkdir -p pkg_root/usr/local/etc/closecrab
           cp build/closecrab-unified pkg_root/usr/local/bin/
-          cp config/config.yaml.example pkg_root/usr/local/etc/closecrab/config.yaml 2>/dev/null || true
+          cp config/config.yaml pkg_root/usr/local/etc/closecrab/config.yaml 2>/dev/null || true
           pkgbuild --root pkg_root \
             --identifier com.blitzball.closecrab \
-            --version "${{ github.ref_name }}" \
+            --version "${{ steps.ver.outputs.version }}" \
             --install-location / \
-            CloseCrab-macOS-arm64.pkg
+            CloseCrab-macOS-${{ matrix.arch }}.pkg
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CloseCrab-macOS-arm64
-          path: CloseCrab-macOS-arm64.pkg
+          name: CloseCrab-macOS-${{ matrix.arch }}
+          path: |
+            CloseCrab-macOS-${{ matrix.arch }}.pkg
+            CloseCrab-macOS-${{ matrix.arch }}.tar.gz
 
   create-release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-windows, build-linux, build-macos-arm64]
+    needs: [build-windows, build-linux, build-macos]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -168,5 +194,8 @@ jobs:
             CloseCrab-Windows-x64/CloseCrab-Windows-x64.zip
             CloseCrab-Linux-x86_64/CloseCrab-Linux-x86_64.tar.gz
             CloseCrab-macOS-arm64/CloseCrab-macOS-arm64.pkg
+            CloseCrab-macOS-arm64/CloseCrab-macOS-arm64.tar.gz
+            CloseCrab-macOS-x86_64/CloseCrab-macOS-x86_64.pkg
+            CloseCrab-macOS-x86_64/CloseCrab-macOS-x86_64.tar.gz
           draft: false
           prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
