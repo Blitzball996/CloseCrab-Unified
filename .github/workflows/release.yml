@@ -105,16 +105,8 @@ jobs:
           path: CloseCrab-Linux-x86_64.tar.gz
 
   build-macos:
-    name: build-macos (${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-14   # Apple Silicon (M1) — native arm64
-            arch: arm64
-          - runner: macos-13   # Intel — native x86_64
-            arch: x86_64
-    runs-on: ${{ matrix.runner }}
+    name: build-macos (universal)
+    runs-on: macos-14   # Apple Silicon runner cross-builds a universal (arm64 + x86_64) binary
     env:
       MACOSX_DEPLOYMENT_TARGET: "10.15"
     steps:
@@ -129,7 +121,7 @@ jobs:
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
-            -DCMAKE_OSX_ARCHITECTURES="${{ matrix.arch }}" \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
             -DUSE_CUDA=OFF \
             -DUSE_LOCAL_LLM=OFF \
             -DUSE_FAISS=OFF \
@@ -137,6 +129,9 @@ jobs:
 
       - name: Build
         run: cmake --build build --config ${{env.BUILD_TYPE}} --target closecrab-unified
+
+      - name: Verify universal binary
+        run: lipo -info build/closecrab-unified
 
       - name: Resolve version
         id: ver
@@ -155,7 +150,7 @@ jobs:
           cp config/config.yaml package/CloseCrab/config.yaml 2>/dev/null || true
           cp README.md package/CloseCrab/ 2>/dev/null || true
           cp LICENSE package/CloseCrab/ 2>/dev/null || true
-          tar -czf CloseCrab-macOS-${{ matrix.arch }}.tar.gz -C package CloseCrab
+          tar -czf CloseCrab-macOS-universal.tar.gz -C package CloseCrab
 
       - name: Package (.pkg)
         run: |
@@ -167,15 +162,15 @@ jobs:
             --identifier com.blitzball.closecrab \
             --version "${{ steps.ver.outputs.version }}" \
             --install-location / \
-            CloseCrab-macOS-${{ matrix.arch }}.pkg
+            CloseCrab-macOS-universal.pkg
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CloseCrab-macOS-${{ matrix.arch }}
+          name: CloseCrab-macOS-universal
           path: |
-            CloseCrab-macOS-${{ matrix.arch }}.pkg
-            CloseCrab-macOS-${{ matrix.arch }}.tar.gz
+            CloseCrab-macOS-universal.pkg
+            CloseCrab-macOS-universal.tar.gz
 
   create-release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -192,9 +187,7 @@ jobs:
           files: |
             CloseCrab-Windows-x64/CloseCrab-Windows-x64.zip
             CloseCrab-Linux-x86_64/CloseCrab-Linux-x86_64.tar.gz
-            CloseCrab-macOS-arm64/CloseCrab-macOS-arm64.pkg
-            CloseCrab-macOS-arm64/CloseCrab-macOS-arm64.tar.gz
-            CloseCrab-macOS-x86_64/CloseCrab-macOS-x86_64.pkg
-            CloseCrab-macOS-x86_64/CloseCrab-macOS-x86_64.tar.gz
+            CloseCrab-macOS-universal/CloseCrab-macOS-universal.pkg
+            CloseCrab-macOS-universal/CloseCrab-macOS-universal.tar.gz
           draft: false
           prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
