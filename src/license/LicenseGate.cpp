@@ -2,6 +2,7 @@
 #include "LicenseGate.h"
 
 #include <cstdlib>
+#include <cctype>
 #include <algorithm>
 #include <thread>
 #include <chrono>
@@ -14,6 +15,16 @@
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace closecrab {
 
 namespace {
@@ -21,6 +32,37 @@ const char* envOr(const char* name, const char* fallback) {
     const char* v = std::getenv(name);
     return (v && *v) ? v : fallback;
 }
+
+// --- Language resolution (English default, switchable) ----------------------
+// Priority: CC_LANG / CC_LICENSE_LANG / LANG / LC_ALL  >  OS UI language  >  English.
+// Set CC_LANG=zh (or en) to force a language.
+bool resolveEnglish() {
+    auto classify = [](const char* v) -> int {  // 1=en, 0=zh, -1=unknown
+        if (!v || !*v) return -1;
+        std::string s(v);
+        for (auto& c : s) c = (char)std::tolower((unsigned char)c);
+        if (s.rfind("zh", 0) == 0 || s.find("chinese") != std::string::npos ||
+            s.find("hans") != std::string::npos || s.find("hant") != std::string::npos)
+            return 0;
+        if (s.rfind("en", 0) == 0 || s.find("english") != std::string::npos) return 1;
+        return -1;
+    };
+    for (const char* e : {"CC_LANG", "CC_LICENSE_LANG", "LANG", "LC_ALL"}) {
+        int r = classify(std::getenv(e));
+        if (r >= 0) return r == 1;
+    }
+#ifdef _WIN32
+    if (PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE) return false;
+#endif
+    return true;  // default: English
+}
+bool isEnglish() {
+    static bool cached = resolveEnglish();
+    return cached;
+}
+// Pick the right string for the active language. Returns a const char* so it
+// can be used directly as a printf format string AND concatenated with std::string.
+const char* tr(const char* en, const char* zh) { return isEnglish() ? en : zh; }
 
 size_t writeCb(char* ptr, size_t size, size_t nmemb, std::string* data) {
     data->append(ptr, size * nmemb);
@@ -60,18 +102,33 @@ HttpResp httpPostJson(const std::string& url, const std::string& jsonBody,
     return resp;
 }
 
-// Friendly Chinese text for a server/spec error code.
+// Friendly localized text for a server/spec error code.
 std::string errText(const std::string& code) {
-    if (code == "NOT_FOUND")          return "查无此序列号";
-    if (code == "ALREADY_ACTIVATED")  return "该序列号已在另一台设备激活（一码一机）";
-    if (code == "REVOKED")            return "该序列号已被吊销/退款";
-    if (code == "WRONG_PRODUCT")      return "序列号与本软件不符（CloseCrab 只接受 CC 开头）";
-    if (code == "BAD_CHECKSUM")       return "序列号校验失败（请检查输入）";
-    if (code == "BAD_FORMAT")         return "序列号格式错误";
-    if (code == "RATE_LIMITED")       return "激活过于频繁，请稍后再试";
-    if (code == "NETWORK")            return "网络错误，无法连接激活服务器（如使用代理请检查 clash 端口 7897）";
-    if (code == "BAD_TOKEN")          return "激活令牌签名校验失败";
-    return "激活失败（" + code + "）";
+    if (code == "NOT_FOUND")
+        return tr("License key not found.", "查无此序列号");
+    if (code == "ALREADY_ACTIVATED")
+        return tr("This key is already activated on another device (one key, one device).",
+                  "该序列号已在另一台设备激活（一码一机）");
+    if (code == "REVOKED")
+        return tr("This key has been revoked / refunded.", "该序列号已被吊销/退款");
+    if (code == "WRONG_PRODUCT")
+        return tr("Key does not match this product (CloseCrab only accepts CC keys).",
+                  "序列号与本软件不符（CloseCrab 只接受 CC 开头）");
+    if (code == "BAD_CHECKSUM")
+        return tr("Invalid key (checksum failed — please check your input).",
+                  "序列号校验失败（请检查输入）");
+    if (code == "BAD_FORMAT")
+        return tr("Invalid key format.", "序列号格式错误");
+    if (code == "RATE_LIMITED")
+        return tr("Too many activation attempts, please try again later.",
+                  "激活过于频繁，请稍后再试");
+    if (code == "NETWORK")
+        return tr("Network error — could not reach the activation server "
+                  "(if you use a proxy, check clash port 7897).",
+                  "网络错误，无法连接激活服务器（如使用代理请检查 clash 端口 7897）");
+    if (code == "BAD_TOKEN")
+        return tr("Activation token signature verification failed.", "激活令牌签名校验失败");
+    return tr("Activation failed (", "激活失败（") + code + tr(")", "）");
 }
 
 std::atomic<bool> g_trialThreadStarted{false};
@@ -122,7 +179,8 @@ ActivateResult LicenseGate::activate(const std::string& rawKey) {
     try { j = nlohmann::json::parse(r.body); }
     catch (...) {
         out.errorCode = "NETWORK";
-        out.message = "服务器返回异常（HTTP " + std::to_string(r.code) + "）";
+        out.message = tr("Unexpected server response (HTTP ", "服务器返回异常（HTTP ") +
+                      std::to_string(r.code) + tr(").", "）");
         return out;
     }
 
@@ -151,7 +209,8 @@ ActivateResult LicenseGate::activate(const std::string& rawKey) {
     out.ok = true;
     out.errorCode = "OK";
     out.edition = edition.empty() ? ti.edition : edition;
-    out.message = "激活成功！版本：" + out.edition + "（" + ti.key + "）";
+    out.message = tr("Activated! Edition: ", "激活成功！版本：") + out.edition +
+                  tr(" (", "（") + ti.key + tr(")", "）");
     return out;
 }
 
@@ -163,18 +222,22 @@ void LicenseGate::printStatus() {
     lic::Status s = status();
     switch (s.state) {
         case lic::State::Activated:
-            std::printf("[CloseCrab 授权] 已激活 — 版本 %s (%s)\n",
+            std::printf(tr("[CloseCrab License] Activated — edition %s (%s)\n",
+                           "[CloseCrab 授权] 已激活 — 版本 %s (%s)\n"),
                         s.edition.c_str(), s.key.c_str());
             break;
         case lic::State::Trial:
-            std::printf("[CloseCrab 授权] 试用模式 — 第 %d 次，本次额度 %d 分钟\n",
+            std::printf(tr("[CloseCrab License] Trial — run #%d, %d minutes this session\n",
+                           "[CloseCrab 授权] 试用模式 — 第 %d 次，本次额度 %d 分钟\n"),
                         s.trialRun, s.allowanceSeconds / 60);
             break;
         case lic::State::Locked:
-            std::printf("[CloseCrab 授权] 试用已用尽，请激活：closecrab --activate <序列号>\n");
+            std::printf(tr("[CloseCrab License] Trial used up — activate: closecrab --activate <KEY>\n",
+                           "[CloseCrab 授权] 试用已用尽，请激活：closecrab --activate <序列号>\n"));
             break;
     }
-    std::printf("        设备指纹: %s\n        激活服务器: %s\n",
+    std::printf(tr("        Device ID: %s\n        Server: %s\n",
+                   "        设备指纹: %s\n        激活服务器: %s\n"),
                 lic::deviceId().c_str(), baseUrl().c_str());
 }
 
@@ -183,38 +246,45 @@ bool LicenseGate::enforceAtStartup() {
 
     if (s.state == lic::State::Activated) {
         spdlog::info("License: activated ({} {})", s.edition, s.key);
-        std::printf("\033[32m✓ CloseCrab 已激活（%s）\033[0m\n", s.edition.c_str());
+        std::printf(tr("\033[32m✓ CloseCrab activated (%s)\033[0m\n",
+                       "\033[32m✓ CloseCrab 已激活（%s）\033[0m\n"),
+                    s.edition.c_str());
         return true;
     }
 
     // Helper: read one line of serial input from the user at startup. Runs on the
     // main thread before the REPL/key-watcher start, so plain std::getline is safe.
-    auto promptForSerial = [](const char* hint) -> std::string {
-        std::printf("%s", hint);
+    auto promptForSerial = [](const std::string& hint) -> std::string {
+        std::printf("%s", hint.c_str());
         std::fflush(stdout);
         std::string line;
         if (!std::getline(std::cin, line)) return "";  // EOF
-        // trim
         size_t a = line.find_first_not_of(" \t\r\n");
         size_t b = line.find_last_not_of(" \t\r\n");
         return (a == std::string::npos) ? "" : line.substr(a, b - a + 1);
     };
 
     if (s.state == lic::State::Locked) {
-        std::printf("\n\033[31m================ CloseCrab 未激活 ================\033[0m\n");
-        std::printf(" 试用已用尽（首次 30 分钟 + 第二次 10 分钟）。\n");
-        std::printf(" 必须输入序列号激活才能继续使用。\n");
-        std::printf(" 序列号格式：\033[36mCCST/CCPR-XXXX-XXXX-XXXX-XXXX\033[0m\n");
-        std::printf(" 购买后凭邮箱在 https://blitzball.lol 查询序列号。\n");
-        std::printf("\033[31m=================================================\033[0m\n");
-        // Locked: must activate — loop until success or the user quits.
+        std::printf(tr("\n\033[31m============== CloseCrab — Not Activated ==============\033[0m\n",
+                       "\n\033[31m================ CloseCrab 未激活 ================\033[0m\n"));
+        std::printf(tr(" Trial used up (first run 30 min + second run 10 min).\n",
+                       " 试用已用尽（首次 30 分钟 + 第二次 10 分钟）。\n"));
+        std::printf(tr(" You must enter a license key to continue.\n",
+                       " 必须输入序列号激活才能继续使用。\n"));
+        std::printf(tr(" Key format: \033[36mCCST/CCPR-XXXX-XXXX-XXXX-XXXX\033[0m\n",
+                       " 序列号格式：\033[36mCCST/CCPR-XXXX-XXXX-XXXX-XXXX\033[0m\n"));
+        std::printf(tr(" Look up your key by email at https://blitzball.lol\n",
+                       " 购买后凭邮箱在 https://blitzball.lol 查询序列号。\n"));
+        std::printf(tr("\033[31m======================================================\033[0m\n",
+                       "\033[31m=================================================\033[0m\n"));
         for (;;) {
-            std::string key = promptForSerial("\n请输入序列号激活（输入 q 退出）: ");
+            std::string key = promptForSerial(
+                tr("\nEnter license key (q to quit): ", "\n请输入序列号激活（输入 q 退出）: "));
             if (key.empty() || key == "q" || key == "Q" || key == "quit") {
-                std::printf("已退出。\n");
+                std::printf(tr("Exited.\n", "已退出。\n"));
                 return false;
             }
-            std::printf("正在联网激活…\n");
+            std::printf(tr("Activating online…\n", "正在联网激活…\n"));
             auto res = activate(key);
             std::printf("%s\n", res.message.c_str());
             if (res.ok) return true;
@@ -224,22 +294,33 @@ bool LicenseGate::enforceAtStartup() {
     // Trial: announce, offer activation now, otherwise start the countdown.
     const int run = s.trialRun;
     const int allowance = s.allowanceSeconds;
-    std::printf("\n\033[33m================ CloseCrab 试用模式 ================\033[0m\n");
-    std::printf(" 当前未激活 —— 第 %d 次试用，本次可用 \033[1m%d 分钟\033[0m。\n", run, allowance / 60);
-    std::printf(" 规则：首次 30 分钟，第二次 10 分钟，之后需激活。\n");
-    std::printf(" 序列号格式：\033[36mCCST/CCPR-XXXX-XXXX-XXXX-XXXX\033[0m\n");
-    std::printf("\033[33m===================================================\033[0m\n");
+    std::printf(tr("\n\033[33m================ CloseCrab — Trial ================\033[0m\n",
+                   "\n\033[33m================ CloseCrab 试用模式 ================\033[0m\n"));
+    std::printf(tr(" Not activated — trial run #%d, \033[1m%d minutes\033[0m available this session.\n",
+                   " 当前未激活 —— 第 %d 次试用，本次可用 \033[1m%d 分钟\033[0m。\n"),
+                run, allowance / 60);
+    std::printf(tr(" Rule: 30 min first run, 10 min second run, then activation required.\n",
+                   " 规则：首次 30 分钟，第二次 10 分钟，之后需激活。\n"));
+    std::printf(tr(" Key format: \033[36mCCST/CCPR-XXXX-XXXX-XXXX-XXXX\033[0m\n",
+                   " 序列号格式：\033[36mCCST/CCPR-XXXX-XXXX-XXXX-XXXX\033[0m\n"));
+    std::printf(tr("\033[33m===================================================\033[0m\n",
+                   "\033[33m===================================================\033[0m\n"));
 
     std::string key = promptForSerial(
-        "\n现在输入序列号激活，或直接按回车开始试用: ");
+        tr("\nEnter a key to activate now, or press Enter to start the trial: ",
+           "\n现在输入序列号激活，或直接按回车开始试用: "));
     if (!key.empty()) {
-        std::printf("正在联网激活…\n");
+        std::printf(tr("Activating online…\n", "正在联网激活…\n"));
         auto res = activate(key);
         std::printf("%s\n", res.message.c_str());
         if (res.ok) return true;  // activated — no trial limit
-        std::printf("\033[33m将以试用模式继续（本次 %d 分钟）。\033[0m\n", allowance / 60);
+        std::printf(tr("\033[33mContinuing in trial mode (%d minutes this session).\033[0m\n",
+                       "\033[33m将以试用模式继续（本次 %d 分钟）。\033[0m\n"),
+                    allowance / 60);
     } else {
-        std::printf("\033[33m已开始试用：本次 %d 分钟，到时将自动退出。\033[0m\n", allowance / 60);
+        std::printf(tr("\033[33mTrial started: %d minutes this session, the app will exit when it ends.\033[0m\n",
+                       "\033[33m已开始试用：本次 %d 分钟，到时将自动退出。\033[0m\n"),
+                    allowance / 60);
     }
 
     if (!g_trialThreadStarted.exchange(true)) {
@@ -251,8 +332,10 @@ bool LicenseGate::enforceAtStartup() {
             int remain = allowance - 60;
             if (remain > 0)
                 std::this_thread::sleep_for(std::chrono::seconds(remain));
-            std::printf("\n\033[31m[CloseCrab] 试用时间（%d 分钟）已结束，程序退出。"
-                        "请激活后继续使用：closecrab --activate <序列号>\033[0m\n",
+            std::printf(tr("\n\033[31m[CloseCrab] Trial time (%d min) is over, exiting. "
+                           "Activate to continue: closecrab --activate <KEY>\033[0m\n",
+                           "\n\033[31m[CloseCrab] 试用时间（%d 分钟）已结束，程序退出。"
+                           "请激活后继续使用：closecrab --activate <序列号>\033[0m\n"),
                         allowance / 60);
             std::fflush(stdout);
             std::quick_exit(0);
