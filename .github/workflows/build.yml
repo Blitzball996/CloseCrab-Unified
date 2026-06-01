@@ -81,14 +81,13 @@ jobs:
           submodules: recursive
 
       - name: Install dependencies
-        run: brew install ninja curl
+        run: brew install ninja
 
       - name: Configure CMake
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
             -DCMAKE_OSX_ARCHITECTURES="${{ matrix.arch }}" \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix curl)" \
             -DUSE_CUDA=OFF \
             -DUSE_LOCAL_LLM=OFF \
             -DUSE_FAISS=OFF \
