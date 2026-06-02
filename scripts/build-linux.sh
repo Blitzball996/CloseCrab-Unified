@@ -19,7 +19,7 @@ set -euo pipefail
 # --- Configuration ---
 APP_NAME="closecrab"
 APP_DISPLAY_NAME="CloseCrab-Unified"
-APP_VERSION="0.2.3"
+APP_VERSION="0.2.4"
 APP_DESCRIPTION="AI-powered coding assistant with Team Mode, multi-agent coordination, and local LLM support"
 MAINTAINER="Blitzball996 <blitzball996@users.noreply.github.com>"
 HOMEPAGE="https://github.com/Blitzball996/CloseCrab-Unified"

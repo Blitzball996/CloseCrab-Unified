@@ -1,11 +1,19 @@
 #pragma once
 
 #include "../Tool.h"
+#include "../../config/Config.h"
+#include "../../utils/ProxyConfig.h"
 #include <curl/curl.h>
+#include <nlohmann/json.hpp>
 #include <sstream>
 #include <map>
 #include <mutex>
 #include <chrono>
+#include <string>
+#include <cstdlib>
+#include <atomic>
+#include <utility>
+#include <vector>
 
 namespace closecrab {
 
@@ -53,6 +61,20 @@ private:
     std::map<std::string, Entry> cache_;
 };
 
+// ---------------------------------------------------------------------------
+// WebSearchTool — server-side web search (JackProAi / Claude Code approach).
+//
+// The OLD implementation curl'd api.duckduckgo.com directly: (1) it didn't go
+// through the proxy, so behind the GFW it timed out ("Search failed: Timeout
+// was reached"), and (2) DuckDuckGo's Instant-Answer API returns almost nothing
+// for normal queries.
+//
+// NEW: we mirror Claude Code — issue a one-shot Anthropic API request carrying
+// the SERVER-SIDE tool `web_search_20250305`. The search runs on the
+// Anthropic/relay side (verified working on yikoulian.cc), so it travels the
+// SAME already-working API link as the main conversation, with the same proxy.
+// We parse the returned `web_search_tool_result` (title/url) + text blocks.
+// ---------------------------------------------------------------------------
 class WebSearchTool : public Tool {
 public:
     std::string getName() const override { return "WebSearch"; }
@@ -73,49 +95,124 @@ public:
     }
 
     ToolResult call(ToolContext& ctx, const nlohmann::json& input) override {
-        std::string query = input["query"].get<std::string>();
+        std::string query = input.value("query", "");
+        if (query.empty()) return ToolResult::fail("WebSearch: empty query");
 
-        // URL encode
+        auto& cfg = Config::getInstance();
+        std::string provider = cfg.getString("provider", "anthropic");
+        std::string apiKey   = cfg.getString("api.api_key", "");
+        std::string baseUrl  = cfg.getString("api.base_url", "https://api.anthropic.com");
+        std::string model    = cfg.getString("api.model", "claude-sonnet-4-20250514");
+
+        // Env overrides (same priority as main.cpp).
+        if (apiKey.empty()) { if (const char* e = std::getenv("ANTHROPIC_AUTH_TOKEN")) apiKey = e; }
+        if (const char* e = std::getenv("ANTHROPIC_BASE_URL")) { if (e[0]) baseUrl = e; }
+
+        // Server-side web search needs the hosted API. In local-LLM mode there is
+        // no Anthropic endpoint to run the search — tell the user how to enable it.
+        if (provider == "local" || apiKey.empty()) {
+            return ToolResult::fail(
+                "WebSearch needs the hosted API (provider: anthropic). "
+                "Set it with /api provider=anthropic and /api key=sk-... , then restart.");
+        }
+
+        // Build the one-shot request with the web_search server tool.
+        nlohmann::json body = {
+            {"model", model},
+            {"max_tokens", 2048},
+            {"stream", false},
+            {"messages", nlohmann::json::array({
+                {{"role", "user"},
+                 {"content", "Perform a web search and answer concisely with sources: " + query}}
+            })},
+            {"tools", nlohmann::json::array({
+                {{"type", "web_search_20250305"}, {"name", "web_search"}, {"max_uses", 5}}
+            })}
+        };
+        std::string bodyStr = body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+
+        // Strip trailing slashes from base URL to avoid `//v1`.
+        while (!baseUrl.empty() && baseUrl.back() == '/') baseUrl.pop_back();
+        std::string url = baseUrl + "/v1/messages";
+
         CURL* curl = curl_easy_init();
         if (!curl) return ToolResult::fail("CURL init failed");
 
-        char* encoded = curl_easy_escape(curl, query.c_str(), (int)query.size());
-        std::string url = "https://api.duckduckgo.com/?q=" + std::string(encoded) + "&format=json&no_html=1";
-        curl_free(encoded);
+        struct curl_slist* headers = nullptr;
+        headers = curl_slist_append(headers, ("x-api-key: " + apiKey).c_str());
+        headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
+        headers = curl_slist_append(headers, "anthropic-beta: web-search-2025-03-05");
+        headers = curl_slist_append(headers, "content-type: application/json");
 
         std::string response;
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_POST, 1L);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, bodyStr.c_str());
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)bodyStr.size());
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "CloseCrab-Unified/0.1");
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);        // search can take a while
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+        applyProxyToCurl(curl);                                // the FIX: go through the proxy
+        if (ctx.abortFlag) {
+            curl_easy_setopt(curl, CURLOPT_XFERINFODATA, (void*)ctx.abortFlag);
+            curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION,
+                +[](void* p, curl_off_t, curl_off_t, curl_off_t, curl_off_t) -> int {
+                    auto* f = static_cast<const std::atomic<bool>*>(p);
+                    return (f && f->load()) ? 1 : 0;
+                });
+            curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+        }
 
         CURLcode res = curl_easy_perform(curl);
+        long httpCode = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
+        curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
 
         if (res != CURLE_OK) {
-            return ToolResult::fail(std::string("Search failed: ") + curl_easy_strerror(res));
+            return ToolResult::fail(std::string("Search failed: ") + curl_easy_strerror(res) +
+                                    " (proxy=" + (resolveProxyUrl().empty() ? "none" : resolveProxyUrl()) + ")");
+        }
+        if (httpCode >= 400) {
+            std::string msg = response.substr(0, 300);
+            try { auto j = nlohmann::json::parse(response);
+                  if (j.contains("error") && j["error"].contains("message"))
+                      msg = j["error"]["message"].get<std::string>(); } catch (...) {}
+            return ToolResult::fail("Search HTTP " + std::to_string(httpCode) + ": " + msg);
         }
 
-        // Parse DuckDuckGo response
+        // Parse content blocks: collect text + (title,url) sources.
         try {
             auto j = nlohmann::json::parse(response);
-            std::string result;
-
-            if (j.contains("Abstract") && !j["Abstract"].get<std::string>().empty()) {
-                result += j["Abstract"].get<std::string>() + "\n\n";
-            }
-            if (j.contains("RelatedTopics") && j["RelatedTopics"].is_array()) {
-                int count = 0;
-                for (const auto& topic : j["RelatedTopics"]) {
-                    if (topic.contains("Text") && count < 5) {
-                        result += "- " + topic["Text"].get<std::string>() + "\n";
-                        count++;
+            std::string text;
+            std::vector<std::pair<std::string,std::string>> sources;
+            if (j.contains("content") && j["content"].is_array()) {
+                for (const auto& block : j["content"]) {
+                    std::string t = block.value("type", "");
+                    if (t == "text") {
+                        text += block.value("text", "");
+                    } else if (t == "web_search_tool_result" && block.contains("content") &&
+                               block["content"].is_array()) {
+                        for (const auto& r : block["content"]) {
+                            if (r.value("type", "") == "web_search_result") {
+                                sources.push_back({r.value("title", ""), r.value("url", "")});
+                            }
+                        }
                     }
                 }
             }
-            if (result.empty()) result = "No results found for: " + query;
-            return ToolResult::ok(result);
+            std::string out = text.empty() ? ("No answer for: " + query) : text;
+            if (!sources.empty()) {
+                out += "\n\nSources:\n";
+                int n = 0;
+                for (const auto& s : sources) {
+                    if (n++ >= 10) break;
+                    out += "- " + s.first + " — " + s.second + "\n";
+                }
+            }
+            return ToolResult::ok(out);
         } catch (...) {
             return ToolResult::ok(response.substr(0, 2000));
         }
@@ -165,17 +262,19 @@ public:
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "CloseCrab-Unified/0.1");
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "CloseCrab-Unified/0.2");
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+        applyProxyToCurl(curl);   // the FIX: honor proxy / CLOSECRAB_NO_PROXY
 
         CURLcode res = curl_easy_perform(curl);
         curl_easy_cleanup(curl);
 
         if (res != CURLE_OK) {
-            return ToolResult::fail(std::string("Fetch failed: ") + curl_easy_strerror(res));
+            return ToolResult::fail(std::string("Fetch failed: ") + curl_easy_strerror(res) +
+                                    " (proxy=" + (resolveProxyUrl().empty() ? "none" : resolveProxyUrl()) + ")");
         }
 
         // Truncate large responses

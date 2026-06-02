@@ -17,7 +17,7 @@ set -euo pipefail
 
 # --- Configuration ---
 APP_NAME="CloseCrab-Unified"
-APP_VERSION="0.2.3"
+APP_VERSION="0.2.4"
 BUNDLE_ID="com.blitzball996.closecrab-unified"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"

@@ -3,6 +3,7 @@
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
+#include "../utils/ProxyConfig.h"
 
 namespace closecrab {
 
@@ -81,6 +82,7 @@ private:
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        applyProxyToCurl(curl);   // GitHub API is unreliable behind the GFW without a proxy
 
         CURLcode res = curl_easy_perform(curl);
         curl_easy_cleanup(curl);
