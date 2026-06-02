@@ -43,6 +43,7 @@ jobs:
           cp build/Release/*.dll package/CloseCrab/ 2>/dev/null || true
           mkdir -p package/CloseCrab/config
           cp config/config.yaml.example package/CloseCrab/config/config.yaml 2>/dev/null || true
+          cp scripts/uninstall.bat package/CloseCrab/ 2>/dev/null || true
           cd package && 7z a -tzip ../CloseCrab-Windows-x64.zip CloseCrab/
 
       - name: Build installer
@@ -97,6 +98,8 @@ jobs:
           mkdir -p package/CloseCrab
           cp build/closecrab package/CloseCrab/
           cp config/config.yaml.example package/CloseCrab/config.yaml 2>/dev/null || true
+          cp scripts/uninstall.sh package/CloseCrab/ 2>/dev/null || true
+          chmod +x package/CloseCrab/uninstall.sh 2>/dev/null || true
           tar -czf CloseCrab-Linux-x86_64.tar.gz -C package CloseCrab
 
       - name: Upload artifact
@@ -152,6 +155,8 @@ jobs:
           chmod +x package/CloseCrab/closecrab
           cp README.md package/CloseCrab/ 2>/dev/null || true
           cp LICENSE package/CloseCrab/ 2>/dev/null || true
+          cp scripts/uninstall.sh package/CloseCrab/ 2>/dev/null || true
+          chmod +x package/CloseCrab/uninstall.sh 2>/dev/null || true
           tar -czf CloseCrab-macOS-universal.tar.gz -C package CloseCrab
 
       - name: Package (.pkg)

@@ -2,7 +2,7 @@
 ; Requires Inno Setup 6.x: https://jrsoftware.org/isinfo.php
 
 #define MyAppName "CloseCrab"
-#define MyAppVersion "0.2.2"
+#define MyAppVersion "0.2.3"
 #define MyAppPublisher "Blitzball Labs"
 #define MyAppURL "https://github.com/Blitzball996/CloseCrab-Unified"
 #define MyAppExeName "closecrab.exe"
@@ -66,6 +66,10 @@ Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\CloseCrab\comma
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\data"
 Type: filesandordirs; Name: "{app}\logs"
+Type: files; Name: "{app}\closecrab.log"
+Type: files; Name: "{app}\trace.log"
+Type: files; Name: "{app}\crash.log"
+Type: dirifempty; Name: "{app}\config"
 
 [Code]
 function NeedsAddPath(Param: string): boolean;

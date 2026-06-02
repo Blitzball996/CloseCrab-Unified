@@ -8,6 +8,11 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <conio.h>
+#else
+#include "PosixTty.h"
+#include <termios.h>
+#include <unistd.h>
+#include <iostream>
 #endif
 
 namespace closecrab {
@@ -110,8 +115,96 @@ public:
             }
         }
 #else
-        result.index = defaultIdx;
-        return result;
+        // ---- POSIX (macOS/Linux) interactive selector ----------------------
+        // Previously this just returned `defaultIdx` WITHOUT reading the keyboard,
+        // so the permission prompt always auto-picked option 0 (Allow) and the
+        // user could never choose Deny. Now we drive a real arrow-key/shortcut
+        // selector via termios raw mode.
+        //
+        // Claim console-input ownership so the per-turn Esc-watcher yields stdin
+        // (otherwise both threads read the same fd → race/crash). Give it one
+        // poll interval to observe the flag before we start reading.
+        ConsoleInputGuard _consoleGuard;
+        std::this_thread::sleep_for(std::chrono::milliseconds(35));
+
+        // Not a TTY (piped stdin): fall back to the default, can't prompt.
+        if (!isatty(STDIN_FILENO)) {
+            result.index = defaultIdx;
+            return result;
+        }
+
+        // Save current termios and set raw mode for the selector. Symmetric
+        // save/restore makes this safe whether or not the outer turn already put
+        // the terminal in raw mode (PosixTty): we restore exactly what we saved.
+        struct termios savedTio{};
+        bool haveTio = (tcgetattr(STDIN_FILENO, &savedTio) == 0);
+        if (haveTio) {
+            struct termios raw = savedTio;
+            raw.c_lflag &= ~(ICANON | ECHO);
+            raw.c_cc[VMIN] = 0;
+            raw.c_cc[VTIME] = 0;
+            tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+        }
+
+        int totalOptions = (int)options.size() + (allowCustom ? 1 : 0);
+        int current = defaultIdx;
+        if (current < 0 || current >= totalOptions) current = 0;
+
+        // Print initial blank lines so renderVertical can move up.
+        for (int i = 0; i < totalOptions; i++) printf("\n");
+
+        auto restoreTio = [&]() { if (haveTio) tcsetattr(STDIN_FILENO, TCSANOW, &savedTio); };
+
+        while (true) {
+            renderVertical(options, current, allowCustom);
+
+            int lastChar = 0;
+            int key = posixReadKey(200, lastChar);   // block up to 200ms, then redraw
+            if (key == PK_NONE) continue;
+
+            if (key == PK_ENTER) {
+                clearLines(totalOptions);
+                if (allowCustom && current == (int)options.size()) {
+                    // Custom free-text: restore cooked mode so the user sees and can
+                    // edit what they type, read a line, then go back to raw.
+                    printf("  > "); fflush(stdout);
+                    result.index = -1;
+                    restoreTio();
+                    std::string line;
+                    std::getline(std::cin, line);
+                    if (haveTio) {
+                        struct termios raw = savedTio;
+                        raw.c_lflag &= ~(ICANON | ECHO);
+                        raw.c_cc[VMIN] = 0; raw.c_cc[VTIME] = 0;
+                        tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+                    }
+                    result.customText = line;
+                } else {
+                    result.index = current;
+                }
+                restoreTio();
+                return result;
+            } else if (key == PK_ESC) {          // Esc = Deny (matches Windows)
+                clearLines(totalOptions);
+                result.index = 1;
+                restoreTio();
+                return result;
+            } else if (key == PK_UP) {
+                current = (current - 1 + totalOptions) % totalOptions;
+            } else if (key == PK_DOWN) {
+                current = (current + 1) % totalOptions;
+            } else if (key == PK_OTHER && enableShortcuts) {
+                if (lastChar == 'y' || lastChar == 'Y') {
+                    clearLines(totalOptions); result.index = 0; restoreTio(); return result;
+                } else if (lastChar == 'n' || lastChar == 'N') {
+                    clearLines(totalOptions); result.index = 1; restoreTio(); return result;
+                } else if (lastChar == 'a' || lastChar == 'A') {
+                    clearLines(totalOptions);
+                    result.index = (int)options.size() > 2 ? 2 : 0;
+                    restoreTio(); return result;
+                }
+            }
+        }
 #endif
     }
 

@@ -9,7 +9,7 @@ if(POLICY CMP0167)
 endif()
 set(CMAKE_POLICY_DEFAULT_CMP0148 OLD)
 
-project(CloseCrab-Unified VERSION 0.2.2 LANGUAGES C CXX)
+project(CloseCrab-Unified VERSION 0.2.3 LANGUAGES C CXX)
 
 # ============================================
 # Build options
@@ -433,6 +433,10 @@ target_include_directories(closecrab-unified PRIVATE ${CLOSECRAB_INCLUDES})
 # Ship the binary as the short command name `closecrab` on every platform
 # (the CMake target stays `closecrab-unified`, so --target references are unchanged).
 set_target_properties(closecrab-unified PROPERTIES OUTPUT_NAME closecrab)
+
+# Inject the project version (single source of truth) so the banner / /version
+# command never drift from CMakeLists again. Use via CLOSECRAB_VERSION macro.
+target_compile_definitions(closecrab-unified PRIVATE CLOSECRAB_VERSION="${PROJECT_VERSION}")
 
 # ============================================
 # Post-build: Copy DLLs (Windows only)

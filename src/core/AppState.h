@@ -49,6 +49,10 @@ struct AppState {
     std::string currentModel;
     std::string fallbackModel;
 
+    // Absolute path of the loaded config.yaml (so /api and the banner can show it
+    // and write back to the right file on every OS).
+    std::string configPath;
+
     // Cost tracking
     std::atomic<double> totalCostUSD{0.0};
     std::atomic<double> totalAPIDuration{0.0};

@@ -18,6 +18,12 @@
 #include <unistd.h>        // readlink
 #endif
 
+// Version string — injected by CMake (target_compile_definitions). Fallback keeps
+// non-CMake builds compiling; CMake is the single source of truth.
+#ifndef CLOSECRAB_VERSION
+#define CLOSECRAB_VERSION "dev"
+#endif
+
 #include <iostream>
 #include <string>
 #include <memory>
@@ -112,6 +118,7 @@
 #include <curl/curl.h>
 #include "license/LicenseGate.h"
 #include "ui/ConsoleInputGuard.h"
+#include "ui/PosixTty.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -311,6 +318,7 @@ static std::string getUserInput() {
 // makes "during generation you can ONLY press Esc" actually hold — typed keys
 // neither appear on screen nor pile up in the input buffer to leak into the
 // next prompt (or race the streaming output and crash). Restored after the turn.
+#ifdef _WIN32
 static DWORD g_savedConsoleMode = 0;
 static bool  g_consoleModeSaved = false;
 static void enterTurnInputMode() {
@@ -332,6 +340,12 @@ static void leaveTurnInputMode() {
         g_consoleModeSaved = false;
     }
 }
+#else
+// POSIX: put the terminal in raw mode for the turn so the Esc-watcher can read
+// keys immediately and typed chars don't echo/leak. PosixTty restores cooked
+// mode (and flushes pending input) on leave. Only the main thread calls these.
+static void enterTurnInputMode() { closecrab::PosixTty::instance().enterRaw(); }
+static void leaveTurnInputMode() { closecrab::PosixTty::instance().leaveRaw(); }
 #endif
 
 // Load CLAUDE.md from project root
@@ -636,6 +650,7 @@ int main(int argc, char* argv[]) {
     appState.originalCwd = cwd;
     appState.projectRoot = cwd;
     appState.verbose = verbose;
+    appState.configPath = configPath;   // so /api and the banner show the real path
     appState.claudeMdContent = loadClaudeMd(cwd);
 
     // ---- Initialize components ----
@@ -924,10 +939,25 @@ Then work step by step using your tools to complete the task.)";
 
     // ---- Print banner ----
     std::cout << "\n" << ansi::cyan() << "  CloseCrab-Unified" << ansi::reset()
-              << " v0.1.0\n";
+              << " v" << CLOSECRAB_VERSION << "\n";
     std::cout << "  Model: " << ansi::bold() << appState.currentModel << ansi::reset() << "\n";
+    // Show WHERE the config lives so users can edit provider / API key / relay URL.
+    // (macOS/Linux: ~/.crab/config.yaml — otherwise hard to find.)
+    std::cout << "  Config: " << ansi::dim() << configPath << ansi::reset() << "\n";
     std::cout << "  Type " << ansi::yellow() << "/help" << ansi::reset()
-              << " for commands, " << ansi::yellow() << "/quit" << ansi::reset() << " to exit.\n\n";
+              << " for commands, " << ansi::yellow() << "/api" << ansi::reset()
+              << " to set API key/URL, " << ansi::yellow() << "/quit" << ansi::reset() << " to exit.\n\n";
+
+    // First-run hint: if a hosted provider is selected but no API key is set,
+    // tell the user exactly how to configure it (the most common "it won't
+    // connect" cause for a fresh install).
+    if ((provider == "anthropic" || provider == "openai") && apiKey.empty()) {
+        std::cout << ansi::yellow()
+                  << "  ⚠ No API key configured.\n" << ansi::reset()
+                  << "    Run " << ansi::yellow() << "/api key=sk-xxxx" << ansi::reset()
+                  << " and " << ansi::yellow() << "/api url=https://your-relay.com" << ansi::reset()
+                  << "\n    (or edit " << configPath << "), then restart.\n\n";
+    }
 
     // ---- UI components ----
     // Spinner MUST be heap-allocated. Its thread accesses members via `this`
@@ -1367,6 +1397,37 @@ Then work step by step using your tools to complete the task.)";
                 // IME wide chars consumed safely, never reinterpreted as bytes).
             }
         }
+#else
+        // POSIX (macOS/Linux): mirror the Windows discipline EXACTLY to avoid the
+        // double-read crash class. We read stdin ONLY when (a) a turn is active and
+        // (b) no selector/prompt owns the console (consoleInputBusy). The terminal
+        // is in raw mode for the turn (enterTurnInputMode → PosixTty), so read() is
+        // non-blocking (VMIN=0). We act ONLY on a lone Esc; every other byte —
+        // including the multi-byte UTF-8 of an IME-composed CJK char and arrow
+        // escape sequences — is consumed and DISCARDED (type-ahead disabled). No
+        // heap allocation, no std::cout, no spinner touch on this path.
+        while (!kwShutdown.load()) {
+            if (!kwTurnActive.load()) {
+                // Idle between turns: the main thread owns stdin (std::getline in
+                // cooked mode). We must NOT read here.
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                continue;
+            }
+            if (consoleInputBusy()) {
+                // A KeyboardSelector prompt (permission / AskUserQuestion) is
+                // reading stdin on the streaming thread — yield so we don't
+                // double-read the same fd (races and crashes).
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                continue;
+            }
+            int lastChar = 0;
+            int key = closecrab::posixReadKey(20, lastChar);  // 20ms block, then loop
+            if (key == closecrab::PK_ESC) {
+                if (g_queryEngine) g_queryEngine->interrupt();
+                kwAborted = true;
+            }
+            // PK_NONE (timeout), PK_ENTER, arrows, PK_OTHER → all ignored/discarded.
+        }
 #endif
     });
 
@@ -1477,11 +1538,11 @@ Then work step by step using your tools to complete the task.)";
         // Arm the persistent key-watcher for this turn (Esc-abort only).
         // No thread is created here — see keyWatcher declared before the loop.
         kwAborted = false;
-#ifdef _WIN32
         // Raw input mode FIRST (no echo / no line buffering), then arm the
         // watcher. Now any typing during generation is inert except Esc.
+        // Cross-platform: Windows uses the console API, POSIX uses termios
+        // (PosixTty) — both implemented in enterTurnInputMode().
         enterTurnInputMode();
-#endif
         kwTurnActive = true;
 
         try {
@@ -1505,11 +1566,9 @@ Then work step by step using your tools to complete the task.)";
         // stops calling _getch, so the main thread alone owns the console and the
         // std::cout below. All watcher-related display happens HERE.
         kwTurnActive = false;
-#ifdef _WIN32
-        // Flush keystrokes typed during the turn, then restore cooked console
-        // mode for the next prompt's ReadConsoleW.
+        // Flush keystrokes typed during the turn, then restore cooked mode for the
+        // next prompt. Cross-platform (Windows console API / POSIX termios).
         leaveTurnInputMode();
-#endif
         spinner.stop();
         if (kwAborted.load()) {
             std::cout << "\n" << ansi::yellow()

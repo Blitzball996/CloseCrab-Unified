@@ -10,6 +10,11 @@
 #include <filesystem>
 #include <fstream>
 #include <chrono>
+
+// Version injected by CMake (target_compile_definitions). Fallback for non-CMake builds.
+#ifndef CLOSECRAB_VERSION
+#define CLOSECRAB_VERSION "dev"
+#endif
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -350,7 +355,7 @@ public:
     std::string getDescription() const override { return "Show version information"; }
 
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
-        ctx.print("CloseCrab-Unified v0.1.0\n");
+        ctx.print("CloseCrab-Unified v" CLOSECRAB_VERSION "\n");
         ctx.print("Model: " + ctx.appState->currentModel + "\n");
         return CommandResult::ok();
     }

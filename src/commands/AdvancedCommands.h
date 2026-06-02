@@ -264,25 +264,114 @@ public:
 class ApiConfigCommand : public Command {
 public:
     std::string getName() const override { return "api"; }
-    std::string getDescription() const override { return "Show or set API configuration"; }
+    std::string getDescription() const override { return "Show or set API config (key/url/model/provider)"; }
+    std::vector<std::string> getAliases() const override { return {"setup"}; }
 
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        const std::string cfgPath = ctx.appState ? ctx.appState->configPath : "config/config.yaml";
+
         if (args.empty()) {
             ctx.print("API Configuration:\n");
-            ctx.print("  Model: " + ctx.appState->currentModel + "\n");
-            ctx.print("\nTo change, edit config/config.yaml:\n");
-            ctx.print("  provider: \"anthropic\"    # or openai, local\n");
-            ctx.print("  api:\n");
-            ctx.print("    base_url: \"https://your-api.com\"\n");
-            ctx.print("    api_key: \"sk-your-key\"\n");
-            ctx.print("    model: \"claude-sonnet-4-20250514\"\n");
-            ctx.print("\nOr use env vars: ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_MODEL\n");
-            ctx.print("Or CLI args: --provider --api-url --api-key --api-model\n");
-            ctx.print("\nRestart after changes.\n");
+            ctx.print("  Provider: " + Config::getInstance().getString("provider", "anthropic") + "\n");
+            ctx.print("  Base URL: " + Config::getInstance().getString("api.base_url", "") + "\n");
+            ctx.print("  Model:    " + ctx.appState->currentModel + "\n");
+            std::string key = Config::getInstance().getString("api.api_key", "");
+            ctx.print("  API key:  " + maskKey(key) + "\n");
+            ctx.print("  Config file: " + cfgPath + "\n");
+            ctx.print("\nSet values (writes to config.yaml, restart to apply):\n");
+            ctx.print("  /api key=sk-xxxx          # your API key\n");
+            ctx.print("  /api url=https://your-relay.com   # API base URL / 中转地址\n");
+            ctx.print("  /api model=claude-sonnet-4-20250514\n");
+            ctx.print("  /api provider=anthropic   # or openai, local\n");
+            ctx.print("\nOr edit the file directly: " + cfgPath + "\n");
             return CommandResult::ok();
         }
-        ctx.print("Use config/config.yaml to configure API. Restart to apply.\n");
+
+        auto eq = args.find('=');
+        if (eq == std::string::npos) {
+            ctx.print("Usage: /api key=...  |  url=...  |  model=...  |  provider=...\n");
+            return CommandResult::ok();
+        }
+        std::string field = trim(args.substr(0, eq));
+        std::string val   = trim(args.substr(eq + 1));
+
+        // Map the friendly field name to the YAML path (top-level vs api.* nested).
+        std::string yamlKey; bool nested = true;
+        if (field == "key" || field == "api_key" || field == "apikey") yamlKey = "api_key";
+        else if (field == "url" || field == "base_url" || field == "baseurl") yamlKey = "base_url";
+        else if (field == "model") yamlKey = "model";
+        else if (field == "fallback" || field == "fallback_model") yamlKey = "fallback_model";
+        else if (field == "provider") { yamlKey = "provider"; nested = false; }
+        else { ctx.print("Unknown field '" + field + "'. Use key/url/model/provider.\n"); return CommandResult::ok(); }
+
+        if (!writeYamlValue(cfgPath, yamlKey, val, nested)) {
+            return CommandResult::fail("Could not write to " + cfgPath);
+        }
+        ctx.print("Set " + field + " = " + (field == "key" ? maskKey(val) : val) + "\n");
+        ctx.print("Saved to " + cfgPath + ". Restart (/quit then relaunch) to apply.\n");
         return CommandResult::ok();
+    }
+
+private:
+    static std::string trim(const std::string& s) {
+        size_t a = s.find_first_not_of(" \t\r\n");
+        if (a == std::string::npos) return "";
+        size_t b = s.find_last_not_of(" \t\r\n");
+        return s.substr(a, b - a + 1);
+    }
+    static std::string maskKey(const std::string& k) {
+        if (k.empty()) return "(not set)";
+        if (k.size() <= 8) return "****";
+        return k.substr(0, 5) + "..." + k.substr(k.size() - 4);
+    }
+
+    // Line-based YAML edit that PRESERVES comments/formatting (yaml-cpp rewrite
+    // would strip them). `nested` keys live under the `api:` block (2-space indent);
+    // otherwise it's a top-level key. Creates the line if missing.
+    static bool writeYamlValue(const std::string& path, const std::string& key,
+                               const std::string& value, bool nested) {
+        namespace fs = std::filesystem;
+        std::ifstream in(path);
+        std::vector<std::string> lines;
+        std::string line;
+        if (in.is_open()) { while (std::getline(in, line)) lines.push_back(line); in.close(); }
+
+        std::string quoted = "\"" + value + "\"";
+        std::string newLine = nested ? ("  " + key + ": " + quoted)
+                                      : (key + ": " + quoted);
+
+        bool inApi = false, done = false;
+        for (size_t i = 0; i < lines.size() && !done; i++) {
+            const std::string& L = lines[i];
+            std::string ltrim = L; size_t p = ltrim.find_first_not_of(" \t");
+            std::string body = (p == std::string::npos) ? "" : ltrim.substr(p);
+            bool indented = (p != std::string::npos && p > 0);
+
+            if (nested) {
+                if (!indented && body.rfind("api:", 0) == 0) { inApi = true; continue; }
+                if (!indented && !body.empty() && body[0] != '#') inApi = false; // left the api block
+                if (inApi && body.rfind(key + ":", 0) == 0) { lines[i] = newLine; done = true; }
+            } else {
+                if (!indented && body.rfind(key + ":", 0) == 0) { lines[i] = newLine; done = true; }
+            }
+        }
+        if (!done) {
+            // Key not found — append (under api: if nested and that block exists).
+            if (nested) {
+                bool placed = false;
+                for (size_t i = 0; i < lines.size(); i++) {
+                    if (lines[i].rfind("api:", 0) == 0) { lines.insert(lines.begin() + i + 1, newLine); placed = true; break; }
+                }
+                if (!placed) { lines.push_back("api:"); lines.push_back(newLine); }
+            } else {
+                lines.push_back(newLine);
+            }
+        }
+
+        std::ofstream out(path, std::ios::trunc);
+        if (!out.is_open()) return false;
+        for (const auto& l : lines) out << l << "\n";
+        return true;
     }
 };
 
