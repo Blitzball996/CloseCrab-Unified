@@ -9,6 +9,7 @@
 #include <map>
 #include <mutex>
 #include <chrono>
+#include <thread>
 #include <string>
 #include <cstdlib>
 #include <atomic>
@@ -102,7 +103,18 @@ public:
         std::string provider = cfg.getString("provider", "anthropic");
         std::string apiKey   = cfg.getString("api.api_key", "");
         std::string baseUrl  = cfg.getString("api.base_url", "https://api.anthropic.com");
-        std::string model    = cfg.getString("api.model", "claude-sonnet-4-20250514");
+        std::string mainModel = cfg.getString("api.model", "claude-sonnet-4-20250514");
+        std::string fallback  = cfg.getString("api.fallback_model", "claude-sonnet-4-20250514");
+
+        // Run the search on the SMALL/FAST model (fallback, usually sonnet), NOT the
+        // main model (usually opus). Rationale (matches JackProAi's getSmallFastModel
+        // path for web_search): the relay's opus capacity is scarce — doing the search
+        // on opus AND then the main loop on opus is a "double-opus" burst that hits the
+        // relay's intermittent "所有供应商暂时不可用" (503) overload window. Sonnet has
+        // ample capacity (measured: always 200), so it both frees opus for the main
+        // turn and is reliably available. Override with CLOSECRAB_WEBSEARCH_MODEL.
+        std::string model = fallback.empty() ? mainModel : fallback;
+        if (const char* e = std::getenv("CLOSECRAB_WEBSEARCH_MODEL")) { if (e[0]) model = e; }
 
         // Env overrides (same priority as main.cpp).
         if (apiKey.empty()) { if (const char* e = std::getenv("ANTHROPIC_AUTH_TOKEN")) apiKey = e; }
@@ -135,41 +147,60 @@ public:
         while (!baseUrl.empty() && baseUrl.back() == '/') baseUrl.pop_back();
         std::string url = baseUrl + "/v1/messages";
 
-        CURL* curl = curl_easy_init();
-        if (!curl) return ToolResult::fail("CURL init failed");
-
-        struct curl_slist* headers = nullptr;
-        headers = curl_slist_append(headers, ("x-api-key: " + apiKey).c_str());
-        headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
-        headers = curl_slist_append(headers, "anthropic-beta: web-search-2025-03-05");
-        headers = curl_slist_append(headers, "content-type: application/json");
-
+        // Retry loop: transient relay errors (503 "所有供应商暂时不可用", 429, 5xx,
+        // network blips) get exponential-backoff retries — matching JackProAi's
+        // withRetry on its web_search sub-query (previously this had NO retry, so a
+        // single transient 503 killed the whole search).
         std::string response;
-        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-        curl_easy_setopt(curl, CURLOPT_POST, 1L);
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, bodyStr.c_str());
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)bodyStr.size());
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);        // search can take a while
-        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
-        applyProxyToCurl(curl);                                // the FIX: go through the proxy
-        if (ctx.abortFlag) {
-            curl_easy_setopt(curl, CURLOPT_XFERINFODATA, (void*)ctx.abortFlag);
-            curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION,
-                +[](void* p, curl_off_t, curl_off_t, curl_off_t, curl_off_t) -> int {
-                    auto* f = static_cast<const std::atomic<bool>*>(p);
-                    return (f && f->load()) ? 1 : 0;
-                });
-            curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-        }
-
-        CURLcode res = curl_easy_perform(curl);
         long httpCode = 0;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
-        curl_slist_free_all(headers);
-        curl_easy_cleanup(curl);
+        CURLcode res = CURLE_OK;
+        constexpr int kMaxAttempts = 4;
+        for (int attempt = 1; attempt <= kMaxAttempts; attempt++) {
+            if (ctx.abortFlag && ctx.abortFlag->load()) return ToolResult::fail("Search aborted");
+            response.clear();
+            httpCode = 0;
+
+            CURL* curl = curl_easy_init();
+            if (!curl) return ToolResult::fail("CURL init failed");
+
+            struct curl_slist* headers = nullptr;
+            headers = curl_slist_append(headers, ("x-api-key: " + apiKey).c_str());
+            headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
+            headers = curl_slist_append(headers, "anthropic-beta: web-search-2025-03-05");
+            headers = curl_slist_append(headers, "content-type: application/json");
+
+            curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+            curl_easy_setopt(curl, CURLOPT_POST, 1L);
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, bodyStr.c_str());
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)bodyStr.size());
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);        // search can take a while
+            curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+            applyProxyToCurl(curl);                                // go through the proxy
+            if (ctx.abortFlag) {
+                curl_easy_setopt(curl, CURLOPT_XFERINFODATA, (void*)ctx.abortFlag);
+                curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION,
+                    +[](void* p, curl_off_t, curl_off_t, curl_off_t, curl_off_t) -> int {
+                        auto* f = static_cast<const std::atomic<bool>*>(p);
+                        return (f && f->load()) ? 1 : 0;
+                    });
+                curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+            }
+
+            res = curl_easy_perform(curl);
+            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
+            curl_slist_free_all(headers);
+            curl_easy_cleanup(curl);
+
+            // Retryable: network error OR 429/5xx. Non-retryable (4xx auth/bad-request): stop.
+            bool transient = (res != CURLE_OK) || httpCode == 429 || httpCode >= 500;
+            if (!transient || attempt == kMaxAttempts) break;
+            // Exponential backoff: 600ms, 1.2s, 2.4s
+            int delayMs = 600 * (1 << (attempt - 1));
+            std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+        }
 
         if (res != CURLE_OK) {
             return ToolResult::fail(std::string("Search failed: ") + curl_easy_strerror(res) +
