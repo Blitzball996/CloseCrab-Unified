@@ -29,8 +29,13 @@ public:
 
     // Resolved activation server base URL (env CC_LICENSE_URL > default).
     static std::string baseUrl();
-    // Resolved outbound proxy (env CC_LICENSE_PROXY > ALL_PROXY > HTTPS_PROXY > "").
+    // Resolved outbound proxy. Priority: saved ProxyUrl (registry, via setProxy)
+    // > env CC_LICENSE_PROXY > ALL_PROXY > HTTPS_PROXY > "". Empty means "auto":
+    // activate() also auto-tries a direct connection + common clash/v2ray ports.
     static std::string proxy();
+    // Persist a user-supplied proxy (e.g. "http://127.0.0.1:7897") so future
+    // activations use it first. Pass "" to clear.
+    static void setProxy(const std::string& url);
 
     static lic::Status status();             // evaluate stored activation / trial
     static ActivateResult activate(const std::string& rawKey);  // online activate + persist

@@ -132,6 +132,37 @@ std::string errText(const std::string& code) {
 }
 
 std::atomic<bool> g_trialThreadStarted{false};
+
+// --- Saved proxy (registry HKCU\Software\Blitzball\CloseCrab\ProxyUrl) -------
+#ifdef _WIN32
+std::string regReadProxy() {
+    HKEY h; std::string out;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\Blitzball\\CloseCrab",
+                      0, KEY_READ, &h) == ERROR_SUCCESS) {
+        char buf[512]; DWORD sz = sizeof(buf) - 1, type = 0;
+        if (RegQueryValueExA(h, "ProxyUrl", nullptr, &type, (LPBYTE)buf, &sz)
+                == ERROR_SUCCESS && type == REG_SZ) {
+            buf[(sz < sizeof(buf)) ? sz : sizeof(buf) - 1] = '\0';
+            out = buf;
+        }
+        RegCloseKey(h);
+    }
+    return out;
+}
+void regWriteProxy(const std::string& v) {
+    HKEY h;
+    if (RegCreateKeyExA(HKEY_CURRENT_USER, "Software\\Blitzball\\CloseCrab",
+                        0, nullptr, 0, KEY_WRITE, nullptr, &h, nullptr)
+            == ERROR_SUCCESS) {
+        RegSetValueExA(h, "ProxyUrl", 0, REG_SZ,
+                       (const BYTE*)v.c_str(), (DWORD)(v.size() + 1));
+        RegCloseKey(h);
+    }
+}
+#else
+std::string regReadProxy() { return ""; }
+void regWriteProxy(const std::string&) {}
+#endif
 } // namespace
 
 std::string LicenseGate::baseUrl() {
@@ -139,12 +170,16 @@ std::string LicenseGate::baseUrl() {
 }
 
 std::string LicenseGate::proxy() {
+    std::string saved = regReadProxy();
+    if (!saved.empty()) return saved;
     if (const char* p = std::getenv("CC_LICENSE_PROXY")) { if (*p) return p; }
     if (const char* p = std::getenv("ALL_PROXY"))        { if (*p) return p; }
     if (const char* p = std::getenv("HTTPS_PROXY"))      { if (*p) return p; }
     if (const char* p = std::getenv("https_proxy"))      { if (*p) return p; }
     return "";  // libcurl will still pick up *_proxy env automatically
 }
+
+void LicenseGate::setProxy(const std::string& url) { regWriteProxy(url); }
 
 lic::Status LicenseGate::status() {
     return lic::evaluate(kAppKey, kPrefix2);
@@ -167,7 +202,27 @@ ActivateResult LicenseGate::activate(const std::string& rawKey) {
         {"key", pr.canonical}, {"device_id", dev},
         {"product", pr.product}, {"app_version", kAppVersion}};
     std::string url = baseUrl() + "/api/license/activate";
-    HttpResp r = httpPostJson(url, req.dump(), proxy());
+
+    // Try, in order: user-saved/env proxy, direct, then common local proxy ports
+    // (clash-verge 7897, clash 7890, v2rayN 10809). First one that yields an HTTP
+    // response wins — so most users never need to configure anything.
+    std::vector<std::string> cands;
+    auto addCand = [&cands](const std::string& p) {
+        for (const auto& c : cands) if (c == p) return;
+        cands.push_back(p);
+    };
+    std::string userProxy = proxy();
+    if (!userProxy.empty()) addCand(userProxy);
+    addCand("");                       // direct connection
+    addCand("http://127.0.0.1:7897");  // clash-verge default
+    addCand("http://127.0.0.1:7890");  // clash classic default
+    addCand("http://127.0.0.1:10809"); // v2rayN default
+
+    HttpResp r;
+    for (const auto& p : cands) {
+        r = httpPostJson(url, req.dump(), p);
+        if (r.code != 0) break;        // got a response (any HTTP status)
+    }
 
     if (r.code == 0) {
         out.errorCode = "NETWORK";
@@ -264,6 +319,25 @@ bool LicenseGate::enforceAtStartup() {
         return (a == std::string::npos) ? "" : line.substr(a, b - a + 1);
     };
 
+    // Activate, and if it fails purely on the network, offer to set a proxy and retry.
+    auto activateWithProxyRetry = [&](const std::string& key) -> ActivateResult {
+        std::printf(tr("Activating online…\n", "正在联网激活…\n"));
+        auto res = activate(key);
+        if (!res.ok && res.errorCode == "NETWORK") {
+            std::string p = promptForSerial(tr(
+                "\nCould not reach the server. If you use a proxy (clash/v2ray), "
+                "enter it to retry, e.g. http://127.0.0.1:7897 (Enter to skip): ",
+                "\n无法连接服务器。若使用代理(clash/v2ray)，请输入代理地址重试，"
+                "例如 http://127.0.0.1:7897（直接回车跳过）: "));
+            if (!p.empty()) {
+                setProxy(p);
+                std::printf(tr("Retrying via %s …\n", "正在通过 %s 重试…\n"), p.c_str());
+                res = activate(key);
+            }
+        }
+        return res;
+    };
+
     if (s.state == lic::State::Locked) {
         std::printf(tr("\n\033[31m============== CloseCrab — Not Activated ==============\033[0m\n",
                        "\n\033[31m================ CloseCrab 未激活 ================\033[0m\n"));
@@ -284,8 +358,7 @@ bool LicenseGate::enforceAtStartup() {
                 std::printf(tr("Exited.\n", "已退出。\n"));
                 return false;
             }
-            std::printf(tr("Activating online…\n", "正在联网激活…\n"));
-            auto res = activate(key);
+            auto res = activateWithProxyRetry(key);
             std::printf("%s\n", res.message.c_str());
             if (res.ok) return true;
         }
@@ -310,8 +383,7 @@ bool LicenseGate::enforceAtStartup() {
         tr("\nEnter a key to activate now, or press Enter to start the trial: ",
            "\n现在输入序列号激活，或直接按回车开始试用: "));
     if (!key.empty()) {
-        std::printf(tr("Activating online…\n", "正在联网激活…\n"));
-        auto res = activate(key);
+        auto res = activateWithProxyRetry(key);
         std::printf("%s\n", res.message.c_str());
         if (res.ok) return true;  // activated — no trial limit
         std::printf(tr("\033[33mContinuing in trial mode (%d minutes this session).\033[0m\n",
