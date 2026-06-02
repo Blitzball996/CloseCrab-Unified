@@ -20,7 +20,7 @@
 namespace lic {
 
 // --- Embedded Ed25519 PUBLIC key (32 bytes). -------------------------------
-// Matches the server signing key (base64url: dF816QXqpmv7Q2mxltJp0E2fmzyHzME0Dsn_ptjnOcc).
+// Matches the server signing key (base64url: cyKUWoytmoNBZ9g1Oehr-xfV9YXdjVTE4qzrIDfzcqc).
 // The matching PRIVATE seed lives ONLY on the backend (LICENSE_PRIVATE_KEY).
 extern const unsigned char kPublicKey[32];
 
