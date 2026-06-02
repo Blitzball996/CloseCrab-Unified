@@ -54,3 +54,6 @@ extensions/vscode/out/
 docs/COST-INTERNAL.md
 # Hide all docs from git (kept locally; installer still packages them from disk)
 docs/
+
+# 个人笔记(本地保留, 不上传)
+CloseCrab问题.txt
