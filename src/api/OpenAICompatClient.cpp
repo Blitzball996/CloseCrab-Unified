@@ -134,7 +134,7 @@ static void performOAICurl(
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &curlCtx);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
-    applyProxyToCurl(curl);   // honor proxy / CLOSECRAB_NO_PROXY (墙内可达性)
+    closecrab::applyProxyToCurl(curl);   // honor proxy / CLOSECRAB_NO_PROXY (墙内可达性)
 
     CURLcode res = curl_easy_perform(curl);
     long httpCode = 0;
