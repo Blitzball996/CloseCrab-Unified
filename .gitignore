@@ -3,6 +3,11 @@ out/
 build/
 icons/
 
+# .NET / VS 扩展构建产物
+**/obj/
+**/bin/Debug/
+**/bin/Release/
+
 # 本地配置（含 API key，勿提交）
 config/config.yaml
 models/
