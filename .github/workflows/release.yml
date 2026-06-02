@@ -39,9 +39,10 @@ jobs:
         shell: bash
         run: |
           mkdir -p package/CloseCrab
-          cp build/Release/closecrab-unified.exe package/CloseCrab/
+          cp build/Release/closecrab.exe package/CloseCrab/
           cp build/Release/*.dll package/CloseCrab/ 2>/dev/null || true
-          cp config/config.yaml.example package/CloseCrab/config.yaml 2>/dev/null || true
+          mkdir -p package/CloseCrab/config
+          cp config/config.yaml.example package/CloseCrab/config/config.yaml 2>/dev/null || true
           cd package && 7z a -tzip ../CloseCrab-Windows-x64.zip CloseCrab/
 
       - name: Build installer
@@ -94,7 +95,7 @@ jobs:
       - name: Package
         run: |
           mkdir -p package/CloseCrab
-          cp build/closecrab-unified package/CloseCrab/
+          cp build/closecrab package/CloseCrab/
           cp config/config.yaml.example package/CloseCrab/config.yaml 2>/dev/null || true
           tar -czf CloseCrab-Linux-x86_64.tar.gz -C package CloseCrab
 
@@ -131,7 +132,7 @@ jobs:
         run: cmake --build build --config ${{env.BUILD_TYPE}} --target closecrab-unified
 
       - name: Verify universal binary
-        run: lipo -info build/closecrab-unified
+        run: lipo -info build/closecrab
 
       - name: Resolve version
         id: ver
@@ -146,19 +147,35 @@ jobs:
       - name: Package (.tar.gz)
         run: |
           mkdir -p package/CloseCrab
-          cp build/closecrab-unified package/CloseCrab/
-          cp config/config.yaml package/CloseCrab/config.yaml 2>/dev/null || true
+          # Install as `closecrab` (short command name, per user request)
+          cp build/closecrab package/CloseCrab/closecrab
+          chmod +x package/CloseCrab/closecrab
           cp README.md package/CloseCrab/ 2>/dev/null || true
           cp LICENSE package/CloseCrab/ 2>/dev/null || true
           tar -czf CloseCrab-macOS-universal.tar.gz -C package CloseCrab
 
       - name: Package (.pkg)
         run: |
+          # --- payload: single short-named binary in /usr/local/bin ---
           mkdir -p pkg_root/usr/local/bin
-          mkdir -p pkg_root/usr/local/etc/closecrab
-          cp build/closecrab-unified pkg_root/usr/local/bin/
-          cp config/config.yaml pkg_root/usr/local/etc/closecrab/config.yaml 2>/dev/null || true
+          cp build/closecrab pkg_root/usr/local/bin/closecrab
+          chmod +x pkg_root/usr/local/bin/closecrab
+          # NOTE: config.yaml is intentionally NOT shipped — the app auto-creates
+          # ~/.crab/config.yaml on first run (see main.cpp resolveConfigPath).
+
+          # --- postinstall: strip the quarantine flag so the binary runs without
+          # the "unidentified developer" gatekeeper prompt, no manual xattr needed ---
+          mkdir -p pkg_scripts
+          cat > pkg_scripts/postinstall <<'SH'
+          #!/bin/bash
+          /usr/bin/xattr -dr com.apple.quarantine /usr/local/bin/closecrab 2>/dev/null || true
+          /bin/chmod +x /usr/local/bin/closecrab 2>/dev/null || true
+          exit 0
+          SH
+          chmod +x pkg_scripts/postinstall
+
           pkgbuild --root pkg_root \
+            --scripts pkg_scripts \
             --identifier com.blitzball.closecrab \
             --version "${{ steps.ver.outputs.version }}" \
             --install-location / \

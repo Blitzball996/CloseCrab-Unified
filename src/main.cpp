@@ -12,9 +12,17 @@
 #endif
 #endif
 
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>   // _NSGetExecutablePath
+#elif defined(__linux__)
+#include <unistd.h>        // readlink
+#endif
+
 #include <iostream>
 #include <string>
 #include <memory>
+#include <vector>
+#include <fstream>
 #include <filesystem>
 #include <csignal>
 #include <sstream>
@@ -334,6 +342,151 @@ static std::string loadClaudeMd(const std::string& projectRoot) {
     return std::string(std::istreambuf_iterator<char>(f), {});
 }
 
+// ---- Cross-platform config resolution -------------------------------------
+// Directory containing the running executable (NOT the cwd). Used so a globally
+// installed binary finds its sibling config/ folder on Windows.
+static fs::path getExecutableDir() {
+    try {
+#if defined(_WIN32)
+        wchar_t buf[MAX_PATH];
+        DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+        if (n > 0 && n < MAX_PATH) return fs::path(std::wstring(buf, n)).parent_path();
+#elif defined(__APPLE__)
+        char buf[4096];
+        uint32_t size = sizeof(buf);
+        if (_NSGetExecutablePath(buf, &size) == 0)
+            return fs::canonical(fs::path(buf)).parent_path();
+#elif defined(__linux__)
+        char buf[4096];
+        ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+        if (n > 0) { buf[n] = '\0'; return fs::path(buf).parent_path(); }
+#endif
+    } catch (...) {}
+    return fs::current_path();
+}
+
+// User home directory (~). On macOS/Linux this is where ~/.crab lives.
+static fs::path getHomeDir() {
+#if defined(_WIN32)
+    if (const char* up = std::getenv("USERPROFILE")) return fs::path(up);
+    const char* hd = std::getenv("HOMEDRIVE");
+    const char* hp = std::getenv("HOMEPATH");
+    if (hd && hp) return fs::path(std::string(hd) + hp);
+#else
+    if (const char* h = std::getenv("HOME")) return fs::path(h);
+#endif
+    return fs::current_path();
+}
+
+// Default config.yaml shipped when none exists yet. Mirrors config/config.yaml.
+// IMPORTANT: provider defaults to "anthropic" so a fresh install talks to the
+// hosted API out of the box (a brand-new machine has no local .gguf model).
+static const char* kDefaultConfigYaml = R"YAML(# CloseCrab-Unified Configuration (auto-generated on first run)
+
+server:
+  port: 9001
+  host: "127.0.0.1"
+
+database:
+  path: "data/closecrab.db"
+
+logging:
+  level: "info"
+
+# Provider: local, anthropic, openai
+provider: "anthropic"
+
+api:
+  base_url: "https://yikoulian.cc/"
+  api_key: "sk-8GebqzfcXcgMXWYjTvcK9h3RQ6GY6aiCaLCMrKAGPvFkjhAV"
+  model: "claude-opus-4-7"
+  fallback_model: "claude-sonnet-4-20250514"
+  cache_ttl_minutes: 5
+
+# HTTP Proxy (optional). Also reads env: CLOSECRAB_PROXY, https_proxy, HTTPS_PROXY.
+# Set CLOSECRAB_NO_PROXY=1 to force a direct connection ignoring proxy env vars.
+proxy: ""
+
+llm:
+  model_path: "models/deepseek-moe-16b-chat.Q4_K_M.gguf"
+  max_tokens: 4096
+  temperature: 0.7
+
+rag:
+  embedding_model_path: "models/bge-small-zh/onnx/model_quantized.onnx"
+  embedding_tokenizer_path: "models/bge-small-zh/tokenizer.json"
+  reranker_model_path: "models/bge-reranker-base/onnx/model_uint8.onnx"
+  reranker_tokenizer_path: "models/bge-reranker-base/tokenizer.json"
+)YAML";
+
+// The platform-canonical config location — also where we auto-create on first run.
+//   Windows      : <exe_dir>/config/config.yaml   (sibling of the installed exe)
+//   macOS/Linux  : ~/.crab/config.yaml            (same home as ~/.crab/settings.json)
+static fs::path defaultConfigPath() {
+#if defined(_WIN32)
+    return getExecutableDir() / "config" / "config.yaml";
+#else
+    return getHomeDir() / ".crab" / "config.yaml";
+#endif
+}
+
+// The single directory that holds ALL app-internal files (config, data/, logs,
+// trace.log, crash.log). The process chdir's here at startup so the many relative
+// paths scattered through the codebase ("data/...", "trace.log", "closecrab.log")
+// all land in ONE place instead of wherever the user happened to launch from.
+//   Windows      : <exe_dir>            (everything beside the installed exe)
+//   macOS/Linux  : ~/.crab             (one tidy home folder)
+//   Dev/portable : the launch cwd, IF it already has config/config.yaml — keeps
+//                  source-checkout and portable-folder runs behaving as before.
+static fs::path appDataDir(const fs::path& userCwd) {
+    std::error_code ec;
+    if (fs::exists(userCwd / "config" / "config.yaml", ec)) return userCwd;
+#if defined(_WIN32)
+    return getExecutableDir();
+#else
+    return getHomeDir() / ".crab";
+#endif
+}
+
+// Resolve which config.yaml to load, creating a default if none is found.
+// Search order (when the user did NOT pass -c/--config):
+//   1. ./config/config.yaml             — running from a dev/source checkout
+//   2. platform-canonical location      — global install (see defaultConfigPath)
+//   3. <exe_dir>/config/config.yaml     — fallback bundle next to the binary (all OS)
+//   4. /usr/local/etc/closecrab/...     — macOS/Linux .pkg install location
+// If none exist, write kDefaultConfigYaml to the platform-canonical location.
+static std::string resolveConfigPath() {
+    std::vector<fs::path> candidates;
+    candidates.push_back(fs::path("config") / "config.yaml");      // cwd (dev)
+    candidates.push_back(defaultConfigPath());                      // canonical
+    candidates.push_back(getExecutableDir() / "config" / "config.yaml");
+#if !defined(_WIN32)
+    candidates.push_back(fs::path("/usr/local/etc/closecrab/config.yaml"));
+#endif
+    for (const auto& c : candidates) {
+        std::error_code ec;
+        if (fs::exists(c, ec) && fs::is_regular_file(c, ec)) return c.string();
+    }
+    // None found → create the canonical default so the app is usable immediately.
+    fs::path target = defaultConfigPath();
+    try {
+        std::error_code ec;
+        fs::create_directories(target.parent_path(), ec);
+        std::ofstream out(target);
+        if (out.is_open()) {
+            out << kDefaultConfigYaml;
+            out.close();
+            spdlog::info("No config found — created default at: {}", target.string());
+            return target.string();
+        }
+        spdlog::warn("Could not write default config to {} — using built-in defaults", target.string());
+    } catch (const std::exception& e) {
+        spdlog::warn("Config auto-create failed ({}) — using built-in defaults", e.what());
+    }
+    return target.string();  // load() will fail gracefully and fall back to getters' defaults
+}
+
+
 int main(int argc, char* argv[]) {
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);
@@ -387,7 +540,7 @@ int main(int argc, char* argv[]) {
 
     // ---- CLI arguments ----
     CLI::App app{"CloseCrab-Unified - Local AI Assistant"};
-    std::string configPath = "config/config.yaml";
+    std::string configPath;   // empty = auto-resolve; set only when user passes -c
     std::string modelPath;
     std::string apiKey;
     std::string apiBaseUrl;
@@ -431,6 +584,23 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // ---- Consolidate all app-internal files into ONE directory --------------
+    // Capture the user's launch directory FIRST (this stays the AI's project root
+    // — file tools operate here via ctx.cwd, NOT the process cwd). Then chdir the
+    // PROCESS into the app data dir so every relative path the app writes
+    // (config/, data/, closecrab.log, trace.log, crash.log) lands in one place.
+    std::string userProjectCwd = fs::current_path().string();
+    {
+        std::error_code ec;
+        fs::path appDir = appDataDir(userProjectCwd);
+        fs::create_directories(appDir, ec);
+        fs::current_path(appDir, ec);   // portable chdir; AI still uses userProjectCwd
+        if (ec) {
+            // If chdir fails, stay put — files scatter but the app still runs.
+            spdlog::warn("Could not switch to app dir {} ({})", appDir.string(), ec.message());
+        }
+    }
+
     spdlog::set_level(verbose ? spdlog::level::debug : spdlog::level::info);
 
     // File logging: write all logs to closecrab.log so crash diagnostics survive
@@ -446,10 +616,16 @@ int main(int argc, char* argv[]) {
     }
 
     // ---- Load config ----
+    // If the user didn't pass -c/--config, resolve a per-OS location and
+    // auto-create a default there on first run (Windows: <exe>/config/config.yaml,
+    // macOS/Linux: ~/.crab/config.yaml).
+    if (configPath.empty()) configPath = resolveConfigPath();
     auto& config = Config::getInstance();
     config.load(configPath);
 
-    std::string cwd = fs::current_path().string();
+    // The AI's project root = where the user launched (NOT the app data dir we
+    // chdir'd into above). All file tools resolve paths against this via ctx.cwd.
+    std::string cwd = userProjectCwd;
 
     // ---- Load settings.json ----
     auto& settings = SettingsManager::getInstance();

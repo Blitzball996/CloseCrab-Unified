@@ -10,6 +10,7 @@
 #include "ContextCollapse.h"
 #include "TranscriptStore.h"
 #include "MessageSnip.h"
+#include "../utils/Trace.h"
 #include <spdlog/spdlog.h>
 #include <fstream>
 #include <filesystem>
@@ -439,7 +440,7 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
 
     auto start = std::chrono::steady_clock::now();
     ToolResult result;
-    { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"  tool-call %s input=%zu\n", event.toolName.c_str(), event.toolInput.dump().size()); fflush(t); fclose(t);} }
+    { FILE* t = closecrab::traceOpen(); if(t){fprintf(t,"  tool-call %s input=%zu\n", event.toolName.c_str(), event.toolInput.dump().size()); fflush(t); fclose(t);} }
     try {
         result = tool->call(ctx, event.toolInput);
     } catch (const std::exception& e) {
@@ -449,7 +450,7 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
         spdlog::error("Tool {} threw unknown exception", event.toolName);
         result = ToolResult::fail("Internal error (unknown exception)");
     }
-    { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"  tool-ret %s ok=%d\n", event.toolName.c_str(), result.success?1:0); fflush(t); fclose(t);} }
+    { FILE* t = closecrab::traceOpen(); if(t){fprintf(t,"  tool-ret %s ok=%d\n", event.toolName.c_str(), result.success?1:0); fflush(t); fclose(t);} }
     auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 
     if (config_.appState) {
@@ -459,9 +460,9 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
 
     result.elapsedSeconds = elapsed;
 
-    { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"  pre-callback\n"); fflush(t); fclose(t);} }
+    { FILE* t = closecrab::traceOpen(); if(t){fprintf(t,"  pre-callback\n"); fflush(t); fclose(t);} }
     if (callbacks.onToolResult) callbacks.onToolResult(event.toolName, result);
-    { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"  post-callback\n"); fflush(t); fclose(t);} }
+    { FILE* t = closecrab::traceOpen(); if(t){fprintf(t,"  post-callback\n"); fflush(t); fclose(t);} }
 
     // Fire PostToolUse hooks
     if (hookMgr.hasHooks()) {
@@ -469,7 +470,7 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
     }
 
     // Add tool result to messages (ensure valid UTF-8 for JSON serialization)
-    { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"  pre-msg-push content=%zu\n", result.content.size()); fflush(t); fclose(t);} }
+    { FILE* t = closecrab::traceOpen(); if(t){fprintf(t,"  pre-msg-push content=%zu\n", result.content.size()); fflush(t); fclose(t);} }
     std::string safeContent = ensureUtf8(result.success ? result.content : result.error);
     // Persist large output to disk, return preview to LLM
     if (result.success) {
@@ -489,7 +490,7 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
         resultJson = nlohmann::json(ascii);
     }
     messages_.push_back(Message::makeToolResult(event.toolUseId, resultJson, !result.success));
-    { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"  tool-done %s ok=%d msgCount=%zu\n", event.toolName.c_str(), result.success?1:0, messages_.size()); fclose(t);} }
+    { FILE* t = closecrab::traceOpen(); if(t){fprintf(t,"  tool-done %s ok=%d msgCount=%zu\n", event.toolName.c_str(), result.success?1:0, messages_.size()); fclose(t);} }
 }
 
 void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks& callbacks) {
@@ -765,7 +766,7 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
         if (apiCallFailed) break; // Don't continue the turn loop on API failure
         PredictiveEngine::getInstance().stopPreloading();
 
-        { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"[turn%d] post-stream stopReason=%s tools=%zu text=%zu\n", turnCount, stopReason.c_str(), pendingToolCalls.size(), accumulatedText.size()); fclose(t);} }
+        { FILE* t = closecrab::traceOpen(); if(t){fprintf(t,"[turn%d] post-stream stopReason=%s tools=%zu text=%zu\n", turnCount, stopReason.c_str(), pendingToolCalls.size(), accumulatedText.size()); fclose(t);} }
 
         // Error recovery: handle max_tokens stop reason
         // claude-code escalation: if capped at 8K and hit the limit, escalate to 64K and retry.
@@ -821,7 +822,7 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
         // Process tool calls (parallel when multiple, sequential when single)
         if (!pendingToolCalls.empty() && !interrupted_) {
             {
-                FILE* t = fopen("trace.log","a");
+                FILE* t = closecrab::traceOpen();
                 if(t){
                     fprintf(t,"[turn%d] pre-tool count=%zu\n", turnCount, pendingToolCalls.size());
                     for (size_t i = 0; i < pendingToolCalls.size(); i++) {
@@ -841,15 +842,15 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                 // Partition tools into serial and parallel
                 std::vector<StreamEvent> parallelCalls;
                 std::vector<StreamEvent> serialCalls;
-                { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"  partitioning %zu tools\n", pendingToolCalls.size()); fflush(t); fclose(t);} }
+                { FILE* t = closecrab::traceOpen(); if(t){fprintf(t,"  partitioning %zu tools\n", pendingToolCalls.size()); fflush(t); fclose(t);} }
                 for (size_t idx = 0; idx < pendingToolCalls.size(); idx++) {
                     const auto& tc = pendingToolCalls[idx];
-                    { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"  partition[%zu] name=%s registry=%p\n", idx, tc.toolName.c_str(), (void*)config_.toolRegistry); fflush(t); fclose(t);} }
+                    { FILE* t = closecrab::traceOpen(); if(t){fprintf(t,"  partition[%zu] name=%s registry=%p\n", idx, tc.toolName.c_str(), (void*)config_.toolRegistry); fflush(t); fclose(t);} }
                     Tool* t2 = config_.toolRegistry ? config_.toolRegistry->getTool(tc.toolName) : nullptr;
-                    { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"  partition[%zu] tool=%p\n", idx, (void*)t2); fflush(t); fclose(t);} }
+                    { FILE* t = closecrab::traceOpen(); if(t){fprintf(t,"  partition[%zu] tool=%p\n", idx, (void*)t2); fflush(t); fclose(t);} }
                     if (t2 && t2->isConcurrencySafe()) parallelCalls.push_back(tc);
                     else serialCalls.push_back(tc);
-                    { FILE* t = fopen("trace.log","a"); if(t){fprintf(t,"  partition[%zu] done serial=%zu parallel=%zu\n", idx, serialCalls.size(), parallelCalls.size()); fflush(t); fclose(t);} }
+                    { FILE* t = closecrab::traceOpen(); if(t){fprintf(t,"  partition[%zu] done serial=%zu parallel=%zu\n", idx, serialCalls.size(), parallelCalls.size()); fflush(t); fclose(t);} }
                 }
 
                 // Stateful tools first, sequentially (full permission + display).
@@ -872,7 +873,7 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                 for (const auto& tc : parallelCalls) {
                     if (interrupted_) break;
                     futures.push_back(std::async(std::launch::async, [&, tc]() -> ParallelResult {
-                        FILE* tf = fopen("trace.log","a"); if(tf){fprintf(tf,"  parallel-start %s\n", tc.toolName.c_str()); fflush(tf); fclose(tf);}
+                        FILE* tf = closecrab::traceOpen(); if(tf){fprintf(tf,"  parallel-start %s\n", tc.toolName.c_str()); fflush(tf); fclose(tf);}
                         if (interrupted_) return {tc, ToolResult::fail("interrupted")};
                         StreamEvent localEvent = tc;
 
@@ -900,18 +901,18 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                         } catch (...) {
                             result = ToolResult::fail("Internal error (unknown exception)");
                         }
-                        {FILE* tf2 = fopen("trace.log","a"); if(tf2){fprintf(tf2,"  parallel-done %s ok=%d\n", localEvent.toolName.c_str(), result.success?1:0); fflush(tf2); fclose(tf2);}}
+                        {FILE* tf2 = closecrab::traceOpen(); if(tf2){fprintf(tf2,"  parallel-done %s ok=%d\n", localEvent.toolName.c_str(), result.success?1:0); fflush(tf2); fclose(tf2);}}
                         return {localEvent, result};
                     }));
                 }
 
                 // Wait for all parallel tools, then display results sequentially (safe)
-                { FILE* tf = fopen("trace.log","a"); if(tf){fprintf(tf,"  waiting %zu futures\n", futures.size()); fflush(tf); fclose(tf);} }
+                { FILE* tf = closecrab::traceOpen(); if(tf){fprintf(tf,"  waiting %zu futures\n", futures.size()); fflush(tf); fclose(tf);} }
                 for (auto& f : futures) {
                     if (!f.valid()) continue;
-                    { FILE* tf = fopen("trace.log","a"); if(tf){fprintf(tf,"  f.get()\n"); fflush(tf); fclose(tf);} }
+                    { FILE* tf = closecrab::traceOpen(); if(tf){fprintf(tf,"  f.get()\n"); fflush(tf); fclose(tf);} }
                     auto pr = f.get();
-                    { FILE* tf = fopen("trace.log","a"); if(tf){fprintf(tf,"  got %s ok=%d\n", pr.event.toolName.c_str(), pr.result.success?1:0); fflush(tf); fclose(tf);} }
+                    { FILE* tf = closecrab::traceOpen(); if(tf){fprintf(tf,"  got %s ok=%d\n", pr.event.toolName.c_str(), pr.result.success?1:0); fflush(tf); fclose(tf);} }
                     if (callbacks.onToolUse) callbacks.onToolUse(pr.event.toolName, pr.event.toolInput);
                     if (callbacks.onToolResult) callbacks.onToolResult(pr.event.toolName, pr.result);
 

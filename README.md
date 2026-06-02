@@ -112,13 +112,13 @@ Uncomment the mode you want, comment out the others, and restart.
 set ANTHROPIC_AUTH_TOKEN=sk-your-key
 set ANTHROPIC_BASE_URL=https://your-proxy.com
 set ANTHROPIC_MODEL=claude-opus-4-20250514
-closecrab-unified.exe -c config/config.yaml
+closecrab.exe -c config/config.yaml
 ```
 
 ### Method 3: Command-line arguments
 
 ```bash
-closecrab-unified.exe --provider anthropic --api-key sk-xxx --api-url https://api.anthropic.com --api-model claude-sonnet-4-20250514
+closecrab.exe --provider anthropic --api-key sk-xxx --api-url https://api.anthropic.com --api-model claude-sonnet-4-20250514
 ```
 
 ### Priority
@@ -598,7 +598,7 @@ Team Mode enables multiple developers to connect to a single CloseCrab server an
 
 ```bash
 # Start CloseCrab server (Team Mode auto-enabled on port 9002)
-closecrab-unified --config config/config.yaml
+closecrab --config config/config.yaml
 
 # Connect from multiple phones/PCs via CloseCrab-Web
 # Each client gets unique ID, independent history, and appears on leaderboard

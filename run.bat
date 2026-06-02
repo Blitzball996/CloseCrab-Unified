@@ -5,5 +5,5 @@ echo CloseCrab-Unified - AI Assistant
 echo ========================================
 echo.
 echo Starting...
-closecrab-unified.exe -c config\config.yaml
+closecrab.exe
 pause

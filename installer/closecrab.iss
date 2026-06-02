@@ -2,10 +2,10 @@
 ; Requires Inno Setup 6.x: https://jrsoftware.org/isinfo.php
 
 #define MyAppName "CloseCrab"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.2.2"
 #define MyAppPublisher "Blitzball Labs"
 #define MyAppURL "https://github.com/Blitzball996/CloseCrab-Unified"
-#define MyAppExeName "closecrab-unified.exe"
+#define MyAppExeName "closecrab.exe"
 
 [Setup]
 AppId={{B7A3F2E1-4C5D-6E7F-8A9B-0C1D2E3F4A5B}
@@ -39,7 +39,7 @@ Name: "registercontext"; Description: "Add 'Open CloseCrab here' to Explorer con
 
 [Files]
 ; Main executable
-Source: "..\build\Release\closecrab-unified.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\build\Release\closecrab.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; DLLs
 Source: "..\build\Release\*.dll"; DestDir: "{app}"; Flags: ignoreversion
 ; Config template

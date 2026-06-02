@@ -89,4 +89,4 @@ jobs:
         run: cmake --build build --config ${{env.BUILD_TYPE}} --target closecrab-unified
 
       - name: Verify universal binary
-        run: lipo -info build/closecrab-unified
+        run: lipo -info build/closecrab

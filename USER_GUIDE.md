@@ -40,7 +40,7 @@ CloseCrab 是一个运行在你电脑上的 AI 编程助手。你在终端里跟
 ### Windows 安装
 
 1. 打开浏览器，进入 GitHub Releases 页面
-2. 下载 `closecrab-unified-windows-x64.zip`
+2. 下载 `closecrab-windows-x64.zip`
 3. 右键点击下载的 zip 文件，选择「全部解压缩」
 4. 把解压出来的文件夹放到你喜欢的位置（比如 `C:\Program Files\CloseCrab`）
 5. 把文件夹路径加到系统 PATH：
@@ -51,18 +51,18 @@ CloseCrab 是一个运行在你电脑上的 AI 编程助手。你在终端里跟
 
 ### macOS 安装
 
-1. 下载 `closecrab-unified-macos.dmg`
+1. 下载 `closecrab-macos.dmg`
 2. 双击打开 dmg 文件
 3. 把 CloseCrab 图标拖到 Applications 文件夹
 4. 打开终端，运行：
 
 ```bash
-sudo ln -s /Applications/CloseCrab.app/Contents/MacOS/closecrab-unified /usr/local/bin/closecrab-unified
+sudo ln -s /Applications/CloseCrab.app/Contents/MacOS/closecrab /usr/local/bin/closecrab
 ```
 
 ### Linux 安装
 
-1. 下载 `closecrab-unified-linux-x64.AppImage`
+1. 下载 `closecrab-linux-x64.AppImage`
 2. 打开终端，进入下载目录：
 
 ```bash
@@ -72,13 +72,13 @@ cd ~/Downloads
 3. 给文件添加运行权限：
 
 ```bash
-chmod +x closecrab-unified-linux-x64.AppImage
+chmod +x closecrab-linux-x64.AppImage
 ```
 
 4. 移动到系统路径（这样在任何地方都能运行）：
 
 ```bash
-sudo mv closecrab-unified-linux-x64.AppImage /usr/local/bin/closecrab-unified
+sudo mv closecrab-linux-x64.AppImage /usr/local/bin/closecrab
 ```
 
 ---
@@ -104,7 +104,7 @@ sudo mv closecrab-unified-linux-x64.AppImage /usr/local/bin/closecrab-unified
 在终端里输入：
 
 ```bash
-closecrab-unified
+closecrab
 ```
 
 按回车。你会看到欢迎界面。
@@ -116,7 +116,7 @@ CloseCrab 支持两种模式：
 **模式 A：本地模型（不需要网络）**
 
 ```bash
-closecrab-unified --provider local --model /path/to/your/model.gguf
+closecrab --provider local --model /path/to/your/model.gguf
 ```
 
 把 `/path/to/your/model.gguf` 换成你下载的模型文件路径。
@@ -126,13 +126,13 @@ closecrab-unified --provider local --model /path/to/your/model.gguf
 使用 Claude API：
 
 ```bash
-closecrab-unified --provider anthropic --api-key sk-ant-xxxxx --api-model claude-sonnet-4-20250514
+closecrab --provider anthropic --api-key sk-ant-xxxxx --api-model claude-sonnet-4-20250514
 ```
 
 使用 OpenAI API：
 
 ```bash
-closecrab-unified --provider openai --api-key sk-xxxxx --api-model gpt-4o
+closecrab --provider openai --api-key sk-xxxxx --api-model gpt-4o
 ```
 
 把 `sk-ant-xxxxx` 或 `sk-xxxxx` 换成你自己的 API Key。
@@ -152,7 +152,7 @@ api:
   base_url: https://api.anthropic.com
 ```
 
-然后直接运行 `closecrab-unified` 就行了。
+然后直接运行 `closecrab` 就行了。
 
 ---
 
@@ -299,7 +299,7 @@ Team Mode 让多个人可以连接到同一台电脑上的 CloseCrab。
 1. 在服务器电脑上启动 CloseCrab（开启 WebSocket 服务）：
 
 ```bash
-closecrab-unified
+closecrab
 ```
 
 CloseCrab 会在 9002 端口启动 WebSocket 服务。

@@ -40,7 +40,7 @@ If you want to use local models (no internet), you need a good NVIDIA GPU with a
 ### Windows
 
 1. Open your browser and go to the GitHub Releases page
-2. Download `closecrab-unified-windows-x64.zip`
+2. Download `closecrab-windows-x64.zip`
 3. Right-click the downloaded zip file and select "Extract All"
 4. Move the extracted folder to a location you like (e.g., `C:\Program Files\CloseCrab`)
 5. Add the folder to your system PATH:
@@ -51,18 +51,18 @@ If you want to use local models (no internet), you need a good NVIDIA GPU with a
 
 ### macOS
 
-1. Download `closecrab-unified-macos.dmg`
+1. Download `closecrab-macos.dmg`
 2. Double-click the dmg file to open it
 3. Drag the CloseCrab icon to the Applications folder
 4. Open Terminal and run:
 
 ```bash
-sudo ln -s /Applications/CloseCrab.app/Contents/MacOS/closecrab-unified /usr/local/bin/closecrab-unified
+sudo ln -s /Applications/CloseCrab.app/Contents/MacOS/closecrab /usr/local/bin/closecrab
 ```
 
 ### Linux
 
-1. Download `closecrab-unified-linux-x64.AppImage`
+1. Download `closecrab-linux-x64.AppImage`
 2. Open a terminal and navigate to your downloads:
 
 ```bash
@@ -72,13 +72,13 @@ cd ~/Downloads
 3. Make the file executable:
 
 ```bash
-chmod +x closecrab-unified-linux-x64.AppImage
+chmod +x closecrab-linux-x64.AppImage
 ```
 
 4. Move it to a system path (so you can run it from anywhere):
 
 ```bash
-sudo mv closecrab-unified-linux-x64.AppImage /usr/local/bin/closecrab-unified
+sudo mv closecrab-linux-x64.AppImage /usr/local/bin/closecrab
 ```
 
 ---
@@ -104,7 +104,7 @@ sudo mv closecrab-unified-linux-x64.AppImage /usr/local/bin/closecrab-unified
 Type in your terminal:
 
 ```bash
-closecrab-unified
+closecrab
 ```
 
 Press Enter. You will see the welcome screen.
@@ -116,7 +116,7 @@ CloseCrab supports two modes:
 **Mode A: Local Model (no internet needed)**
 
 ```bash
-closecrab-unified --provider local --model /path/to/your/model.gguf
+closecrab --provider local --model /path/to/your/model.gguf
 ```
 
 Replace `/path/to/your/model.gguf` with the actual path to your downloaded model file.
@@ -126,13 +126,13 @@ Replace `/path/to/your/model.gguf` with the actual path to your downloaded model
 Using Claude API:
 
 ```bash
-closecrab-unified --provider anthropic --api-key sk-ant-xxxxx --api-model claude-sonnet-4-20250514
+closecrab --provider anthropic --api-key sk-ant-xxxxx --api-model claude-sonnet-4-20250514
 ```
 
 Using OpenAI API:
 
 ```bash
-closecrab-unified --provider openai --api-key sk-xxxxx --api-model gpt-4o
+closecrab --provider openai --api-key sk-xxxxx --api-model gpt-4o
 ```
 
 Replace `sk-ant-xxxxx` or `sk-xxxxx` with your actual API key.
@@ -152,7 +152,7 @@ api:
   base_url: https://api.anthropic.com
 ```
 
-Then just run `closecrab-unified` without any extra arguments.
+Then just run `closecrab` without any extra arguments.
 
 ---
 
@@ -299,7 +299,7 @@ Team Mode lets multiple people connect to the same CloseCrab instance on one com
 1. Start CloseCrab on the server computer (it enables WebSocket service):
 
 ```bash
-closecrab-unified
+closecrab
 ```
 
 CloseCrab starts a WebSocket service on port 9002.

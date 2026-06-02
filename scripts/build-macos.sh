@@ -17,7 +17,7 @@ set -euo pipefail
 
 # --- Configuration ---
 APP_NAME="CloseCrab-Unified"
-APP_VERSION="0.2.0"
+APP_VERSION="0.2.2"
 BUNDLE_ID="com.blitzball996.closecrab-unified"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -84,7 +84,7 @@ mkdir -p "${APP_BUNDLE}/Contents/Resources/config"
 mkdir -p "${APP_BUNDLE}/Contents/Resources/docs"
 
 # Copy executable
-cp "${BUILD_DIR}/closecrab-unified" "${APP_BUNDLE}/Contents/MacOS/${APP_NAME}"
+cp "${BUILD_DIR}/closecrab" "${APP_BUNDLE}/Contents/MacOS/${APP_NAME}"
 
 # Copy shared libraries if any
 find "${BUILD_DIR}" -name "*.dylib" -exec cp {} "${APP_BUNDLE}/Contents/MacOS/" \; 2>/dev/null || true

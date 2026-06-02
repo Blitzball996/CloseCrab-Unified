@@ -2,6 +2,7 @@
 #include "APIError.h"
 #include "../config/Config.h"
 #include "../core/PredictiveEngine.h"
+#include "../utils/Trace.h"
 #include <curl/curl.h>
 #include <spdlog/spdlog.h>
 #include <fstream>
@@ -445,10 +446,33 @@ static void performCurlSSE(
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &curlCtx);
 
     // Proxy support
-    std::string proxy = resolveProxy();
-    if (!proxy.empty()) {
+    // Escape hatch: CLOSECRAB_NO_PROXY=1 forces a DIRECT connection, ignoring any
+    // inherited https_proxy/http_proxy env vars (the common "browser works but app
+    // fails" case on macOS, where a dead local proxy is still exported in ~/.zshrc).
+    const char* noProxyEnv = std::getenv("CLOSECRAB_NO_PROXY");
+    bool forceNoProxy = noProxyEnv && (std::string(noProxyEnv) == "1" ||
+                                       std::string(noProxyEnv) == "true");
+    std::string proxy = forceNoProxy ? "" : resolveProxy();
+    if (forceNoProxy) {
+        curl_easy_setopt(curl, CURLOPT_PROXY, "");      // override env-inherited proxy
+        curl_easy_setopt(curl, CURLOPT_NOPROXY, "*");
+        static bool loggedNoProxy = false;
+        if (!loggedNoProxy) {
+            spdlog::info("CLOSECRAB_NO_PROXY set — forcing direct connection (ignoring proxy env vars)");
+            loggedNoProxy = true;
+        }
+    } else if (!proxy.empty()) {
         curl_easy_setopt(curl, CURLOPT_PROXY, proxy.c_str());
-        spdlog::debug("Using proxy: {}", proxy);
+        // Log ONCE at info level. If the browser works but the app fails, a stale
+        // https_proxy/http_proxy env var pointing at a dead local proxy is the most
+        // common cause — surfacing it here makes that instantly diagnosable.
+        static bool loggedProxy = false;
+        if (!loggedProxy) {
+            spdlog::info("Using proxy for API requests: {} "
+                         "(from env var or config.yaml — set CLOSECRAB_NO_PROXY=1 "
+                         "or unset https_proxy/http_proxy if this is unexpected)", proxy);
+            loggedProxy = true;
+        }
     }
 
     // SSL
@@ -564,12 +588,12 @@ void RemoteAPIClient::streamChat(
             CurlStreamCtx curlCtx{&parser, ""};
             // Crash trace: log before/after CURL call to narrow down segfault location
             {
-                FILE* trace = fopen("trace.log", "a");
+                FILE* trace = closecrab::traceOpen();
                 if (trace) { fprintf(trace, "[%d] pre-curl bodySize=%zu\n", attempt, bodyStr.size()); fclose(trace); }
             }
             performCurlSSE(url, bodyStr, apiKey_, curlCtx, config.abortFlag);
             {
-                FILE* trace = fopen("trace.log", "a");
+                FILE* trace = closecrab::traceOpen();
                 if (trace) { fprintf(trace, "[%d] post-curl OK\n", attempt); fclose(trace); }
             }
             parser.finish();
@@ -637,7 +661,13 @@ void RemoteAPIClient::streamChat(
             int delayMs = baseDelay + jitter;
 
             // Show retry progress to user (JackProAi: "Retrying in Xs... (attempt N/M)")
-            spdlog::warn("Retrying in {}ms (attempt {}/{}, model={})...", delayMs, attempt, MAX_RETRIES, activeModel);
+            // CRITICAL: include e.what() so the ACTUAL cause is visible in the log.
+            // For NETWORK_ERROR this carries the raw curl reason ("Couldn't connect
+            // to proxy 127.0.0.1:7897", "Couldn't resolve host", "SSL certificate
+            // problem", etc.) — without it the user only sees "Retrying..." and the
+            // root cause (stale proxy env var, DNS, cert) is invisible.
+            spdlog::warn("Retrying in {}ms (attempt {}/{}, model={}) — reason: {}",
+                         delayMs, attempt, MAX_RETRIES, activeModel, e.what());
             // Surface to the UI so the spinner shows "retrying N/M" instead of
             // appearing frozen. e.statusCode 503 = provider unavailable.
             {

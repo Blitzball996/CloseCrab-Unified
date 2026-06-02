@@ -17,9 +17,9 @@
 set -euo pipefail
 
 # --- Configuration ---
-APP_NAME="closecrab-unified"
+APP_NAME="closecrab"
 APP_DISPLAY_NAME="CloseCrab-Unified"
-APP_VERSION="0.2.0"
+APP_VERSION="0.2.2"
 APP_DESCRIPTION="AI-powered coding assistant with Team Mode, multi-agent coordination, and local LLM support"
 MAINTAINER="Blitzball996 <blitzball996@users.noreply.github.com>"
 HOMEPAGE="https://github.com/Blitzball996/CloseCrab-Unified"
@@ -171,7 +171,7 @@ SELF=$(readlink -f "$0")
 HERE=${SELF%/*}
 export PATH="${HERE}/usr/bin:${PATH}"
 export LD_LIBRARY_PATH="${HERE}/usr/bin:${LD_LIBRARY_PATH}"
-exec "${HERE}/usr/bin/closecrab-unified" "$@"
+exec "${HERE}/usr/bin/closecrab" "$@"
 APPRUN
         chmod +x "${APPIMAGE_DIR}/AppRun"
         echo "  Manual AppDir created at: ${APPIMAGE_DIR}"
@@ -298,7 +298,7 @@ cat > "${BUILD_DIR}/install.sh" << 'INSTALL_SCRIPT'
 
 set -euo pipefail
 
-APP_NAME="closecrab-unified"
+APP_NAME="closecrab"
 INSTALL_PREFIX="${INSTALL_PREFIX:-/usr/local}"
 
 # Check if running as root for system install
