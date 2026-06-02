@@ -311,7 +311,6 @@ static std::string getUserInput() {
 }
 #endif
 
-#ifdef _WIN32
 // ---- Per-turn console input mode ------------------------------------------
 // While an AI turn is streaming we put the console into "raw" input mode: no
 // echo, no line buffering. Combined with the Esc-only key-watcher this is what
