@@ -22,7 +22,7 @@ provider: "anthropic"
 # ============================================
 api:
   base_url: "https://yikoulian.cc/"
-  api_key: "sk-8GebqzfcXcgMXWYjTvcK9h3RQ6GY6aiCaLCMrKAGPvFkjhAV"
+  api_key: ""
   model: "claude-opus-4-7"
   fallback_model: "claude-sonnet-4-20250514"
   cache_ttl_minutes: 5

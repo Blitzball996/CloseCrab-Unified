@@ -22,7 +22,8 @@ struct StreamEvent {
         EVT_STOP,           // Generation stopped
         EVT_ERROR,          // Error occurred
         EVT_USAGE_UPDATE,   // Token usage update
-        EVT_RETRY           // Retryable failure — about to retry (surfaced to UI)
+        EVT_RETRY,          // Retryable failure — about to retry (surfaced to UI)
+        EVT_WEB_SEARCH_RESULT  // Server-side web_search_tool_result: hits in `toolInput` (array of {title,url})
     };
 
     Type type = EVT_TEXT;
@@ -63,6 +64,13 @@ struct ModelConfig {
 
     // Tool use
     nlohmann::json tools = nlohmann::json::array();
+
+    // Server-side tools (e.g. web_search_20250305). Injected VERBATIM into the
+    // request body's tools array alongside client tools. Used by WebSearchTool to
+    // run the search on the SAME robust API path as the main loop (HTTP/1.1, UA,
+    // SSL, 10x retry + fallback, proxy) — JackProAi alignment. When non-empty,
+    // RemoteAPIClient also adds the web-search-2025-03-05 beta header.
+    nlohmann::json extraServerTools = nlohmann::json::array();
 
     // P2 fork cache sharing (JackProAi skipCacheWrite). When true (sub-agent /
     // fire-and-forget fork), the message-level cache_control marker is placed on

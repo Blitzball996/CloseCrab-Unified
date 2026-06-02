@@ -211,6 +211,18 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
         body["tools"] = std::move(tools);
     }
 
+    // Server-side tools (e.g. web_search_20250305) — appended VERBATIM, no
+    // cache_control (server tools aren't cache breakpoints). Lets WebSearchTool
+    // run on this same robust path (HTTP/1.1, retry, fallback, proxy).
+    if (config.extraServerTools.is_array() && !config.extraServerTools.empty()) {
+        if (!body.contains("tools") || !body["tools"].is_array()) {
+            body["tools"] = nlohmann::json::array();
+        }
+        for (const auto& st : config.extraServerTools) {
+            body["tools"].push_back(st);
+        }
+    }
+
     // Thinking
     if (config.thinkingEnabled) {
         body["thinking"]["type"] = "enabled";
@@ -325,6 +337,26 @@ void RemoteAPIClient::handleSSEEvent(
                 currentToolName = block.value("name", "");
                 currentToolId = block.value("id", "");
                 currentToolJson.clear();
+            } else if (blockType == "web_search_tool_result") {
+                // Server-side web search hits arrive whole in the start event.
+                // Strip the huge `encrypted_content` (JackProAi keeps only
+                // title+url) and surface as EVT_WEB_SEARCH_RESULT so WebSearchTool
+                // can collect them. Non-streamed: content is present here.
+                nlohmann::json hits = nlohmann::json::array();
+                if (block.contains("content") && block["content"].is_array()) {
+                    for (const auto& r : block["content"]) {
+                        if (r.value("type", "") == "web_search_result") {
+                            hits.push_back({{"title", r.value("title", "")},
+                                            {"url", r.value("url", "")}});
+                        }
+                    }
+                }
+                if (!hits.empty()) {
+                    StreamEvent ev;
+                    ev.type = StreamEvent::EVT_WEB_SEARCH_RESULT;
+                    ev.toolInput = std::move(hits);
+                    callback(ev);
+                }
             }
         } else if (eventType == "content_block_delta") {
             auto delta = j.value("delta", nlohmann::json::object());
@@ -427,8 +459,10 @@ static void performCurlSSE(
     headers = curl_slist_append(headers, ("x-api-key: " + apiKey).c_str());
     headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
     headers = curl_slist_append(headers, "content-type: application/json");
-    // anthropic-beta: matching Claude Code v2.1.152 headers
-    headers = curl_slist_append(headers, "anthropic-beta: claude-code-20250219,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05,extended-cache-ttl-2025-04-11,context-management-2025-06-27,structured-outputs-2025-12-15,advanced-tool-use-2025-11-20,tool-search-tool-2025-10-19,redact-thinking-2026-02-12,mid-conversation-system-2026-04-07,mcp-servers-2025-12-04");
+    // anthropic-beta: matching Claude Code v2.1.152 headers. web-search-2025-03-05
+    // is harmless when no web_search tool is present (server ignores unused betas)
+    // and enables the server-side web_search_20250305 tool when WebSearchTool uses it.
+    headers = curl_slist_append(headers, "anthropic-beta: claude-code-20250219,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05,extended-cache-ttl-2025-04-11,context-management-2025-06-27,structured-outputs-2025-12-15,advanced-tool-use-2025-11-20,tool-search-tool-2025-10-19,redact-thinking-2026-02-12,mid-conversation-system-2026-04-07,mcp-servers-2025-12-04,web-search-2025-03-05");
     // Identity headers matching Claude Code SDK
     headers = curl_slist_append(headers, "User-Agent: claude-cli/2.1.152 (external, cli)");
     headers = curl_slist_append(headers, "x-app: cli");

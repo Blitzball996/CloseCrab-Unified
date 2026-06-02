@@ -723,6 +723,13 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                             callbacks.onRetry(event.retryAttempt, event.retryMax,
                                               event.retryDelayMs, event.content);
                         break;
+
+                    case StreamEvent::EVT_WEB_SEARCH_RESULT:
+                        // Server-side web search hits — only consumed inside
+                        // WebSearchTool's own streamChat callback. The main loop
+                        // never requests a server web_search tool, so this is a
+                        // no-op here (present for switch exhaustiveness).
+                        break;
                 }
             }
         );
