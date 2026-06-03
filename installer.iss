@@ -8,7 +8,7 @@
 ;   - Prompt-cache split + deterministic compaction (big cost reduction on repeat turns)
 ;   - Model fallback chain (Opus -> Sonnet on repeated overload)
 #define MyAppName "CloseCrab-Unified"
-#define MyAppVersion "0.2.8"
+#define MyAppVersion "0.2.9"
 #define MyAppPublisher "Blitzball996"
 #define MyAppURL "https://github.com/Blitzball996/CloseCrab-Unified"
 #define MyAppExeName "closecrab.exe"

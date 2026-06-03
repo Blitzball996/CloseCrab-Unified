@@ -429,10 +429,6 @@ void RemoteAPIClient::handleSSEEvent(
             auto delta = j.value("delta", nlohmann::json::object());
             std::string stopReason = delta.value("stop_reason", "");
             if (!stopReason.empty()) {
-                // pause_turn: server tool (e.g. web_search) needs another round —
-                // JackProAi continues the stream, does NOT stop. Treat as no-op here;
-                // the subsequent message_start will restart the turn.
-                if (stopReason == "pause_turn") return;
                 StreamEvent stop;
                 stop.type = StreamEvent::EVT_STOP;
                 stop.stopReason = stopReason;
