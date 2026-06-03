@@ -209,6 +209,7 @@ public:
         // is flaky with some proxies/relays (the mac-only failure class). Match
         // RemoteAPIClient, which forces 1.1 for exactly this reason.
         curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+        curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);  // thread-safe: no SIGALRM DNS
         applyProxyToCurl(curl);   // honor proxy / CLOSECRAB_NO_PROXY
 
         CURLcode res = curl_easy_perform(curl);

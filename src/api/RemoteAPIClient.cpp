@@ -536,6 +536,11 @@ static void performCurlSSE(
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
     // HTTP/1.1 (system libcurl doesn't support HTTP/2)
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    // CRITICAL for multithreaded use: disable signal-based DNS timeouts.
+    // Without this, libcurl uses SIGALRM from worker threads, corrupting
+    // OpenSSL's shared state → all subsequent requests fail with SSL connect
+    // error. JackProAi uses Node.js fetch which has no such issue.
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
     CURLcode res = curl_easy_perform(curl);
     long httpCode = 0;
