@@ -78,6 +78,40 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
         msgs.push_back(msg.toApiJson());
     }
 
+    // JackProAi normalizeMessagesForAPI (messages.ts:2089/2451): merge consecutive
+    // user messages into one before sending. QueryEngine pushes each tool_result as
+    // its own role:user message; strict relays reject N consecutive user messages.
+    // hoistToolResults: tool_result blocks must lead (API rule).
+    // joinTextAtSeam: inject '\n' at text-text seam (avoid run-together prompts).
+    {
+        auto hoistToolResults = [](nlohmann::json& content) {
+            nlohmann::json tr = nlohmann::json::array(), other = nlohmann::json::array();
+            for (auto& b : content)
+                (b.is_object() && b.value("type","") == "tool_result" ? tr : other).push_back(b);
+            for (auto& b : other) tr.push_back(std::move(b));
+            content = std::move(tr);
+        };
+        nlohmann::json merged = nlohmann::json::array();
+        for (auto& m : msgs) {
+            if (!merged.empty() && merged.back().value("role","") == "user"
+                                && m.value("role","") == "user") {
+                auto& ac = merged.back()["content"];
+                auto& bc = m["content"];
+                // joinTextAtSeam: if last block of ac and first of bc are both text, append '\n'
+                if (ac.is_array() && !ac.empty() && bc.is_array() && !bc.empty()
+                    && ac.back().value("type","") == "text"
+                    && bc.front().value("type","") == "text") {
+                    ac.back()["text"] = ac.back().value("text","") + "\n";
+                }
+                if (bc.is_array()) for (auto& b : bc) ac.push_back(b);
+                hoistToolResults(ac);
+            } else {
+                merged.push_back(std::move(m));
+            }
+        }
+        msgs = std::move(merged);
+    }
+
     // §3 Deterministic microcompact (JackProAi enforceToolResultBudget +
     // ContentReplacementState). The OLD code re-decided which tool_results to
     // clear every turn based on the current total size, so the same tool_use_id
@@ -395,6 +429,10 @@ void RemoteAPIClient::handleSSEEvent(
             auto delta = j.value("delta", nlohmann::json::object());
             std::string stopReason = delta.value("stop_reason", "");
             if (!stopReason.empty()) {
+                // pause_turn: server tool (e.g. web_search) needs another round —
+                // JackProAi continues the stream, does NOT stop. Treat as no-op here;
+                // the subsequent message_start will restart the turn.
+                if (stopReason == "pause_turn") return;
                 StreamEvent stop;
                 stop.type = StreamEvent::EVT_STOP;
                 stop.stopReason = stopReason;
