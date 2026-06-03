@@ -570,16 +570,30 @@ int main(int argc, char* argv[]) {
     app.add_flag("-v,--verbose", verbose, "Verbose logging");
     // License / activation (序列号在线激活, see docs/序列号格式规范.md)
     std::string activateKey;
+    std::string activateOfflineBlob;
     bool deactivate = false;
     bool licenseStatus = false;
+    bool showDeviceId = false;
     app.add_option("--activate", activateKey, "Activate with a license key (CCST/CCPR-...) and exit");
+    app.add_option("--activate-offline", activateOfflineBlob,
+                   "Activate offline with a signed code (token|sig|edition) and exit");
+    app.add_flag("--device-id", showDeviceId, "Print this machine's Device ID (for offline activation) and exit");
     app.add_flag("--deactivate", deactivate, "Remove local activation and exit");
     app.add_flag("--license-status", licenseStatus, "Show license / trial status and exit");
     CLI11_PARSE(app, argc, argv);
 
     // ---- License commands (handle and exit before loading the app) ----
+    if (showDeviceId) {
+        std::cout << closecrab::LicenseGate::deviceId() << std::endl;
+        return 0;
+    }
     if (!activateKey.empty()) {
         auto res = closecrab::LicenseGate::activate(activateKey);
+        std::cout << res.message << std::endl;
+        return res.ok ? 0 : 1;
+    }
+    if (!activateOfflineBlob.empty()) {
+        auto res = closecrab::LicenseGate::activateOffline(activateOfflineBlob);
         std::cout << res.message << std::endl;
         return res.ok ? 0 : 1;
     }

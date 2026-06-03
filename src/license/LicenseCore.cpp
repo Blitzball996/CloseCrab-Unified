@@ -3,6 +3,7 @@
 
 #include <cstring>
 #include <algorithm>
+#include <map>
 
 extern "C" {
 #include "tweetnacl.h"
@@ -16,6 +17,20 @@ extern "C" {
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+// POSIX (macOS/Linux): file-based persistence under ~/.crab, consistent with
+// where config.yaml / settings.json already live (see main.cpp appDataDir()).
+#include <cstdio>
+#include <fstream>
+#include <sstream>
+#include <sys/stat.h>
+#include <sys/types.h>
+#endif
+
+#ifdef __APPLE__
+// Stable machine fingerprint via IOPlatformUUID (does not change on rename).
+#include <IOKit/IOKitLib.h>
+#include <CoreFoundation/CoreFoundation.h>
 #endif
 
 namespace lic {
@@ -287,8 +302,43 @@ std::string deviceId() {
         if (GetComputerNameA(name, &n)) seed.assign(name, n);
     }
 #else
-    if (const char* h = std::getenv("HOSTNAME")) seed = h;
+#ifdef __APPLE__
+    // macOS: IOPlatformUUID — the stable per-machine UUID (survives rename,
+    // reinstall; only changes on logic-board replacement). Far better than
+    // $HOSTNAME, which is user-settable and often unset in non-login shells.
+    {
+        // kIOMainPortDefault (macOS 12+) replaced kIOMasterPortDefault; both are
+        // the literal value 0, so use 0 directly for SDK-version independence.
+        io_service_t svc = IOServiceGetMatchingService(
+            0 /*kIOMainPortDefault==kIOMasterPortDefault==0*/,
+            IOServiceMatching("IOPlatformExpertDevice"));
+        if (svc) {
+            CFStringRef uuid = (CFStringRef)IORegistryEntryCreateCFProperty(
+                svc, CFSTR("IOPlatformUUID"), kCFAllocatorDefault, 0);
+            if (uuid) {
+                char buf[128];
+                if (CFStringGetCString(uuid, buf, sizeof(buf), kCFStringEncodingUTF8))
+                    seed = buf;
+                CFRelease(uuid);
+            }
+            IOObjectRelease(svc);
+        }
+    }
+    if (seed.empty()) {
+        if (const char* h = std::getenv("HOSTNAME")) seed = h;  // last-resort fallback
+    }
+#else
+    // Linux: prefer /etc/machine-id (stable), fall back to $HOSTNAME.
+    {
+        std::ifstream f("/etc/machine-id");
+        if (f) { std::getline(f, seed); }
+        if (seed.empty()) { std::ifstream f2("/var/lib/dbus/machine-id"); if (f2) std::getline(f2, seed); }
+    }
+    if (seed.empty()) {
+        if (const char* h = std::getenv("HOSTNAME")) seed = h;
+    }
     if (seed.empty()) seed = "unknown-host";
+#endif
 #endif
     if (seed.empty()) seed = "unknown-machine";
     return sha256Hex("MGUID:" + seed).substr(0, 32);
@@ -386,6 +436,66 @@ void regDelValue(const std::string& appKey, const char* name) {
     }
 }
 #endif // _WIN32
+
+#ifndef _WIN32
+// --- POSIX persistence: a tiny key=value file at ~/.crab/license.<appKey> -----
+// Mirrors the Windows registry subkey HKCU\Software\Blitzball\<appKey>. Values
+// are single-line (token/sig are base64, key/edition are short, trialRuns is an
+// int) so a flat "name\tvalue" file with one record per line is enough and
+// dependency-free (no JSON lib needed in this shared, dep-free core).
+std::string posixHome() {
+    if (const char* h = std::getenv("HOME")) { if (*h) return h; }
+    return ".";
+}
+std::string posixStorePath(const std::string& appKey) {
+    return posixHome() + "/.crab/license." + appKey;
+}
+// Load the whole store into a name->value map.
+std::map<std::string, std::string> posixReadAll(const std::string& appKey) {
+    std::map<std::string, std::string> kv;
+    std::ifstream f(posixStorePath(appKey));
+    if (!f) return kv;
+    std::string line;
+    while (std::getline(f, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        auto tab = line.find('\t');
+        if (tab == std::string::npos) continue;
+        kv[line.substr(0, tab)] = line.substr(tab + 1);
+    }
+    return kv;
+}
+// Rewrite the whole store from a map (atomic: write tmp + rename). chmod 600 so
+// the activation token isn't world-readable.
+bool posixWriteAll(const std::string& appKey, const std::map<std::string, std::string>& kv) {
+    std::string dir = posixHome() + "/.crab";
+    ::mkdir(dir.c_str(), 0700);  // ok if it already exists
+    std::string path = posixStorePath(appKey);
+    std::string tmp = path + ".tmp";
+    {
+        std::ofstream f(tmp, std::ios::trunc);
+        if (!f) return false;
+        for (const auto& it : kv) f << it.first << '\t' << it.second << '\n';
+    }
+    ::chmod(tmp.c_str(), 0600);
+    if (std::rename(tmp.c_str(), path.c_str()) != 0) { std::remove(tmp.c_str()); return false; }
+    return true;
+}
+std::string posixReadStr(const std::string& appKey, const char* name) {
+    auto kv = posixReadAll(appKey);
+    auto it = kv.find(name);
+    return it == kv.end() ? std::string() : it->second;
+}
+void posixWriteStr(const std::string& appKey, const char* name, const std::string& v) {
+    auto kv = posixReadAll(appKey);
+    kv[name] = v;
+    posixWriteAll(appKey, kv);
+}
+void posixDelValue(const std::string& appKey, const char* name) {
+    auto kv = posixReadAll(appKey);
+    kv.erase(name);
+    posixWriteAll(appKey, kv);
+}
+#endif // !_WIN32
 } // namespace
 
 StoredActivation loadActivation(const std::string& appKey) {
@@ -395,6 +505,12 @@ StoredActivation loadActivation(const std::string& appKey) {
     s.tokenB64 = regReadStr(appKey, "token");
     s.sigB64 = regReadStr(appKey, "sig");
     s.edition = regReadStr(appKey, "edition");
+    s.present = !s.tokenB64.empty() && !s.sigB64.empty();
+#else
+    s.key = posixReadStr(appKey, "key");
+    s.tokenB64 = posixReadStr(appKey, "token");
+    s.sigB64 = posixReadStr(appKey, "sig");
+    s.edition = posixReadStr(appKey, "edition");
     s.present = !s.tokenB64.empty() && !s.sigB64.empty();
 #endif
     return s;
@@ -410,8 +526,11 @@ bool saveActivation(const std::string& appKey, const std::string& key,
     regWriteStr(appKey, "edition", edition);
     return true;
 #else
-    (void)appKey; (void)key; (void)tokenB64; (void)sigB64; (void)edition;
-    return false;
+    posixWriteStr(appKey, "key", key);
+    posixWriteStr(appKey, "token", tokenB64);
+    posixWriteStr(appKey, "sig", sigB64);
+    posixWriteStr(appKey, "edition", edition);
+    return true;
 #endif
 }
 
@@ -422,7 +541,10 @@ void clearActivation(const std::string& appKey) {
     regDelValue(appKey, "sig");
     regDelValue(appKey, "edition");
 #else
-    (void)appKey;
+    posixDelValue(appKey, "key");
+    posixDelValue(appKey, "token");
+    posixDelValue(appKey, "sig");
+    posixDelValue(appKey, "edition");
 #endif
 }
 
@@ -430,14 +552,16 @@ int getTrialRuns(const std::string& appKey) {
 #ifdef _WIN32
     return (int)regReadDword(appKey, "trialRuns", 0);
 #else
-    (void)appKey; return 0;
+    std::string v = posixReadStr(appKey, "trialRuns");
+    if (v.empty()) return 0;
+    try { return std::stoi(v); } catch (...) { return 0; }
 #endif
 }
 void setTrialRuns(const std::string& appKey, int runs) {
 #ifdef _WIN32
     regWriteDword(appKey, "trialRuns", (DWORD)runs);
 #else
-    (void)appKey; (void)runs;
+    posixWriteStr(appKey, "trialRuns", std::to_string(runs));
 #endif
 }
 

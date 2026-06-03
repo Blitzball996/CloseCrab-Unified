@@ -273,6 +273,64 @@ void LicenseGate::deactivate() {
     lic::clearActivation(kAppKey);
 }
 
+std::string LicenseGate::deviceId() {
+    return lic::deviceId();
+}
+
+ActivateResult LicenseGate::activateOffline(const std::string& blob) {
+    ActivateResult out;
+    // Expected format: "token|sig" or "token|sig|edition" (base64url token+sig).
+    // Tolerate surrounding whitespace/newlines from copy-paste.
+    std::string s = blob;
+    auto trim = [](std::string& x) {
+        size_t a = x.find_first_not_of(" \t\r\n");
+        size_t b = x.find_last_not_of(" \t\r\n");
+        x = (a == std::string::npos) ? "" : x.substr(a, b - a + 1);
+    };
+    trim(s);
+    if (s.empty()) {
+        out.errorCode = "BAD_TOKEN";
+        out.message = tr("Empty offline activation code.", "离线激活码为空。");
+        return out;
+    }
+    std::string token, sig, edition;
+    size_t p1 = s.find('|');
+    if (p1 == std::string::npos) {
+        out.errorCode = "BAD_TOKEN";
+        out.message = tr("Invalid offline code format (expected token|sig).",
+                         "离线激活码格式错误（应为 token|sig）。");
+        return out;
+    }
+    token = s.substr(0, p1);
+    size_t p2 = s.find('|', p1 + 1);
+    if (p2 == std::string::npos) {
+        sig = s.substr(p1 + 1);
+    } else {
+        sig = s.substr(p1 + 1, p2 - p1 - 1);
+        edition = s.substr(p2 + 1);
+    }
+    trim(token); trim(sig); trim(edition);
+
+    // Verify the Ed25519 signature offline against this device — no network.
+    std::string dev = lic::deviceId();
+    lic::TokenInfo ti = lic::verifyToken(token, sig, dev, kPrefix2);
+    if (!ti.ok) {
+        out.errorCode = "BAD_TOKEN";
+        out.message = errText("BAD_TOKEN") +
+            tr(" (the code must be issued for THIS device's ID)",
+               "（激活码必须是为本机设备指纹签发的）");
+        return out;
+    }
+
+    lic::saveActivation(kAppKey, ti.key, token, sig, edition.empty() ? ti.edition : edition);
+    out.ok = true;
+    out.errorCode = "OK";
+    out.edition = edition.empty() ? ti.edition : edition;
+    out.message = tr("Activated offline! Edition: ", "离线激活成功！版本：") + out.edition +
+                  tr(" (", "（") + ti.key + tr(")", "）");
+    return out;
+}
+
 void LicenseGate::printStatus() {
     lic::Status s = status();
     switch (s.state) {
@@ -333,6 +391,31 @@ bool LicenseGate::enforceAtStartup() {
                 setProxy(p);
                 std::printf(tr("Retrying via %s …\n", "正在通过 %s 重试…\n"), p.c_str());
                 res = activate(key);
+            }
+        }
+        // Still failing on the network → offer OFFLINE activation. The user gets a
+        // signed token for THIS device's ID from the website / another device and
+        // pastes it back; we verify it offline (no network needed).
+        if (!res.ok && res.errorCode == "NETWORK") {
+            std::printf(tr(
+                "\n\033[36m--- Offline activation ---\033[0m\n"
+                " Still offline. You can activate WITHOUT internet:\n"
+                "  1) On a device that has internet, open: %s/activate\n"
+                "  2) Enter your license key AND this Device ID:\n"
+                "     \033[1m%s\033[0m\n"
+                "  3) Copy the offline code it gives you (format: token|sig|edition)\n",
+                "\n\033[36m--- 离线激活 ---\033[0m\n"
+                " 仍然无法联网。你可以在没有网络的情况下激活：\n"
+                "  1) 在一台有网络的设备上打开：%s/activate\n"
+                "  2) 输入你的序列号和本机设备指纹：\n"
+                "     \033[1m%s\033[0m\n"
+                "  3) 复制它给出的离线激活码（格式：token|sig|edition）\n"),
+                baseUrl().c_str(), deviceId().c_str());
+            std::string blob = promptForSerial(tr(
+                " Paste the offline code here (Enter to skip): ",
+                " 在此粘贴离线激活码（直接回车跳过）: "));
+            if (!blob.empty()) {
+                res = activateOffline(blob);
             }
         }
         return res;

@@ -41,6 +41,17 @@ public:
     static ActivateResult activate(const std::string& rawKey);  // online activate + persist
     static void deactivate();                // clear local activation (for support/testing)
 
+    // Offline activation: when the machine can't reach the server, the user gets
+    // their signed token elsewhere (web page / another device) keyed to THIS
+    // machine's Device ID, and pastes it back as "token|sig|edition". We verify
+    // the Ed25519 signature against the embedded public key (no network) and, if
+    // it matches this device, persist it — same trust path as online activation.
+    static ActivateResult activateOffline(const std::string& blob);
+
+    // The Device ID the user must give the activation page to mint an offline
+    // token (== lic::deviceId()). Exposed so the gate UI can print it.
+    static std::string deviceId();
+
     // Print a one-line status summary to stdout.
     static void printStatus();
 

@@ -9,7 +9,7 @@ if(POLICY CMP0167)
 endif()
 set(CMAKE_POLICY_DEFAULT_CMP0148 OLD)
 
-project(CloseCrab-Unified VERSION 0.2.9 LANGUAGES C CXX)
+project(CloseCrab-Unified VERSION 0.3.0 LANGUAGES C CXX)
 
 # ============================================
 # Build options
@@ -390,7 +390,9 @@ if(PLATFORM_WINDOWS)
 elseif(PLATFORM_MACOS)
     find_library(FOUNDATION Foundation)
     find_library(SECURITY Security)
-    list(APPEND CLOSECRAB_LIBS ${FOUNDATION} ${SECURITY} pthread)
+    find_library(IOKIT IOKit)
+    find_library(COREFOUNDATION CoreFoundation)
+    list(APPEND CLOSECRAB_LIBS ${FOUNDATION} ${SECURITY} ${IOKIT} ${COREFOUNDATION} pthread)
     if(USE_LOCAL_LLM)
         find_library(METAL Metal)
         find_library(METALKIT MetalKit)
