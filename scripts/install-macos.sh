@@ -45,12 +45,23 @@ xattr -dr com.apple.quarantine "${BIN_DIR}/closecrab" 2>/dev/null || true
 case ":${PATH}:" in
   *":${BIN_DIR}:"*) ;;
   *)
-    SHELL_RC="${HOME}/.zshrc"
-    [ -n "${BASH_VERSION:-}" ] && SHELL_RC="${HOME}/.bashrc"
-    if ! grep -qs "${BIN_DIR}" "${SHELL_RC}" 2>/dev/null; then
-      echo "export PATH=\"${BIN_DIR}:\$PATH\"" >> "${SHELL_RC}"
-      echo "    Added ${BIN_DIR} to PATH in ${SHELL_RC}"
-    fi
+    # Pick the RC file by the user's LOGIN shell ($SHELL), NOT the shell running
+    # this script. When invoked as `curl ... | bash`, BASH_VERSION is always set
+    # even though the user's interactive shell is zsh — writing to ~/.bashrc then
+    # never takes effect (the bug that broke `closecrab: command not found`).
+    LOGIN_SHELL="$(basename "${SHELL:-/bin/zsh}")"
+    case "${LOGIN_SHELL}" in
+      zsh)  SHELL_RC="${HOME}/.zshrc" ;;
+      bash) SHELL_RC="${HOME}/.bash_profile" ;;  # macOS login shell reads .bash_profile
+      *)    SHELL_RC="${HOME}/.profile" ;;
+    esac
+    # Also write ~/.zshrc as a safety net on macOS (default shell is zsh since Catalina).
+    for rc in "${SHELL_RC}" "${HOME}/.zshrc"; do
+      if ! grep -qs "${BIN_DIR}" "${rc}" 2>/dev/null; then
+        echo "export PATH=\"${BIN_DIR}:\$PATH\"" >> "${rc}"
+        echo "    Added ${BIN_DIR} to PATH in ${rc}"
+      fi
+    done
     ;;
 esac
 
