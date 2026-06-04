@@ -10,6 +10,8 @@
 #include <cstdio>
 #include <iostream>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
@@ -28,11 +30,6 @@
 namespace closecrab {
 
 namespace {
-const char* envOr(const char* name, const char* fallback) {
-    const char* v = std::getenv(name);
-    return (v && *v) ? v : fallback;
-}
-
 // --- Language resolution (English default, switchable) ----------------------
 // Priority: CC_LANG / CC_LICENSE_LANG / LANG / LC_ALL  >  OS UI language  >  English.
 // Set CC_LANG=zh (or en) to force a language.
@@ -63,6 +60,59 @@ bool isEnglish() {
 // Pick the right string for the active language. Returns a const char* so it
 // can be used directly as a printf format string AND concatenated with std::string.
 const char* tr(const char* en, const char* zh) { return isEnglish() ? en : zh; }
+
+std::string trimCopy(std::string s) {
+    size_t a = s.find_first_not_of(" \t\r\n");
+    size_t b = s.find_last_not_of(" \t\r\n");
+    return (a == std::string::npos) ? std::string() : s.substr(a, b - a + 1);
+}
+
+std::string stripTrailingSlash(std::string s) {
+    s = trimCopy(std::move(s));
+    while (s.size() > 1 && s.back() == '/') s.pop_back();
+    return s;
+}
+
+template <typename T>
+void addUnique(std::vector<T>& values, T value) {
+    if (value.empty()) return;
+    for (const auto& v : values) if (v == value) return;
+    values.push_back(std::move(value));
+}
+
+void addUrlList(std::vector<std::string>& urls, const char* raw) {
+    if (!raw || !*raw) return;
+    std::string token;
+    for (const char c : std::string(raw)) {
+        if (c == ',' || c == ';' || c == '\r' || c == '\n' || c == '\t' || c == ' ') {
+            addUnique(urls, stripTrailingSlash(token));
+            token.clear();
+        } else {
+            token.push_back(c);
+        }
+    }
+    addUnique(urls, stripTrailingSlash(token));
+}
+
+std::vector<std::string> licenseBaseUrls() {
+    std::vector<std::string> urls;
+    // CC_LICENSE_URLS accepts comma/semicolon/whitespace-separated mirrors, e.g.
+    //   CC_LICENSE_URLS="https://license-cn.example.com;https://blitzball.lol"
+    // Keep CC_LICENSE_URL for backward compatibility; the default stays last.
+    addUrlList(urls, std::getenv("CC_LICENSE_URLS"));
+    addUrlList(urls, std::getenv("CC_LICENSE_URL"));
+    addUnique(urls, stripTrailingSlash(lic::kDefaultBaseUrl()));
+    return urls;
+}
+
+std::string joinList(const std::vector<std::string>& values) {
+    std::string out;
+    for (const auto& v : values) {
+        if (!out.empty()) out += ", ";
+        out += v;
+    }
+    return out;
+}
 
 size_t writeCb(char* ptr, size_t size, size_t nmemb, std::string* data) {
     data->append(ptr, size * nmemb);
@@ -124,8 +174,8 @@ std::string errText(const std::string& code) {
                   "激活过于频繁，请稍后再试");
     if (code == "NETWORK")
         return tr("Network error — could not reach the activation server "
-                  "(if you use a proxy, check clash port 7897).",
-                  "网络错误，无法连接激活服务器（如使用代理请检查 clash 端口 7897）");
+                  "(try a proxy, or set CC_LICENSE_URLS to a reachable mirror).",
+                  "网络错误，无法连接激活服务器（可尝试代理，或将 CC_LICENSE_URLS 设为可访问的国内镜像）");
     if (code == "BAD_TOKEN")
         return tr("Activation token signature verification failed.", "激活令牌签名校验失败");
     return tr("Activation failed (", "激活失败（") + code + tr(")", "）");
@@ -166,7 +216,8 @@ void regWriteProxy(const std::string&) {}
 } // namespace
 
 std::string LicenseGate::baseUrl() {
-    return envOr("CC_LICENSE_URL", lic::kDefaultBaseUrl());
+    const auto urls = licenseBaseUrls();
+    return urls.empty() ? lic::kDefaultBaseUrl() : urls.front();
 }
 
 std::string LicenseGate::proxy() {
@@ -201,71 +252,85 @@ ActivateResult LicenseGate::activate(const std::string& rawKey) {
     nlohmann::json req = {
         {"key", pr.canonical}, {"device_id", dev},
         {"product", pr.product}, {"app_version", kAppVersion}};
-    std::string url = baseUrl() + "/api/license/activate";
 
-    // Try, in order: user-saved/env proxy, direct, then common local proxy ports
-    // (clash-verge 7897, clash 7890, v2rayN 10809). First one that yields an HTTP
-    // response wins — so most users never need to configure anything.
-    std::vector<std::string> cands;
-    auto addCand = [&cands](const std::string& p) {
-        for (const auto& c : cands) if (c == p) return;
-        cands.push_back(p);
+    // Try all configured mirrors, and for each mirror try the saved/env proxy,
+    // direct connection, then common local proxy ports. This lets support ship a
+    // domestic CDN/reverse-proxy URL without rebuilding the client:
+    //   CC_LICENSE_URLS="https://license-cn.example.com;https://blitzball.lol"
+    // A transport error or CDN HTML/5xx response falls through to the next mirror;
+    // a valid JSON response is authoritative (success or license-specific error).
+    const std::vector<std::string> urls = licenseBaseUrls();
+    std::vector<std::string> proxies;
+    auto addProxy = [&proxies](std::string p) {
+        for (const auto& c : proxies) if (c == p) return;
+        proxies.push_back(std::move(p));
     };
     std::string userProxy = proxy();
-    if (!userProxy.empty()) addCand(userProxy);
-    addCand("");                       // direct connection
-    addCand("http://127.0.0.1:7897");  // clash-verge default
-    addCand("http://127.0.0.1:7890");  // clash classic default
-    addCand("http://127.0.0.1:10809"); // v2rayN default
+    if (!userProxy.empty()) addProxy(userProxy);
+    addProxy("");                       // direct connection
+    addProxy("http://127.0.0.1:7897");  // clash-verge default
+    addProxy("http://127.0.0.1:7890");  // clash classic default
+    addProxy("http://127.0.0.1:10809"); // v2rayN default
 
-    HttpResp r;
-    for (const auto& p : cands) {
-        r = httpPostJson(url, req.dump(), p);
-        if (r.code != 0) break;        // got a response (any HTTP status)
+    HttpResp lastResp;
+    std::vector<std::string> tried;
+    for (const auto& base : urls) {
+        const std::string endpoint = base + "/api/license/activate";
+        bool gotHttp = false;
+        long lastHttpCode = 0;
+        for (const auto& p : proxies) {
+            lastResp = httpPostJson(endpoint, req.dump(), p);
+            if (lastResp.code == 0) continue;
+            gotHttp = true;
+            lastHttpCode = lastResp.code;
+
+            nlohmann::json j;
+            try { j = nlohmann::json::parse(lastResp.body); }
+            catch (...) {
+                // A mirror/CDN/captive portal can be reachable but return HTML
+                // instead of the activation JSON. Keep trying the remaining
+                // proxy candidates for this mirror before moving to the next one.
+                continue;
+            }
+
+            bool okFlag = j.value("ok", false);
+            std::string errCode = j.value("error", okFlag ? std::string("OK") : std::string("UNKNOWN"));
+            if (!okFlag) {
+                out.errorCode = errCode;
+                out.message = errText(errCode);
+                return out;
+            }
+
+            std::string token = j.value("token", "");
+            std::string sig = j.value("sig", "");
+            std::string edition = j.value("edition", "");
+
+            // 3. Verify the signed token offline before trusting/persisting it.
+            lic::TokenInfo ti = lic::verifyToken(token, sig, dev, kPrefix2);
+            if (!ti.ok) {
+                out.errorCode = "BAD_TOKEN";
+                out.message = errText("BAD_TOKEN");
+                return out;
+            }
+
+            // 4. Persist.
+            lic::saveActivation(kAppKey, ti.key, token, sig, edition.empty() ? ti.edition : edition);
+            out.ok = true;
+            out.errorCode = "OK";
+            out.edition = edition.empty() ? ti.edition : edition;
+            out.message = tr("Activated! Edition: ", "激活成功！版本：") + out.edition +
+                          tr(" (", "（") + ti.key + tr(")", "）");
+            return out;
+        }
+        tried.push_back(base + (gotHttp ? (" HTTP " + std::to_string(lastHttpCode)) : ""));
     }
 
-    if (r.code == 0) {
-        out.errorCode = "NETWORK";
-        out.message = errText("NETWORK") + (r.curlErr.empty() ? "" : " [" + r.curlErr + "]");
-        return out;
+    out.errorCode = "NETWORK";
+    out.message = errText("NETWORK");
+    if (!lastResp.curlErr.empty()) out.message += " [" + lastResp.curlErr + "]";
+    if (!tried.empty()) {
+        out.message += tr(" Tried: ", " 已尝试线路：") + joinList(tried);
     }
-
-    nlohmann::json j;
-    try { j = nlohmann::json::parse(r.body); }
-    catch (...) {
-        out.errorCode = "NETWORK";
-        out.message = tr("Unexpected server response (HTTP ", "服务器返回异常（HTTP ") +
-                      std::to_string(r.code) + tr(").", "）");
-        return out;
-    }
-
-    bool okFlag = j.value("ok", false);
-    std::string errCode = j.value("error", okFlag ? std::string("OK") : std::string("UNKNOWN"));
-    if (!okFlag) {
-        out.errorCode = errCode;
-        out.message = errText(errCode);
-        return out;
-    }
-
-    std::string token = j.value("token", "");
-    std::string sig = j.value("sig", "");
-    std::string edition = j.value("edition", "");
-
-    // 3. Verify the signed token offline before trusting/persisting it.
-    lic::TokenInfo ti = lic::verifyToken(token, sig, dev, kPrefix2);
-    if (!ti.ok) {
-        out.errorCode = "BAD_TOKEN";
-        out.message = errText("BAD_TOKEN");
-        return out;
-    }
-
-    // 4. Persist.
-    lic::saveActivation(kAppKey, ti.key, token, sig, edition.empty() ? ti.edition : edition);
-    out.ok = true;
-    out.errorCode = "OK";
-    out.edition = edition.empty() ? ti.edition : edition;
-    out.message = tr("Activated! Edition: ", "激活成功！版本：") + out.edition +
-                  tr(" (", "（") + ti.key + tr(")", "）");
     return out;
 }
 

@@ -25,9 +25,15 @@ class LicenseGate {
 public:
     static constexpr const char* kAppKey  = "CloseCrab";  // registry subkey
     static constexpr const char* kPrefix2 = "CC";         // accept only CC** serials
-    static constexpr const char* kAppVersion = "0.2.0";
+#ifdef CLOSECRAB_VERSION
+    static constexpr const char* kAppVersion = CLOSECRAB_VERSION;
+#else
+    static constexpr const char* kAppVersion = "0.0.0";
+#endif
 
-    // Resolved activation server base URL (env CC_LICENSE_URL > default).
+    // Resolved primary activation server base URL. Priority: first entry in
+    // CC_LICENSE_URLS (comma/semicolon/whitespace-separated mirrors) >
+    // CC_LICENSE_URL > default. activate() tries ALL resolved mirrors.
     static std::string baseUrl();
     // Resolved outbound proxy. Priority: saved ProxyUrl (registry, via setProxy)
     // > env CC_LICENSE_PROXY > ALL_PROXY > HTTPS_PROXY > "". Empty means "auto":
