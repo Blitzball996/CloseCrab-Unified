@@ -38,11 +38,34 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          mkdir -p package/CloseCrab
-          cp build/Release/closecrab.exe package/CloseCrab/
-          cp build/Release/*.dll package/CloseCrab/ 2>/dev/null || true
+          set -euo pipefail
+          # Ensure the runtime DLLs sit next to the exe. CI builds with
+          # USE_LOCAL_LLM/FAISS/ONNX/CUDA=OFF, so the only runtime deps are
+          # vcpkg's dynamic curl + zlib (OpenSSL is linked statically into
+          # libcurl on the x64-windows triplet). vcpkg's applocal step *should*
+          # drop these next to the exe, but copy them explicitly so a missed
+          # applocal can't ship a broken build. This also feeds the Inno Setup
+          # installer below, which packages build/Release/*.dll.
+          VCPKG_BIN="$VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin"
+          for dll in libcurl.dll zlib1.dll; do
+            if [ -f "$VCPKG_BIN/$dll" ]; then
+              cp -f "$VCPKG_BIN/$dll" build/Release/
+            fi
+          done
+
+          # Fail loudly if the core runtime DLL didn't make it — better a red CI
+          # than a download that dies with "libcurl.dll is missing".
+          if [ ! -f build/Release/libcurl.dll ]; then
+            echo "::error::libcurl.dll missing from build/Release — the build would not run."
+            echo "build/Release:"; ls -la build/Release/ || true
+            echo "$VCPKG_BIN:"; ls -la "$VCPKG_BIN" || true
+            exit 1
+          fi
+
           mkdir -p package/CloseCrab/config
-          cp config/config.yaml.example package/CloseCrab/config/config.yaml 2>/dev/null || true
+          cp build/Release/closecrab.exe package/CloseCrab/
+          cp build/Release/*.dll package/CloseCrab/
+          cp config/config.yaml.example package/CloseCrab/config/config.yaml
           cp scripts/uninstall.bat package/CloseCrab/ 2>/dev/null || true
           cd package && 7z a -tzip ../CloseCrab-Windows-x64.zip CloseCrab/
 
@@ -50,7 +73,6 @@ jobs:
         run: |
           choco install innosetup -y
           iscc installer\closecrab.iss
-        continue-on-error: true
 
       - name: Upload ZIP
         uses: actions/upload-artifact@v4
@@ -60,10 +82,9 @@ jobs:
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
-        if: hashFiles('installer/Output/*.exe') != ''
         with:
           name: CloseCrab-Windows-Setup
-          path: installer/Output/*.exe
+          path: dist/CloseCrab-Setup-*.exe
 
   build-linux:
     runs-on: ubuntu-24.04
@@ -208,6 +229,7 @@ jobs:
           generate_release_notes: true
           files: |
             CloseCrab-Windows-x64/CloseCrab-Windows-x64.zip
+            CloseCrab-Windows-Setup/CloseCrab-Setup-*.exe
             CloseCrab-Linux-x86_64/CloseCrab-Linux-x86_64.tar.gz
             CloseCrab-macOS-universal/CloseCrab-macOS-universal.pkg
             CloseCrab-macOS-universal/CloseCrab-macOS-universal.tar.gz

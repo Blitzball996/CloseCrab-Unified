@@ -445,6 +445,20 @@ target_compile_definitions(closecrab-unified PRIVATE CLOSECRAB_VERSION="${PROJEC
 # ============================================
 
 if(PLATFORM_WINDOWS)
+    # Bundle the MSVC C/C++ runtime (vcruntime140.dll, vcruntime140_1.dll,
+    # msvcp140.dll, ...) next to the exe so it runs on a clean machine that does
+    # not have the "Visual C++ Redistributable" installed. The exe and vcpkg's
+    # libcurl.dll both link the dynamic CRT (MultiThreadedDLL), so without these
+    # a fresh download dies with "VCRUNTIME140.dll is missing". The CMake module
+    # resolves the correct version-suffixed DLL names for us.
+    set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP ON)  # populate the list, don't add install() rules
+    include(InstallRequiredSystemLibraries)
+    if(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
+        add_custom_command(TARGET closecrab-unified POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS} $<TARGET_FILE_DIR:closecrab-unified>
+            COMMAND_EXPAND_LISTS)
+    endif()
     if(USE_FAISS AND EXISTS "${FAISS_DIR}/bin/faiss.dll")
         add_custom_command(TARGET closecrab-unified POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
