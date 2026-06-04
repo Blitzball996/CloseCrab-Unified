@@ -40,6 +40,20 @@ The project merges two predecessors: **CloseCrab** (a C++ local inference engine
 
 ---
 
+## What's New in 0.3.1 (Licensing & macOS/Linux Persistence)
+
+This release adds offline license activation and improves cross-platform persistence:
+
+- **Offline Activation** -- License activation works without internet after initial online activation
+- **macOS/Linux License Persistence** -- Licenses now persist across restarts on macOS and Linux (was Windows-only)
+- **Windows Installer** -- Full working Windows installer ships runtime DLLs and icons
+- **SSL Thread Safety** -- Fixed libcurl SSL connect error on macOS ("用着用着SSL connect error") by adding `CURLOPT_NOSIGNAL` for thread safety
+- **Merge Consecutive User Messages** -- Multiple user messages without assistant responses are automatically merged
+- **Pause Turn Handling** -- Handle `pause_turn` in streaming API responses (fixes infinite "waiting for response")
+- **CI Fixes** -- Vendor ChineseSimplified Inno Setup language file, track installer icon in git
+
+---
+
 ## What's New in 0.2.1 (Reliability & Cost)
 
 This release hardens the agent loop and cuts API cost on repeated turns:

@@ -37,6 +37,20 @@
 
 ---
 
+## 0.3.1 新增（许可证与 macOS/Linux 持久化）
+
+本次更新添加离线许可证激活，改进跨平台持久化：
+
+- **离线激活** -- 许可证激活在首次在线激活后可离线工作
+- **macOS/Linux 许可证持久化** -- macOS 和 Linux 上许可证现在重启后保持（之前仅 Windows）
+- **Windows 安装器** -- 完整的 Windows 安装器包含运行时 DLL 和图标
+- **SSL 线程安全** -- 修复 macOS 上的 libcurl SSL 连接错误（"用着用着SSL connect error"）通过添加 `CURLOPT_NOSIGNAL` 保证线程安全
+- **合并连续用户消息** -- 多条连续用户消息（中间无助手回复）自动合并
+- **Pause Turn 处理** -- 处理流式 API 响应中的 `pause_turn`（修复无限"等待响应"）
+- **CI 修复** -- 内置 ChineseSimplified Inno Setup 语言文件、跟踪安装器图标到 git
+
+---
+
 ## 0.2.1 新增（可靠性与成本）
 
 本次更新加固了 agent 主循环，并大幅降低多轮会话的 API 成本：
