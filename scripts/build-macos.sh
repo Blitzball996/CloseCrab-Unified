@@ -54,12 +54,16 @@ echo ""
 echo "[1/5] Configuring CMake (universal binary: arm64 + x86_64)..."
 
 # macOS does not use CUDA; build CPU-only
+# Enhanced FileReadTool (bundled stb image support) is ON by default so the
+# shipped .app is a complete install with no extra downloads. poppler stays OFF
+# (GPL); PDF falls back to an external pdftotext if the user installs poppler.
 cmake -S "${PROJECT_ROOT}" -B "${BUILD_DIR}" \
     -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
     -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
     -DCMAKE_OSX_DEPLOYMENT_TARGET="11.0" \
     -DUSE_CUDA=OFF \
     -DUSE_ONNX_GPU=OFF \
+    -DUSE_ENHANCED_FILE_READ=ON \
     -DBUILD_TESTS=OFF
 
 # --- Step 2: Build ---

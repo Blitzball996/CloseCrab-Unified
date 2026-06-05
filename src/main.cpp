@@ -56,7 +56,17 @@
 #include "api/OpenAICompatClient.h"
 
 // Tools
+// FileReadTool: when built with USE_ENHANCED_FILE_READ (default ON), the
+// enhanced variant adds native image (stb), PDF, Jupyter notebook, security
+// checks and smart error hints. USE_ASYNC_FILE_READ swaps in the thread-pool
+// batch variant. Both fall back to the base tool when the flags are off.
+#if defined(CLOSECRAB_ASYNC_FILE_READ)
+#include "tools/FileReadTool/FileReadTool_Async.h"
+#elif defined(CLOSECRAB_ENHANCED_FILE_READ)
+#include "tools/FileReadTool/FileReadTool_Enhanced.h"
+#else
 #include "tools/FileReadTool/FileReadTool.h"
+#endif
 #include "tools/FileWriteTool/FileWriteTool.h"
 #include "tools/FileEditTool/FileEditTool.h"
 #include "tools/GlobTool/GlobTool.h"
@@ -846,7 +856,13 @@ int main(int argc, char* argv[]) {
     cmdRegistry.registerCommand(std::make_unique<WorkflowsCommand>());
     cmdRegistry.registerCommand(std::make_unique<OauthRefreshCommand>());
     spdlog::info("Registered {} commands", cmdRegistry.getCommandNames().size());
+#if defined(CLOSECRAB_ASYNC_FILE_READ)
+    toolRegistry.registerTool(std::make_unique<FileReadToolAsync>());
+#elif defined(CLOSECRAB_ENHANCED_FILE_READ)
+    toolRegistry.registerTool(std::make_unique<FileReadToolEnhanced>());
+#else
     toolRegistry.registerTool(std::make_unique<FileReadTool>());
+#endif
     toolRegistry.registerTool(std::make_unique<FileWriteTool>());
     toolRegistry.registerTool(std::make_unique<FileEditTool>());
     toolRegistry.registerTool(std::make_unique<GlobTool>());

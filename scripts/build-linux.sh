@@ -59,11 +59,15 @@ echo ""
 echo "[1/5] Configuring CMake..."
 
 # Linux does not use CUDA; build CPU-only
+# Enhanced FileReadTool (bundled stb image support) is ON by default so the
+# AppImage/.deb is a complete install with no extra downloads. poppler stays OFF
+# (GPL); PDF falls back to an external pdftotext if the user installs poppler.
 cmake -S "${PROJECT_ROOT}" -B "${BUILD_DIR}" \
     -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
     -DCMAKE_INSTALL_PREFIX="/usr" \
     -DUSE_CUDA=OFF \
     -DUSE_ONNX_GPU=OFF \
+    -DUSE_ENHANCED_FILE_READ=ON \
     -DBUILD_TESTS=OFF
 
 # --- Step 2: Build ---

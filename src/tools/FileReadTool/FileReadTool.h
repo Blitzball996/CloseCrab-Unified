@@ -4,10 +4,16 @@
 #include "../../core/FileStateCache.h"
 #include "../../core/MmapCache.h"
 #include "../../utils/StringUtils.h"
+#include "../../utils/PdfUtils.h"
+#include "../../utils/ImageUtils.h"
+#include "../../utils/FileSecurityUtils.h"
 #include <fstream>
 #include <sstream>
 #include <filesystem>
 #include <map>
+#include <set>
+#include <algorithm>
+#include <cctype>
 #include <mutex>
 
 namespace closecrab {
@@ -36,7 +42,7 @@ public:
 
     ToolResult call(ToolContext& ctx, const nlohmann::json& input) override {
         namespace fs = std::filesystem;
-        std::string path = input["file_path"].get<std::string>();
+      std::string path = input["file_path"].get<std::string>();
 
         // Unicode-safe path: interpret the incoming string as UTF-8 and build a
         // native (wide on Windows) path. A narrow std::string path goes through
@@ -54,6 +60,67 @@ public:
         }
         if (fs::is_directory(fsPath, ec)) {
             return ToolResult::fail("Path is a directory, not a file: " + path);
+        }
+
+        // Binary file detection: check file extension and first bytes to prevent
+        // crashes from reading binary files as text (docx/pdf/jpg/exe/dll/etc).
+        // This prevents the heap corruption crash when large binary files are
+        // interpreted as text, producing garbage UTF-8 sequences.
+        std::string ext = fsPath.extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+
+        // Common binary extensions
+        static const std::set<std::string> binaryExts = {
+         ".exe", ".dll", ".so", ".dylib", ".bin", ".dat", ".db", ".sqlite",
+            ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".ico", ".webp", ".svg",
+         ".pdf", ".docx", ".xlsx", ".pptx", ".doc", ".xls", ".ppt",
+            ".zip", ".tar", ".gz", ".7z", ".rar", ".bz2",
+        ".mp3", ".mp4", ".avi", ".mkv", ".wav", ".flac",
+            ".woff", ".woff2", ".ttf", ".otf", ".eot",
+            ".pyc", ".pyo", ".class", ".o", ".obj", ".a", ".lib"
+      };
+
+      if (binaryExts.count(ext) > 0) {
+            return ToolResult::fail(
+                "Cannot read binary file: " + path + "\n" +
+            "File type: " + ext + "\n" +
+              "Binary files (.docx, .pdf, .jpg, etc.) cannot be read as text.\n" +
+                "For images, use ImageInput tool. For documents, convert to plain text first."
+            );
+        }
+
+      // Additional binary check: read first 512 bytes and look for null bytes
+        // or high percentage of non-text bytes (catches files without known extensions)
+        try {
+            std::ifstream testFile(fsPath, std::ios::binary);
+            if (testFile.is_open()) {
+              char buffer[512];
+              testFile.read(buffer, sizeof(buffer));
+                std::streamsize bytesRead = testFile.gcount();
+
+           if (bytesRead > 0) {
+                    int nullBytes = 0;
+                    int controlBytes = 0;
+                    for (std::streamsize i = 0; i < bytesRead; i++) {
+                     unsigned char c = static_cast<unsigned char>(buffer[i]);
+             if (c == 0) nullBytes++;
+                   // Control characters except tab, newline, carriage return
+                   if (c < 32 && c != 9 && c != 10 && c != 13) controlBytes++;
+                    }
+
+                  // If >10% null bytes or >30% control chars, likely binary
+          if (nullBytes > bytesRead / 10 || controlBytes > bytesRead / 3) {
+                      return ToolResult::fail(
+                     "Cannot read binary file: " + path + "\n" +
+          "File appears to contain binary data (detected null bytes or excessive control characters).\n" +
+                "This file cannot be safely read as text."
+                        );
+                    }
+             }
+            }
+     } catch (...) {
+         // If binary detection fails, continue with normal read
+        // (better to try than block legitimate files)
         }
 
         int offset = input.value("offset", 0);

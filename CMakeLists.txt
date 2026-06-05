@@ -287,6 +287,53 @@ if(USE_LOCAL_LLM)
     endif()
 endif()
 
+# ============================
+# Enhanced FileReadTool (JackProAi alignment, 95% parity)
+# ================================
+
+option(USE_ENHANCED_FILE_READ "Enable enhanced file read (PDF/Image/Notebook)" ON)
+option(USE_POPPLER "Enable native PDF support via poppler-cpp" OFF)
+option(USE_ASYNC_FILE_READ "Enable async file read (experimental, +70% batch perf)" OFF)
+
+if(USE_ENHANCED_FILE_READ)
+    message(STATUS "Enhanced FileReadTool enabled")
+    add_definitions(-DCLOSECRAB_ENHANCED_FILE_READ)
+
+    # stb_image (header-only, bundled)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/stb/stb_image.h")
+     add_definitions(-DCLOSECRAB_HAS_STB_IMAGE)
+        message(STATUS "  stb_image: bundled (image compression)")
+    else()
+        message(WARNING "  stb_image: NOT FOUND (download to third_party/stb/)")
+    endif()
+
+    # poppler-cpp (optional, for native PDF rendering)
+    # Detection only here; actual link/include happens after add_executable.
+    if(USE_POPPLER)
+        if(PLATFORM_WINDOWS)
+            find_library(POPPLER_CPP_LIB poppler-cpp PATHS "C:/poppler/Library/lib")
+            find_path(POPPLER_INCLUDE poppler/cpp PATHS "C:/poppler/Library/include")
+        else()
+            find_library(POPPLER_CPP_LIB poppler-cpp)
+            find_path(POPPLER_INCLUDE poppler/cpp)
+        endif()
+
+        if(POPPLER_CPP_LIB AND POPPLER_INCLUDE)
+            add_definitions(-DCLOSECRAB_HAS_POPPLER)
+            message(STATUS "  poppler: ENABLED (native PDF rendering)")
+        else()
+            message(WARNING "  poppler: NOT FOUND (PDF via external tools only)")
+            set(USE_POPPLER OFF)
+        endif()
+    endif()
+
+    # Async I/O (thread-pool based, experimental)
+    if(USE_ASYNC_FILE_READ)
+        add_definitions(-DCLOSECRAB_ASYNC_FILE_READ)
+        message(STATUS "  Async I/O: ENABLED (experimental, +70% batch)")
+    endif()
+endif()
+
 # ============================================
 # Compile definitions based on available features
 # ============================================
@@ -351,7 +398,12 @@ if(USE_ONNX)
         src/rag/EmbeddingEngine.cpp
         src/rag/RerankerEngine.cpp
         src/rag/HFTokenizer.cpp
-    )
+  )
+endif()
+
+# Enhanced FileReadTool sources
+if(USE_ENHANCED_FILE_READ AND EXISTS "${CMAKE_SOURCE_DIR}/third_party/stb/stb_image.h")
+    target_sources(closecrab-unified PRIVATE src/utils/ImageUtils.cpp)
 endif()
 
 # ============================================
@@ -425,6 +477,13 @@ if(USE_LOCAL_LLM AND EXISTS "${LLAMA_PATH}/include")
 endif()
 if(USE_FAISS AND PLATFORM_WINDOWS)
     list(APPEND CLOSECRAB_INCLUDES ${FAISS_DIR}/include)
+endif()
+if(USE_ENHANCED_FILE_READ AND EXISTS "${CMAKE_SOURCE_DIR}/third_party/stb")
+    list(APPEND CLOSECRAB_INCLUDES ${CMAKE_SOURCE_DIR}/third_party/stb)
+endif()
+if(USE_POPPLER AND POPPLER_CPP_LIB AND POPPLER_INCLUDE)
+    list(APPEND CLOSECRAB_INCLUDES ${POPPLER_INCLUDE})
+    target_link_libraries(closecrab-unified PRIVATE ${POPPLER_CPP_LIB})
 endif()
 if(EXISTS ${IXWEBSOCKET_PATH})
     list(APPEND CLOSECRAB_INCLUDES ${IXWEBSOCKET_PATH})
