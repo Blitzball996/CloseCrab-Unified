@@ -93,6 +93,15 @@ public:
 private:
     PredictiveEngine() = default;
 
+    // Join the preload thread before destruction. Without this, a turn that
+    // started preloading leaves preloadThread_ joinable at program exit; the
+    // singleton's destructor then runs std::thread::~thread() on a joinable
+    // thread → std::terminate ("bad exception"). This was the shutdown crash
+    // after any turn that triggered preloading (seen on API failure, but the
+    // root cause is the missing join, not the API error). stopPreloading()
+    // clears the flag (runPreload checks it) and joins, so this returns promptly.
+    ~PredictiveEngine() { stopPreloading(); }
+
     void runPreload() {
         namespace fs = std::filesystem;
         try {
