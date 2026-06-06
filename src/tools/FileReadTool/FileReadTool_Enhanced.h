@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cctype>
 #include <mutex>
+#include <cstdlib>
 
 namespace closecrab {
 
@@ -25,6 +26,10 @@ constexpr int PDF_MAX_PAGES_PER_READ = 20;
 
 // Maximum token budget for file reads (default)
 constexpr size_t DEFAULT_MAX_TOKENS = 1000;
+
+// Maximum characters rendered for a single line before it is truncated
+// (claude-code parity: prevents a minified one-line file from flooding context).
+constexpr size_t MAX_LINE_CHARS = 2000;
 
 class FileReadToolEnhanced : public Tool {
 public:
@@ -105,6 +110,14 @@ public:
             return ToolResult::fail("Path is a directory, not a file: " + path);
         }
 
+        // === PERMISSION CHECK (.closecrab/permissions.json deny rules) ===
+        // Honors read-deny globs (secrets, keys, .env, node_modules, ...). The
+        // manager is loaded once at startup; default rules apply if no config.
+        if (PermissionManager::getInstance().isReadDenied(path)) {
+            return ToolResult::fail(
+                PermissionManager::getInstance().getDenyMessage(path, "read"));
+        }
+
         // === FILE TYPE DETECTION ===
         std::string ext = fsPath.extension().string();
      std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
@@ -176,10 +189,68 @@ public:
     }
 
 private:
+    // Record a successful read in the session readFileState so FileWrite/FileEdit
+    // can enforce "read before write" for any file type (text, image, PDF).
+    void recordReadState(ToolContext& ctx, const std::string& path,
+                         const std::filesystem::path& fsPath,
+                         bool hasOffset, bool hasLimit) {
+        namespace fs = std::filesystem;
+        if (!ctx.readFileState) return;
+        ToolContext::ReadState rs;
+        try {
+            std::error_code ec;
+            auto mtime = fs::last_write_time(fsPath, ec);
+            rs.mtimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                mtime.time_since_epoch()).count();
+        } catch (...) { rs.mtimeMs = 0; }
+        auto [h, sz] = fileContentHash(fsPath);
+        rs.contentHash = h;
+        rs.contentSize = sz;
+        rs.hasOffset = hasOffset;
+        rs.hasLimit = hasLimit;
+        rs.isPartialView = false;
+        (*ctx.readFileState)[normalizePathKey(path)] = rs;
+    }
+
     // === PDF READ HANDLER ===
     ToolResult handlePdfRead(ToolContext& ctx, const std::string& path,
                     const std::filesystem::path& fsPath, const std::string& pages) {
         namespace fs = std::filesystem;
+
+        // === NATIVE PDF MODE (opt-in) ===
+        // When CLOSECRAB_PDF_NATIVE=1, send the whole PDF as a base64 `document`
+        // block so the model reads text + figures + scanned pages natively
+        // (claude-code behavior). OFF by default because many OpenAI-compatible
+        // relays don't accept document blocks — the default text-extraction path
+        // below works everywhere. Requires an Anthropic-native (or compatible)
+        // endpoint. Anthropic limit: ~32MB / 100 pages.
+        if (const char* nat = std::getenv("CLOSECRAB_PDF_NATIVE");
+            nat && (nat[0] == '1' || nat[0] == 't' || nat[0] == 'T')) {
+            std::error_code ec;
+            auto sz = fs::file_size(fsPath, ec);
+            constexpr size_t PDF_NATIVE_MAX = 32 * 1024 * 1024;
+            if (!ec && sz > 0 && sz <= PDF_NATIVE_MAX) {
+                std::ifstream pf(fsPath, std::ios::binary);
+                if (pf) {
+                    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(pf)), {});
+                    std::string b64 = base64Encode(bytes);
+                    ToolResult r;
+                    r.success = true;
+                    r.content = "PDF read (native): " + path + " (" +
+                                std::to_string(sz / 1024) + "KB) — sent as document for native reading.";
+                    r.data = {{"type", "pdf_native"}, {"filePath", path}, {"originalSize", sz}};
+                    r.hasContextModification = true;
+                    r.contextModification = {
+                        {"action", "add_document"},
+                        {"media_type", "application/pdf"},
+                        {"data", b64}
+                    };
+                    recordReadState(ctx, path, fsPath, false, false);
+                    return r;
+                }
+            }
+            // Too large or unreadable → fall through to text extraction.
+        }
 
         // Validate page range if provided
         std::optional<PdfPageRange> pageRange;
@@ -242,6 +313,7 @@ private:
             {"pages", pages.empty() ? "all" : pages}
         };
 
+        recordReadState(ctx, path, fsPath, /*hasOffset*/false, /*hasLimit*/!pages.empty());
         return ToolResult::ok(ensureUtf8(result), data);
     }
 
@@ -250,22 +322,35 @@ private:
                    const std::filesystem::path& fsPath) {
     namespace fs = std::filesystem;
 
-     auto fileSize = fs::file_size(fsPath);
+        std::error_code ec;
+        auto fileSize = fs::file_size(fsPath, ec);
 
-        // Check token budget (rough estimate: base64 * 1.2 tokens)
-        if (imageExceedsTokenBudget(fileSize, DEFAULT_MAX_TOKENS)) {
+        // Decode-bomb guard: refuse absurdly large raw files outright (a 4KB PNG
+        // can still decode to gigabytes). Everything else is downscaled/compressed
+        // to fit rather than rejected.
+        constexpr size_t MAX_RAW_IMAGE_BYTES = 30 * 1024 * 1024; // 30 MB
+        if (!ec && fileSize > MAX_RAW_IMAGE_BYTES) {
             return ToolResult::fail(
-          "Image file too large: " + std::to_string(fileSize / 1024) + "KB\n"
-            "Estimated token count exceeds maximum allowed tokens (" +
-           std::to_string(DEFAULT_MAX_TOKENS) + ").\n"
-                "Please use a smaller image or compress it first."
+                "Image file too large: " + std::to_string(fileSize / (1024 * 1024)) + "MB\n"
+                "Maximum supported source image is 30MB. Please downscale it first."
             );
         }
 
-        // Read and encode image
-      std::string mediaType;
-        size_t originalSize;
+        // Read + encode. When stb is bundled, large images are downscaled to
+        // <=1568px on the long edge and re-encoded as progressive-quality JPEG
+        // to fit the per-image token budget (compress, not reject).
+        std::string mediaType;
+        size_t originalSize = 0;
+        ImageDimensions dims;
+#ifdef CLOSECRAB_HAS_STB_IMAGE
+        // Budget chosen so images whose raw bytes exceed ~375KB get compressed/
+        // resized; smaller images pass through untouched.
+        constexpr size_t IMAGE_TOKEN_BUDGET = 600000;
+        std::string base64 = readImageAsBase64(fsPath, mediaType, originalSize,
+                                               IMAGE_TOKEN_BUDGET, &dims);
+#else
         std::string base64 = readImageAsBase64(fsPath, mediaType, originalSize);
+#endif
 
         if (base64.empty()) {
             return ToolResult::fail("Failed to read image: " + path);
@@ -277,6 +362,12 @@ private:
             {"base64", base64},
             {"originalSize", originalSize}
         };
+        if (dims.originalWidth > 0) {
+            data["width"] = dims.displayWidth > 0 ? dims.displayWidth : dims.originalWidth;
+            data["height"] = dims.displayHeight > 0 ? dims.displayHeight : dims.originalHeight;
+            data["originalWidth"] = dims.originalWidth;
+            data["originalHeight"] = dims.originalHeight;
+        }
 
      ToolResult result;
         result.success = true;
@@ -290,6 +381,7 @@ private:
           {"data", base64}
         };
 
+        recordReadState(ctx, path, fsPath, /*hasOffset*/false, /*hasLimit*/false);
      return result;
     }
 
@@ -359,7 +451,14 @@ private:
 
             result += std::to_string(lineNum + 1);
                     result += '\t';
-                  result.append(pos, lineLen);
+                    // Cap absurdly long single lines (claude-code: ~2000 chars/line)
+                    // so a minified/one-line file can't blow up the context.
+                    if (lineLen > MAX_LINE_CHARS) {
+                        result.append(pos, MAX_LINE_CHARS);
+                        result += "... [line truncated, " + std::to_string(lineLen) + " chars]";
+                    } else {
+                        result.append(pos, lineLen);
+                    }
                 result += '\n';
             linesRead++;
 
@@ -387,7 +486,13 @@ private:
             while (std::getline(file, line)) {
                 if (!line.empty() && line.back() == '\r') line.pop_back();
                 if (lineNum >= offset && linesRead < limit) {
-                 result += std::to_string(lineNum + 1) + "\t" + line + "\n";
+                    if (line.size() > MAX_LINE_CHARS) {
+                        result += std::to_string(lineNum + 1) + "\t" +
+                                  line.substr(0, MAX_LINE_CHARS) +
+                                  "... [line truncated, " + std::to_string(line.size()) + " chars]\n";
+                    } else {
+                        result += std::to_string(lineNum + 1) + "\t" + line + "\n";
+                    }
                   linesRead++;
           if (!hasExplicitLimit && result.size() > BYTE_CAP) {
                         truncatedByBytes = true;

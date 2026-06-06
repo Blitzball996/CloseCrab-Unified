@@ -489,7 +489,21 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
         }
         resultJson = nlohmann::json(ascii);
     }
-    messages_.push_back(Message::makeToolResult(event.toolUseId, resultJson, !result.success));
+    // If the tool returned an image or PDF, carry the base64 into the tool_result
+    // so the model actually receives the media (image / document block).
+    std::string imgB64, imgMedia;
+    if (result.hasContextModification) {
+        std::string act = result.contextModification.value("action", "");
+        if (act == "add_image") {
+            imgB64 = result.contextModification.value("data", "");
+            imgMedia = result.contextModification.value("media_type", "image/png");
+        } else if (act == "add_document") {
+            imgB64 = result.contextModification.value("data", "");
+            imgMedia = result.contextModification.value("media_type", "application/pdf");
+        }
+    }
+    messages_.push_back(Message::makeToolResult(event.toolUseId, resultJson, !result.success,
+                                                "", imgB64, imgMedia));
     { FILE* t = closecrab::traceOpen(); if(t){fprintf(t,"  tool-done %s ok=%d msgCount=%zu\n", event.toolName.c_str(), result.success?1:0, messages_.size()); fclose(t);} }
 }
 
@@ -935,7 +949,19 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                         for (char c : safeContent) ascii += (static_cast<unsigned char>(c) < 0x80) ? c : '?';
                         resultJson = nlohmann::json(ascii);
                     }
-                    messages_.push_back(Message::makeToolResult(pr.event.toolUseId, resultJson, !pr.result.success));
+                    std::string pImgB64, pImgMedia;
+                    if (pr.result.hasContextModification) {
+                        std::string act = pr.result.contextModification.value("action", "");
+                        if (act == "add_image") {
+                            pImgB64 = pr.result.contextModification.value("data", "");
+                            pImgMedia = pr.result.contextModification.value("media_type", "image/png");
+                        } else if (act == "add_document") {
+                            pImgB64 = pr.result.contextModification.value("data", "");
+                            pImgMedia = pr.result.contextModification.value("media_type", "application/pdf");
+                        }
+                    }
+                    messages_.push_back(Message::makeToolResult(pr.event.toolUseId, resultJson, !pr.result.success,
+                                                                "", pImgB64, pImgMedia));
                 }
             }
 

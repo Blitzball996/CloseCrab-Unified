@@ -23,6 +23,14 @@ extern "C" {
     int stbi_write_jpg_to_func(void (*func)(void* context, void* data, int size),
                                void* context, int w, int h, int comp,
                                const void* data, int quality);
+    // stb_image_resize2: aspect-ratio-preserving downscale. The real signature
+    // takes a stbir_pixel_layout enum as the last arg; under extern "C" the
+    // symbol name omits parameter types, so declaring it `int` is ABI-safe.
+    // STBIR_RGB == 3, so we pass the channel count directly.
+    unsigned char* stbir_resize_uint8_linear(
+        const unsigned char* input_pixels, int input_w, int input_h, int input_stride_in_bytes,
+        unsigned char* output_pixels, int output_w, int output_h, int output_stride_in_bytes,
+        int pixel_layout);
 }
 #endif
 #endif
@@ -138,30 +146,38 @@ inline std::vector<uint8_t> compressImageWithTokenBudget(
         outDimensions->originalHeight = height;
     }
 
-    // Resize if larger than 1024x1024 (JackProAi behavior)
-    constexpr int MAX_DIM = 1024;
+    // Resize if larger than MAX_DIM on the long edge (matches Anthropic vision
+    // guidance: downscale to fit, preserve aspect ratio). 1568px is the largest
+    // dimension the API keeps without its own downscale.
+    constexpr int MAX_DIM = 1568;
     int targetWidth = width;
     int targetHeight = height;
     std::vector<uint8_t> resizedData;
+    const unsigned char* encodeSrc = img;   // points at img or resizedData
 
     if (width > MAX_DIM || height > MAX_DIM) {
-      // Maintain aspect ratio
+        // Maintain aspect ratio
         float scale = std::min(static_cast<float>(MAX_DIM) / width,
                      static_cast<float>(MAX_DIM) / height);
-        targetWidth = static_cast<int>(width * scale);
-        targetHeight = static_cast<int>(height * scale);
+        targetWidth = std::max(1, static_cast<int>(width * scale));
+        targetHeight = std::max(1, static_cast<int>(height * scale));
 
-        resizedData.resize(targetWidth * targetHeight * 3);
+        resizedData.resize(static_cast<size_t>(targetWidth) * targetHeight * 3);
 
-        // Use stb_image_resize (linear interpolation)
-        // Note: stbir_resize_uint8_linear is from stb_image_resize.h
-        // For now, we'll use a simple implementation or link against it
-        // Simplified: we'll just use the original for POC
-        // TODO: Integrate stb_image_resize.h properly
+        // stb_image_resize2: linear-light box/triangle downscale. STBIR_RGB == 3.
+        unsigned char* ok = stbir_resize_uint8_linear(
+            img, width, height, 0,
+            resizedData.data(), targetWidth, targetHeight, 0,
+            /*STBIR_RGB*/ 3);
 
-        // For now, skip resize in header-only version
-        targetWidth = width;
-        targetHeight = height;
+        if (ok) {
+            encodeSrc = resizedData.data();   // encode the downscaled buffer
+        } else {
+            // Resize failed — fall back to encoding the original at reduced
+            // quality (still correct, just larger).
+            targetWidth = width;
+            targetHeight = height;
+        }
     }
 
     if (outDimensions) {
@@ -176,7 +192,7 @@ inline std::vector<uint8_t> compressImageWithTokenBudget(
     for (int quality = 85; quality >= 20; quality -= 15) {
         output.clear();
         stbi_write_jpg_to_func(jpegWriteCallback, &output,
-                      targetWidth, targetHeight, 3, img, quality);
+                      targetWidth, targetHeight, 3, encodeSrc, quality);
 
         if (output.size() <= targetBytes) {
           break; // Found acceptable quality
@@ -218,14 +234,23 @@ inline std::string readImageAsBase64(const std::filesystem::path& imagePath,
         else if (ext == ".bmp") format = "bmp";
     }
 
-    // Apply compression if token budget specified
+    // Apply compression if token budget specified.
     if (maxTokens > 0 && imageExceedsTokenBudget(data.size(), maxTokens)) {
 #ifdef CLOSECRAB_HAS_STB_IMAGE
-        data = compressImageWithTokenBudget(data, maxTokens, outDimensions);
-        format = "jpeg"; // Compression always produces JPEG
+        std::vector<uint8_t> compressed = compressImageWithTokenBudget(data, maxTokens, outDimensions);
+        // compressImageWithTokenBudget returns the ORIGINAL bytes unchanged when
+        // stb can't decode the input (e.g. WebP — stb has no WebP decoder). Only
+        // relabel the media type when it actually produced a new (JPEG) buffer;
+        // otherwise keep the original format so we don't mislabel a WebP as JPEG.
+        if (compressed.data() != data.data() && compressed != data) {
+            data = std::move(compressed);
+            std::string newFmt = detectImageFormat(data);
+            if (newFmt != "unknown") format = newFmt;  // typically "jpeg"
+        }
+        // else: undecodable format (WebP) — send original bytes as-is. The
+        // Anthropic API accepts image/webp natively; it just isn't downscaled.
 #endif
-        // Without stb, fall through and return the original bytes; the caller's
-        // token-budget guard already rejects images that are too large.
+        // Without stb: fall through and return the original bytes unchanged.
     }
 
     outMediaType = "image/" + format;

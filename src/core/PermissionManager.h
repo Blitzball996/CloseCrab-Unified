@@ -7,6 +7,8 @@
 #include <fstream>
 #include <set>
 #include <algorithm>
+#include <regex>
+#include <cstring>
 
 namespace closecrab {
 
@@ -137,60 +139,60 @@ private:
         return false;
   }
 
-    // Simple wildcard matching (* and **)
-    // JackProAi uses micromatch, we implement basic version
+    // Translate a glob (with *, **, ?) into an anchored regex.
+    //   **/  -> (?:.*/)?   (zero-or-more leading dirs)
+    //   **   -> .*         (any chars, including '/')
+    //   *    -> [^/]*      (any chars within one path segment)
+    //   ?    -> [^/]       (one char within a segment)
+    // Regex metacharacters are escaped. Matching is case-insensitive on Windows.
+    static std::string globToRegex(const std::string& glob) {
+        std::string re = "^";
+        for (size_t i = 0; i < glob.size(); ++i) {
+            char c = glob[i];
+            if (c == '*') {
+                if (i + 1 < glob.size() && glob[i + 1] == '*') {
+                    if (i + 2 < glob.size() && glob[i + 2] == '/') {
+                        re += "(?:.*/)?";   // **/  -> optional leading dirs
+                        i += 2;
+                    } else {
+                        re += ".*";         // **   -> across segments
+                        i += 1;
+                    }
+                } else {
+                    re += "[^/]*";          // *    -> within a segment
+                }
+            } else if (c == '?') {
+                re += "[^/]";
+            } else if (std::strchr(".^$+{}()|[]\\", c)) {
+                re += '\\';
+                re += c;
+            } else {
+                re += c;
+            }
+        }
+        re += "$";
+        return re;
+    }
+
+    // Glob match using proper segment-aware semantics (replaces the old crude
+    // substring matcher that couldn't handle **/dir/** or *.ext correctly).
     bool matchWildcard(const std::string& path, const std::string& pattern) const {
-        // Normalize path separators
         std::string normPath = path;
         std::string normPattern = pattern;
         std::replace(normPath.begin(), normPath.end(), '\\', '/');
-      std::replace(normPattern.begin(), normPattern.end(), '\\', '/');
-
-        // Convert to lowercase for case-insensitive matching on Windows
+        std::replace(normPattern.begin(), normPattern.end(), '\\', '/');
 #ifdef _WIN32
         std::transform(normPath.begin(), normPath.end(), normPath.begin(), ::tolower);
         std::transform(normPattern.begin(), normPattern.end(), normPattern.begin(), ::tolower);
 #endif
-
-      // Handle ** (match any directories)
-        if (normPattern.find("**/") == 0) {
-            // Pattern starts with **/
-            std::string suffix = normPattern.substr(3);
-            // Check if path ends with suffix or contains it
-            if (normPath.find(suffix) != std::string::npos) {
-           return true;
-            }
+        try {
+            std::regex re(globToRegex(normPattern),
+                          std::regex::ECMAScript | std::regex::optimize);
+            return std::regex_match(normPath, re);
+        } catch (...) {
+            // Malformed pattern — fall back to exact match rather than throw.
+            return normPath == normPattern;
         }
-
-        if (normPattern.find("/**") != std::string::npos) {
-            // Pattern contains /**
-            size_t pos = normPattern.find("/**");
-          std::string prefix = normPattern.substr(0, pos);
-            std::string suffix = normPattern.substr(pos + 3);
-
-            if (normPath.find(prefix) == 0) { // Starts with prefix
-            if (suffix.empty() || normPath.find(suffix) != std::string::npos) {
-                    return true;
-                }
-            }
-        }
-
-      // Handle simple * (match within segment)
-        if (normPattern.find('*') != std::string::npos && normPattern.find("**") == std::string::npos) {
-            // Simple glob: *.key
-     if (normPattern[0] == '*') {
-         std::string suffix = normPattern.substr(1);
-                return normPath.size() >= suffix.size() &&
-                    normPath.substr(normPath.size() - suffix.size()) == suffix;
-            }
-            if (normPattern.back() == '*') {
-                std::string prefix = normPattern.substr(0, normPattern.size() - 1);
-             return normPath.find(prefix) == 0;
-            }
-        }
-
-     // Exact match
-        return normPath == normPattern;
     }
 };
 

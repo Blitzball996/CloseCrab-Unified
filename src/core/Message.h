@@ -167,7 +167,9 @@ struct Message {
     static Message makeToolUse(const std::string& toolName, const std::string& toolUseId,
                                const nlohmann::json& input, const std::string& id = "");
     static Message makeToolResult(const std::string& toolUseId, const nlohmann::json& result,
-                                  bool isError = false, const std::string& id = "");
+                                  bool isError = false, const std::string& id = "",
+                                  const std::string& imageBase64 = "",
+                                  const std::string& imageMediaType = "");
 
     // ---- v2 Convenience constructors ----
 

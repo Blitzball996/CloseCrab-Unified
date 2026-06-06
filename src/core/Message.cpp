@@ -57,7 +57,9 @@ Message Message::makeToolUse(const std::string& toolName, const std::string& too
 }
 
 Message Message::makeToolResult(const std::string& toolUseId, const nlohmann::json& result,
-                                bool isError, const std::string& id) {
+                                bool isError, const std::string& id,
+                                const std::string& imageBase64,
+                                const std::string& imageMediaType) {
     Message m;
     m.type = MessageType::USER;
     m.role = MessageRole::USER;
@@ -67,6 +69,11 @@ Message Message::makeToolResult(const std::string& toolUseId, const nlohmann::js
     block.toolUseId = toolUseId;
     block.toolResult = result;
     block.isError = isError;
+    // Optional image returned by the tool (e.g. Read on an image / ImageInput).
+    // Carried on the TOOL_RESULT block; toApiJson emits it as an image sub-block
+    // inside the tool_result content array (Anthropic tool-result-image format).
+    block.base64Data = imageBase64;
+    block.mediaType = imageMediaType;
     m.content.push_back(std::move(block));
     m.uuid = id.empty() ? generateUUID() : id;
     m.timestamp = nowMs();
@@ -202,14 +209,39 @@ nlohmann::json Message::toApiJson() const {
                 b["name"] = block.toolName;
                 b["input"] = block.toolInput;
                 break;
-            case ContentBlockType::TOOL_RESULT:
+            case ContentBlockType::TOOL_RESULT: {
                 b["type"] = "tool_result";
                 b["tool_use_id"] = block.toolUseId;
-                b["content"] = block.toolResult.is_string()
+                std::string textContent = block.toolResult.is_string()
                     ? block.toolResult.get<std::string>()
                     : block.toolResult.dump();
+                if (!block.base64Data.empty()) {
+                    // Media-bearing tool result: content is an array of a text
+                    // block + a media block. PDFs become a `document` block,
+                    // images become an `image` block (Anthropic content formats).
+                    nlohmann::json arr = nlohmann::json::array();
+                    arr.push_back({{"type", "text"}, {"text", textContent}});
+                    nlohmann::json media;
+                    if (block.mediaType == "application/pdf") {
+                        media["type"] = "document";
+                        media["source"]["type"] = "base64";
+                        media["source"]["media_type"] = "application/pdf";
+                        media["source"]["data"] = block.base64Data;
+                    } else {
+                        media["type"] = "image";
+                        media["source"]["type"] = "base64";
+                        media["source"]["media_type"] = block.mediaType.empty()
+                            ? std::string("image/png") : block.mediaType;
+                        media["source"]["data"] = block.base64Data;
+                    }
+                    arr.push_back(std::move(media));
+                    b["content"] = std::move(arr);
+                } else {
+                    b["content"] = textContent;
+                }
                 if (block.isError) b["is_error"] = true;
                 break;
+            }
             case ContentBlockType::THINKING:
                 b["type"] = "thinking";
                 b["thinking"] = block.text;

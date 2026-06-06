@@ -50,6 +50,7 @@
 #include "tools/ToolRegistry.h"
 #include "commands/CommandRegistry.h"
 #include "permissions/PermissionEngine.h"
+#include "core/PermissionManager.h"
 #include "api/APIClient.h"
 #include "api/LocalLLMClient.h"
 #include "api/RemoteAPIClient.h"
@@ -637,6 +638,12 @@ int main(int argc, char* argv[]) {
             spdlog::warn("Could not switch to app dir {} ({})", appDir.string(), ec.message());
         }
     }
+
+    // Load file-access permission rules from <project>/.closecrab/permissions.json
+    // (falls back to built-in deny defaults: secrets, keys, .env, node_modules...).
+    // Enforced by FileReadTool's read path. Loaded from the user's project cwd,
+    // not the app data dir.
+    closecrab::PermissionManager::getInstance().loadPermissions(userProjectCwd);
 
     spdlog::set_level(verbose ? spdlog::level::debug : spdlog::level::info);
 
