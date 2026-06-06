@@ -1,12 +1,14 @@
 ; CloseCrab-Unified Installer
 ; Cross-platform packaging: Windows Inno Setup script
-; Version 0.2.1 - Reliability & cost release
-;   - Read-before-write + mtime guard (no more accidental file loss)
-;   - Dangerous rm/rmdir path guard (cannot be silenced by auto-approve)
-;   - Windows Git Bash quoting fix (node -e / sed -i / python -c no longer break)
-;   - Working-directory persistence across bash calls (cd carries over)
-;   - Prompt-cache split + deterministic compaction (big cost reduction on repeat turns)
-;   - Model fallback chain (Opus -> Sonnet on repeated overload)
+; Version 0.3.2 - Enhanced FileReadTool + stability release
+;   - Enhanced Read tool: native images (bundled stb, no extra download),
+;     PDF (text + optional native document blocks), Jupyter notebooks
+;   - Image delivery fixed: images now actually reach the model
+;   - Permission system wired (.closecrab/permissions.json deny rules)
+;   - Single-line truncation + readFileState parity for image/PDF
+;   - Crash fix: join PredictiveEngine preload thread at exit (no more
+;     shutdown 闪退 after a failed/interrupted turn)
+;   - Self-contained install: all runtime DLLs bundled (CRT/curl/llama/onnx/...)
 #define MyAppName "CloseCrab-Unified"
 #define MyAppVersion "0.3.2"
 #define MyAppPublisher "Blitzball996"
@@ -39,9 +41,10 @@ ChangesEnvironment=yes
 ; Main executable and DLLs
 Source: "out\build\x64-release\closecrab.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "out\build\x64-release\*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-; Configuration
-Source: "config\config.yaml"; DestDir: "{app}\config"; Flags: ignoreversion
-Source: "config\*"; DestDir: "{app}\config"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
+; Configuration TEMPLATE only — never ship the developer's real config.yaml
+; (it contains a live API key). The install wizard writes config/config.yaml
+; from the user's provider/key choices at post-install (see CurStepChanged).
+Source: "config\config.yaml.example"; DestDir: "{app}\config"; Flags: ignoreversion
 ; Scripts
 Source: "download_model.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "run.bat"; DestDir: "{app}"; Flags: ignoreversion

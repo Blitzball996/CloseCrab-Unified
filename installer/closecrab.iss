@@ -39,9 +39,9 @@ Name: "registercontext"; Description: "Add 'Open CloseCrab here' to Explorer con
 
 [Files]
 ; Main executable
-Source: "..\build\Release\closecrab.exe"; DestDir: "{app}"; Flags: ignoreversion
-; DLLs
-Source: "..\build\Release\*.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\out\build\x64-release\closecrab.exe"; DestDir: "{app}"; Flags: ignoreversion
+; DLLs (bundled runtime — self-contained, no extra download)
+Source: "..\out\build\x64-release\*.dll"; DestDir: "{app}"; Flags: ignoreversion
 ; Config template
 Source: "..\config\config.yaml.example"; DestDir: "{app}\config"; Flags: ignoreversion; DestName: "config.yaml"
 ; Documentation
