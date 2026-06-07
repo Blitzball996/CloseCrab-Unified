@@ -38,10 +38,10 @@ Name: "addtopath"; Description: "Add to PATH"; GroupDescription: "System integra
 Name: "registercontext"; Description: "Add 'Open CloseCrab here' to Explorer context menu"; GroupDescription: "System integration:"
 
 [Files]
-; Main executable
-Source: "..\out\build\x64-release\closecrab.exe"; DestDir: "{app}"; Flags: ignoreversion
+; Main executable (CI builds with the VS generator into build\Release\)
+Source: "..\build\Release\closecrab.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; DLLs (bundled runtime — self-contained, no extra download)
-Source: "..\out\build\x64-release\*.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\build\Release\*.dll"; DestDir: "{app}"; Flags: ignoreversion
 ; Config template
 Source: "..\config\config.yaml.example"; DestDir: "{app}\config"; Flags: ignoreversion; DestName: "config.yaml"
 ; Documentation
