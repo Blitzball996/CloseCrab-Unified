@@ -1,16 +1,12 @@
 ; CloseCrab-Unified Installer
 ; Cross-platform packaging: Windows Inno Setup script
-; Version 0.3.3 - Enhanced FileReadTool + stability release
-;   - Enhanced Read tool: native images (bundled stb, no extra download),
-;     PDF (text + optional native document blocks), Jupyter notebooks
-;   - Image delivery fixed: images now actually reach the model
-;   - Permission system wired (.closecrab/permissions.json deny rules)
-;   - Single-line truncation + readFileState parity for image/PDF
-;   - Crash fix: join PredictiveEngine preload thread at exit (no more
-;     shutdown 闪退 after a failed/interrupted turn)
-;   - Self-contained install: all runtime DLLs bundled (CRT/curl/llama/onnx/...)
+; Version 0.3.4 - Permission wildcard glob fix
+;   - Permission rules now support '*' (any run) and '?' (one char) at ANY
+;     position, not just a trailing '*'. Fixes leading/mid-pattern wildcard
+;     rules (e.g. WebFetch *.example.com, Read secrets-*/x.json) that silently
+;     never matched and fell through to ASK_USER. Adds glob regression tests.
 #define MyAppName "CloseCrab-Unified"
-#define MyAppVersion "0.3.3"
+#define MyAppVersion "0.3.4"
 #define MyAppPublisher "Blitzball996"
 #define MyAppURL "https://github.com/Blitzball996/CloseCrab-Unified"
 #define MyAppExeName "closecrab.exe"
