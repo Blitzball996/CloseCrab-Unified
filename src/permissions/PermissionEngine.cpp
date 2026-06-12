@@ -27,14 +27,37 @@ bool PermissionEngine::matchPattern(const std::string& action, const std::string
     if (pattern.empty()) return false;
     if (pattern == "*") return true;
 
-    // Simple wildcard matching: "git *" matches "git push", "git commit", etc.
-    if (pattern.back() == '*') {
-        std::string prefix = pattern.substr(0, pattern.size() - 1);
-        return action.substr(0, prefix.size()) == prefix;
-    }
+    // Full glob matching with '*' (any run, including empty) and '?' (one char)
+    // supported at ANY position. Fixes wildcard rules that the old trailing-only
+    // matcher silently dropped, e.g.:
+    //   WebFetch(domain:*.example.com)   - leading wildcard, never matched subdomains
+    //   Read(secrets-*/config.json)      - mid-pattern wildcard
+    //   Bash(git *--force*)              - multiple wildcards
+    // Mirrors the upstream Claude Code fix for wildcard domain / mid-pattern rules.
+    // Iterative backtracking matcher: O(n*m) worst case, no recursion/allocation.
+    const size_t n = action.size();
+    const size_t m = pattern.size();
+    size_t a = 0, p = 0;
+    size_t starP = std::string::npos;  // last '*' position in pattern
+    size_t starA = 0;                  // action position when that '*' was seen
 
-    // Exact match
-    return action == pattern;
+    while (a < n) {
+        if (p < m && (pattern[p] == action[a] || pattern[p] == '?')) {
+            ++a;
+            ++p;
+        } else if (p < m && pattern[p] == '*') {
+            starP = p++;      // remember star; assume it consumes nothing yet
+            starA = a;
+        } else if (starP != std::string::npos) {
+            p = starP + 1;    // backtrack: let the last '*' consume one more char
+            a = ++starA;
+        } else {
+            return false;
+        }
+    }
+    // Consume any trailing '*' left in the pattern
+    while (p < m && pattern[p] == '*') ++p;
+    return p == m;
 }
 
 PermissionDecision PermissionEngine::matchRules(const std::string& toolName,

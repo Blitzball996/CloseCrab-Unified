@@ -3,6 +3,7 @@
 #include "../src/tools/CronTools/CronTools.h"
 #include "../src/core/FileStateCache.h"
 #include "../src/api/APIError.h"
+#include "../src/permissions/PermissionEngine.h"
 
 using namespace closecrab;
 
@@ -146,6 +147,55 @@ TEST(FileStateCache, MissOnEmpty) {
 }
 
 // ============================================================
+
+// ============================================================
+// PermissionEngine wildcard glob matching
+// Regression test for the trailing-only matcher bug: wildcard rules
+// with leading or mid-pattern '*' silently never matched and fell
+// through to ASK_USER. Mirrors upstream Claude Code wildcard fix.
+// ============================================================
+
+TEST(PermissionGlob, LeadingWildcardMatchesSubdomains) {
+    auto& pe = PermissionEngine::getInstance();
+    pe.setMode(PermissionMode::DEFAULT);
+    pe.addDenyRule("WebFetch", "*.example.com");
+    EXPECT_EQ(pe.check("WebFetch", "api.example.com", true, false),
+              PermissionDecision::DENIED);
+    EXPECT_EQ(pe.check("WebFetch", "a.b.example.com", true, false),
+              PermissionDecision::DENIED);
+    EXPECT_NE(pe.check("WebFetch", "example.com.evil.org", true, false),
+              PermissionDecision::DENIED);
+    pe.removeDenyRule("WebFetch", "*.example.com");
+}
+
+TEST(PermissionGlob, MidPatternWildcardMatches) {
+    auto& pe = PermissionEngine::getInstance();
+    pe.setMode(PermissionMode::DEFAULT);
+    pe.addDenyRule("Read", "secrets-*/config.json");
+    EXPECT_EQ(pe.check("Read", "secrets-prod/config.json", true, false),
+              PermissionDecision::DENIED);
+    EXPECT_EQ(pe.check("Read", "secrets-/config.json", true, false),
+              PermissionDecision::DENIED);
+    EXPECT_NE(pe.check("Read", "secrets-prod/other.json", true, false),
+              PermissionDecision::DENIED);
+    pe.removeDenyRule("Read", "secrets-*/config.json");
+}
+
+TEST(PermissionGlob, MultipleWildcardsAndQuestionMark) {
+    auto& pe = PermissionEngine::getInstance();
+    pe.setMode(PermissionMode::DEFAULT);
+    pe.addDenyRule("WebFetch", "*--force*");
+    EXPECT_EQ(pe.check("WebFetch", "git push --force origin", true, false),
+              PermissionDecision::DENIED);
+    pe.removeDenyRule("WebFetch", "*--force*");
+
+    pe.addDenyRule("Read", "file?.txt");
+    EXPECT_EQ(pe.check("Read", "file1.txt", true, false),
+              PermissionDecision::DENIED);
+    EXPECT_NE(pe.check("Read", "file10.txt", true, false),
+              PermissionDecision::DENIED);
+    pe.removeDenyRule("Read", "file?.txt");
+}
 
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);

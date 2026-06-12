@@ -554,10 +554,17 @@ if(BUILD_TESTS)
     find_package(GTest CONFIG QUIET)
     if(GTest_FOUND)
         enable_testing()
-        add_executable(closecrab-tests tests/test_core.cpp src/api/StreamParser.cpp)
+        add_executable(closecrab-tests tests/test_core.cpp src/api/StreamParser.cpp src/permissions/PermissionEngine.cpp)
         target_include_directories(closecrab-tests PRIVATE
             ${CMAKE_SOURCE_DIR}/src ${json_SOURCE_DIR}/include ${spdlog_SOURCE_DIR}/include)
         target_link_libraries(closecrab-tests PRIVATE GTest::gtest GTest::gtest_main spdlog::spdlog)
+        # nlohmann/json may come from vcpkg find_package (no json_SOURCE_DIR) or
+        # FetchContent. Link the imported target when present so its include dir
+        # is carried regardless of source — the trailing-include path above is
+        # empty on the vcpkg path and the test sources need <nlohmann/json.hpp>.
+        if(TARGET nlohmann_json::nlohmann_json)
+            target_link_libraries(closecrab-tests PRIVATE nlohmann_json::nlohmann_json)
+        endif()
         add_test(NAME CoreTests COMMAND closecrab-tests)
     endif()
 endif()

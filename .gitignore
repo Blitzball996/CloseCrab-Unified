@@ -1,6 +1,8 @@
 # 构建产物
 out/
 build/
+build-*/
+.deps-cache/
 # icons/ holds the installer's source icon (closecrab.ico) — keep it tracked.
 # Ignore everything else that lands here but the source assets the installer needs.
 icons/*
