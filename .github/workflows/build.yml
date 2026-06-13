@@ -12,7 +12,11 @@ env:
 
 jobs:
   build-windows:
-    runs-on: windows-latest
+    # Pin to windows-2022: the windows-latest image rolled its default Visual
+    # Studio to VS 18 (2026), so the hardcoded "-G Visual Studio 17 2022"
+    # generator no longer resolves ("could not find any instance of Visual
+    # Studio"). windows-2022 keeps VS 2022, matching the generator above.
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
         with:
