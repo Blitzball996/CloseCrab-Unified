@@ -15,9 +15,22 @@
 #include <memory>
 #include <functional>
 #include <algorithm>
+#include <fstream>
+#include <filesystem>
 #include <nlohmann/json.hpp>
 #include <ixwebsocket/IXWebSocketServer.h>
 #include <spdlog/spdlog.h>
+
+#ifdef _WIN32
+#include <process.h>   // _getpid
+#define CC_GETPID _getpid
+#else
+#include <unistd.h>    // getpid
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#define CC_GETPID getpid
+#endif
 
 namespace closecrab {
 
@@ -30,9 +43,47 @@ public:
         return instance;
     }
 
-    void start(int port = 9002) {
+    // Helper: test if port is truly free (work around SO_REUSEADDR letting multiple bind to same port)
+    static bool isPortFree(int port) {
+#ifdef _WIN32
+        SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (sock == INVALID_SOCKET) return false;
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = htons(port);
+        // Try to connect: if succeeds, someone is listening = port busy
+        bool busy = (connect(sock, (sockaddr*)&addr, sizeof(addr)) == 0);
+        closesocket(sock);
+        return !busy;  // free if connect failed
+#else
+        int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (sock < 0) return false;
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = htons(port);
+        bool busy = (connect(sock, (sockaddr*)&addr, sizeof(addr)) == 0);
+        close(sock);
+        return !busy;
+#endif
+    }
+
+    void start(int basePort = 9002) {
         if (running_) return;
-        server_ = std::make_unique<ix::WebSocketServer>(port, "0.0.0.0");
+
+        // Try ports basePort..basePort+19; each CloseCrab window gets its own.
+        int port = basePort;
+        bool bound = false;
+        for (int attempt = 0; attempt < 20; ++attempt) {
+            // Check port is truly free before creating server (avoids SO_REUSEADDR trap)
+            if (!isPortFree(port)) {
+                spdlog::warn("MobileWebSocket port {} busy (connect test), trying next...", port);
+                port++;
+                continue;
+            }
+
+            server_ = std::make_unique<ix::WebSocketServer>(port, "0.0.0.0");
 
         server_->setOnClientMessageCallback([this](std::shared_ptr<ix::ConnectionState> state,
             ix::WebSocket& ws, const ix::WebSocketMessagePtr& msg) {
@@ -64,12 +115,25 @@ public:
         });
 
         auto res = server_->listen();
-        if (!res.first) {
-            spdlog::error("MobileWebSocket failed to listen on port {}: {}", port, res.second);
+        if (res.first) {
+            bound = true;
+            break;
+        }
+            // listen() failed despite passing connect test - likely race, try next
+            spdlog::warn("MobileWebSocket port {} listen failed, trying next...", port);
+            port++;
+            server_.reset();
+        } // end for
+        if (!bound) {
+            spdlog::error("MobileWebSocket: no free port in range {}-{}", basePort, basePort + 19);
             return;
         }
         server_->start();
         running_ = true;
+        port_ = port;
+
+        // Write a discovery file so CloseCrab-Web can find all running windows.
+        writePortFile();
         spdlog::info("MobileWebSocket started on port {}", port);
     }
 
@@ -77,7 +141,10 @@ public:
         if (!running_) return;
         server_->stop();
         running_ = false;
+        removePortFile();
     }
+
+    int getPort() const { return port_; }
 
     // === Per-client send (Team Mode) ===
     void sendToClient(const std::string& clientId, const nlohmann::json& msg) {
@@ -151,6 +218,30 @@ public:
 
 private:
     MobileWebSocket() = default;
+    int port_ = 0;
+    std::string portFilePath_;
+
+    // Write data/mobile-ws-port-<PID>.json so CloseCrab-Web can find all running windows.
+    void writePortFile() {
+        namespace fsys = std::filesystem;
+        auto dir = fsys::current_path() / "data";
+        if (!fsys::exists(dir)) { try { fsys::create_directories(dir); } catch (...) {} }
+        int pid = CC_GETPID();
+        portFilePath_ = (dir / ("mobile-ws-port-" + std::to_string(pid) + ".json")).string();
+        try {
+            nlohmann::json j = {{"pid", pid}, {"port", port_}};
+            std::ofstream(portFilePath_) << j.dump();
+        } catch (const std::exception& e) {
+            spdlog::warn("Could not write port file: {}", e.what());
+        }
+    }
+
+    void removePortFile() {
+        if (!portFilePath_.empty()) {
+            try { std::filesystem::remove(portFilePath_); } catch (...) {}
+            portFilePath_.clear();
+        }
+    }
 
     void broadcast(const nlohmann::json& msg) {
         std::string data = msg.dump();

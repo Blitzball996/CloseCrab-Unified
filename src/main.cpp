@@ -1311,6 +1311,34 @@ Then work step by step using your tools to complete the task.)";
             }
         } else if (type == "abort") {
             sessionRouter.abortClient(clientId);
+        } else if (type == "inject_main") {
+            // Inject message into main session (not SessionRouter)
+            std::string message = data.value("message", "");
+            if (!message.empty() && g_queryEngine) {
+                // Create minimal callbacks that forward to MobileWebSocket
+                QueryCallbacks injectCallbacks;
+                injectCallbacks.onText = [clientId](const std::string& text) {
+                    MobileWebSocket::getInstance().sendTextToClient(clientId, text);
+                };
+                injectCallbacks.onToolUse = [clientId](const std::string& tool, const nlohmann::json& input) {
+                    MobileWebSocket::getInstance().sendToolUseToClient(clientId, tool, input.dump());
+                };
+                injectCallbacks.onComplete = [clientId]() {
+                    MobileWebSocket::getInstance().sendCompleteToClient(clientId);
+                };
+                injectCallbacks.onError = [clientId](const std::string& error) {
+                    MobileWebSocket::getInstance().sendErrorToClient(clientId, error);
+                };
+                try {
+                    g_queryEngine->submitMessage(message, injectCallbacks);
+                } catch (const std::exception& e) {
+                    MobileWebSocket::getInstance().sendErrorToClient(clientId,
+                        std::string("inject_main error: ") + e.what());
+                } catch (...) {
+                    MobileWebSocket::getInstance().sendErrorToClient(clientId,
+                        "inject_main: unknown error");
+                }
+            }
         }
     });
 
