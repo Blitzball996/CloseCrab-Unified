@@ -13,7 +13,7 @@ enum class APIErrorType {
     AUTH_ERROR,         // 401, 403
     RATE_LIMIT,         // 429
     OVERLOADED,         // 529
-    SERVER_ERROR,       // 500, 502, 503
+    SERVER_ERROR,       // 500, 502, 503, 504
     NETWORK_ERROR,      // Connection failed, timeout
     INVALID_REQUEST,    // 400
     CONTEXT_TOO_LONG,   // 413 or specific error message
@@ -48,7 +48,7 @@ inline APIErrorType classifyHttpStatus(long httpStatus) {
         case 401: case 403: return APIErrorType::AUTH_ERROR;
         case 413: return APIErrorType::CONTEXT_TOO_LONG;
         case 429: return APIErrorType::RATE_LIMIT;
-        case 500: case 502: case 503: return APIErrorType::SERVER_ERROR;
+        case 500: case 502: case 503: case 504: return APIErrorType::SERVER_ERROR;
         case 529: return APIErrorType::OVERLOADED;
         default:
             if (httpStatus >= 500) return APIErrorType::SERVER_ERROR;

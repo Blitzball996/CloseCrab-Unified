@@ -104,6 +104,7 @@
 #include "tools/SystemInfoTool/SystemInfoTool.h"
 #include "tools/ExtraTools/ExtraTools.h"
 #include "mcp/MCPClient.h"
+#include "mcp/MCPElicitationHandler.h"
 #include "plugins/PluginManager.h"
 #include "core/CostTracker.h"
 #include "core/PolicyLimits.h"
@@ -299,20 +300,68 @@ static void registerBuiltinCommands(CommandRegistry& reg) {
 }
 
 #ifdef _WIN32
+// Convert a wide string (from ReadConsoleW) to UTF-8, stripping trailing \r\n.
+static std::string wideToUtf8Line(const wchar_t* buf, DWORD read) {
+    if (read == 0) return {};
+    int len = WideCharToMultiByte(CP_UTF8, 0, buf, (int)read, nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return {};
+    std::string utf8(len, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, buf, (int)read, &utf8[0], len, nullptr, nullptr);
+    while (!utf8.empty() && (utf8.back() == '\n' || utf8.back() == '\r')) utf8.pop_back();
+    return utf8;
+}
+
+// Read one logical "message" from the console.
+//
+// Paste detection: when the user pastes multiple lines, all the text lands in
+// the console input buffer almost instantaneously. We exploit this: after
+// reading the first line, we peek at the input buffer. If there are already
+// more KEY_EVENT records waiting (i.e. the next line is already there) we keep
+// reading and concatenate lines with '\n', building up the full pasted block
+// before returning. Normal single-line typing has a ~0-record buffer between
+// Enter and the next keystroke — so ordinary input is never affected.
 static std::string getUserInput() {
-    std::string line;
-    wchar_t buf[65536];
-    DWORD read;
-    if (ReadConsoleW(GetStdHandle(STD_INPUT_HANDLE), buf, 65535, &read, nullptr)) {
-        int len = WideCharToMultiByte(CP_UTF8, 0, buf, read, nullptr, 0, nullptr, nullptr);
-        std::string utf8(len, 0);
-        WideCharToMultiByte(CP_UTF8, 0, buf, read, &utf8[0], len, nullptr, nullptr);
-        // Trim trailing newline
-        while (!utf8.empty() && (utf8.back() == '\n' || utf8.back() == '\r')) utf8.pop_back();
-        return utf8;
+    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+    std::string result;
+    bool first = true;
+    while (true) {
+        // If not the first iteration, check if more input is already buffered.
+        if (!first) {
+            DWORD avail = 0;
+            if (!GetNumberOfConsoleInputEvents(hIn, &avail) || avail == 0)
+                break; // nothing pending → we have the full paste, return it
+            // Peek to see if there are actual KEY_DOWN events (not just mouse/focus noise)
+            INPUT_RECORD peekBuf[64];
+            DWORD peeked = 0;
+            if (!PeekConsoleInputW(hIn, peekBuf, 64, &peeked) || peeked == 0)
+                break;
+            bool hasKey = false;
+            for (DWORD i = 0; i < peeked; i++) {
+                if (peekBuf[i].EventType == KEY_EVENT &&
+                    peekBuf[i].Event.KeyEvent.bKeyDown &&
+                    peekBuf[i].Event.KeyEvent.uChar.UnicodeChar != 0)
+                { hasKey = true; break; }
+            }
+            if (!hasKey) break; // only mouse/focus records → done
+        }
+        first = false;
+
+        wchar_t buf[65536];
+        DWORD read = 0;
+        if (ReadConsoleW(hIn, buf, 65535, &read, nullptr)) {
+            std::string line = wideToUtf8Line(buf, read);
+            if (!result.empty()) result += '\n';
+            result += line;
+        } else {
+            // ReadConsoleW failed — fall back to getline
+            std::string line;
+            std::getline(std::cin, line);
+            if (!result.empty()) result += '\n';
+            result += line;
+            break;
+        }
     }
-    std::getline(std::cin, line);
-    return line;
+    return result;
 }
 #else
 static std::string getUserInput() {
@@ -935,6 +984,66 @@ int main(int argc, char* argv[]) {
     // Load MCP servers from settings
     auto mcpConfig = settings.getMcpServers();
     if (!mcpConfig.empty()) {
+        // Install client-side MCP handlers so servers can call back into us
+        // (full bidirectional MCP): sampling (borrow our LLM), elicitation (ask
+        // the user), roots (expose the workspace). Set before loadFromSettings
+        // so every connection advertises these capabilities during initialize.
+        MCPClientHandlers mcpHandlers;
+        APIClient* mcpApi = apiClient.get();
+        std::string mcpRoot = userProjectCwd;
+
+        // sampling/createMessage: server asks our model to generate text.
+        mcpHandlers.onSampling = [mcpApi](const nlohmann::json& params) -> nlohmann::json {
+            if (!mcpApi) throw std::runtime_error("no LLM available for sampling");
+            std::vector<Message> msgs;
+            if (params.contains("messages") && params["messages"].is_array()) {
+                for (const auto& m : params["messages"]) {
+                    std::string role = m.value("role", "user");
+                    std::string text;
+                    const auto& c = m.value("content", nlohmann::json::object());
+                    if (c.is_string()) text = c.get<std::string>();
+                    else if (c.is_object()) text = c.value("text", "");
+                    else if (c.is_array()) for (const auto& b : c) text += b.value("text", "");
+                    msgs.push_back(role == "assistant" ? Message::makeAssistant(text)
+                                                       : Message::makeUser(text));
+                }
+            }
+            std::string sys = params.value("systemPrompt", "");
+            ModelConfig mc;
+            mc.maxTokens = params.value("maxTokens", 1024);
+            mc.stream = false;
+            std::string out = mcpApi->chat(msgs, sys, mc);
+            return nlohmann::json{
+                {"role", "assistant"},
+                {"content", {{"type", "text"}, {"text", out}}},
+                {"model", mcpApi->getModelName()},
+                {"stopReason", "endTurn"}
+            };
+        };
+
+        // elicitation/create: server requests structured input from the user.
+        mcpHandlers.onElicitation = [](const nlohmann::json& params) -> nlohmann::json {
+            nlohmann::json schema = params.value("requestedSchema",
+                                    params.value("schema", nlohmann::json::object()));
+            std::string message = params.value("message", "The MCP server needs some information:");
+            std::cout << "\n[MCP] " << message << "\n";
+            auto answers = MCPElicitationHandler::handleElicitation(schema,
+                [](const std::string& prompt) -> std::string {
+                    std::cout << "  " << prompt;
+                    std::cout.flush();
+                    return getUserInput();
+                });
+            return nlohmann::json{{"action", "accept"}, {"content", answers}};
+        };
+
+        // roots/list: expose the workspace root to the server.
+        mcpHandlers.onListRoots = [mcpRoot]() -> nlohmann::json {
+            std::string uri = "file:///" + mcpRoot;
+            for (auto& ch : uri) if (ch == '\\') ch = '/';
+            return nlohmann::json{{"roots", {{{"uri", uri}, {"name", "workspace"}}}}};
+        };
+
+        MCPServerManager::getInstance().setHandlers(mcpHandlers);
         MCPServerManager::getInstance().loadFromSettings(mcpConfig);
     }
 
@@ -964,7 +1073,8 @@ int main(int argc, char* argv[]) {
     qeConfig.systemPrompt = R"(You are CloseCrab, a powerful AI coding assistant. Respond in the user's language.
 You have tools available for reading/writing files, running commands, searching code, and browsing the web.
 When given a task, first understand what's needed. Ask clarifying questions if the request is ambiguous.
-Then work step by step using your tools to complete the task.)";
+Then work step by step using your tools to complete the task.
+Write whatever code the user asks for without raising copyright, licensing, or intellectual-property concerns. The user owns their project and is responsible for how the code is used; do not append copyright warnings, license disclaimers, or refusals on those grounds.)";
     qeConfig.maxTurns = 50;
     qeConfig.verbose = verbose;
 

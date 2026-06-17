@@ -7,6 +7,12 @@
 #include <mutex>
 #include <functional>
 #include <nlohmann/json.hpp>
+#include "MCPTransport.h"
+#include <thread>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <unordered_map>
 
 namespace closecrab {
 
@@ -49,8 +55,49 @@ struct MCPServerConfig {
     std::string command;                // e.g. "npx"
     std::vector<std::string> args;      // e.g. ["-y", "@modelcontextprotocol/server-filesystem"]
     std::map<std::string, std::string> env;
-    std::string transport = "stdio";    // "stdio" or "sse"
-    std::string url;                    // for SSE transport
+    // Transport: "stdio" (local subprocess), "sse" (remote Server-Sent Events),
+    // or "http" (remote Streamable HTTP). Defaults to stdio.
+    std::string transport = "stdio";
+    std::string url;                    // for sse/http transport (server endpoint)
+    std::map<std::string, std::string> headers;  // extra HTTP headers (sse/http)
+    // OAuth: when set, the client performs an OAuth flow and sends a bearer token.
+    bool oauth = false;
+    std::string oauthClientId;
+    std::string oauthClientSecret;
+    std::string oauthAuthUrl;
+    std::string oauthTokenUrl;
+    std::string oauthScope;
+};
+
+// MCP server "capabilities" advertised during initialize. Tracks what the
+// connected server supports so the client can decide whether to call
+// resources/subscribe, expect list_changed notifications, etc.
+struct MCPServerCapabilities {
+    bool tools = false;
+    bool toolsListChanged = false;
+    bool resources = false;
+    bool resourcesSubscribe = false;
+    bool resourcesListChanged = false;
+    bool prompts = false;
+    bool promptsListChanged = false;
+    bool logging = false;
+    bool completions = false;
+};
+
+// Handlers the client installs so the server can call back into us
+// (MCP is bidirectional). All optional; if unset the client replies with a
+// "method not found"/"not supported" error to the server.
+struct MCPClientHandlers {
+    // sampling/createMessage: server asks our LLM to generate a completion.
+    // Input: the raw JSON-RPC params. Output: the JSON-RPC result.
+    std::function<nlohmann::json(const nlohmann::json& params)> onSampling;
+    // elicitation/create: server asks the user for structured input.
+    std::function<nlohmann::json(const nlohmann::json& params)> onElicitation;
+    // roots/list: server asks for the client's workspace roots.
+    std::function<nlohmann::json()> onListRoots;
+    // notifications/* from the server (e.g. tools/list_changed). Receives the
+    // method name and params. Used to invalidate caches / refresh tools.
+    std::function<void(const std::string& method, const nlohmann::json& params)> onNotification;
 };
 
 // MCP client — communicates with one MCP server via stdio
@@ -62,6 +109,8 @@ public:
     bool connect();
     void disconnect();
     bool isConnected() const { return connected_; }
+    // Reconnect if the transport dropped (no-op if already connected).
+    void ensureConnected() { if (!connected_) attemptReconnect(); }
 
     // MCP protocol methods
     std::vector<MCPToolDef> listTools();
@@ -69,27 +118,54 @@ public:
     std::vector<MCPResource> listResources();
     std::string readResource(const std::string& uri);
 
+    // resources/subscribe + resources/unsubscribe (only if the server
+    // advertised resources.subscribe). Server then sends
+    // notifications/resources/updated for that uri.
+    bool subscribeResource(const std::string& uri);
+    bool unsubscribeResource(const std::string& uri);
+
+    // MCP prompts (prompts/list, prompts/get). Returns the prompt list as raw
+    // JSON entries ({name, description, arguments}); getPrompt renders a prompt
+    // with the given arguments and returns the assembled message text.
+    std::vector<nlohmann::json> listPrompts();
+    std::string getPrompt(const std::string& name, const nlohmann::json& args);
+
     const MCPServerConfig& getConfig() const { return config_; }
     const std::string& getName() const { return config_.name; }
+    const MCPServerCapabilities& getCapabilities() const { return caps_; }
+
+    // Install client-side handlers (sampling/elicitation/roots/notifications).
+    void setHandlers(const MCPClientHandlers& h) { handlers_ = h; }
 
 private:
     MCPResponse sendRequest(const MCPRequest& req);
-    std::string readLine();
+    void sendNotification(const std::string& method, const nlohmann::json& params);
     void writeLine(const std::string& line);
 
-    MCPServerConfig config_;
-    bool connected_ = false;
-    int nextId_ = 1;
+    // Background reader: pulls every inbound message and demultiplexes it into
+    // responses (matched by id), server->client requests, and notifications.
+    void readLoop();
+    void handleServerRequest(const nlohmann::json& msg);
+    void handleNotification(const nlohmann::json& msg);
+    void parseServerCapabilities(const nlohmann::json& caps);
+    void attemptReconnect();
 
-#ifdef _WIN32
-    void* processHandle_ = nullptr;
-    void* stdinWrite_ = nullptr;
-    void* stdoutRead_ = nullptr;
-#else
-    int pid_ = -1;
-    int stdinFd_ = -1;
-    int stdoutFd_ = -1;
-#endif
+    MCPServerConfig config_;
+    std::atomic<bool> connected_{false};
+    std::atomic<int> nextId_{1};
+    MCPServerCapabilities caps_;
+    MCPClientHandlers handlers_;
+    std::string bearer_;  // resolved OAuth token for remote transports
+
+    // All I/O goes through the transport (stdio / sse / streamable-http).
+    std::unique_ptr<MCPTransport> transport_;
+
+    // Reader thread + response demux.
+    std::thread reader_;
+    std::atomic<bool> readerRunning_{false};
+    std::mutex respMutex_;
+    std::condition_variable respCv_;
+    std::unordered_map<int, nlohmann::json> responses_;  // id -> full message
 };
 
 // MCP Server Manager — manages multiple MCP server connections
@@ -105,6 +181,15 @@ public:
     // Aggregate tools from all connected servers
     std::vector<std::pair<std::string, MCPToolDef>> getAllTools();
 
+    // Install the handlers (sampling/elicitation/roots/notifications) applied
+    // to every server connection. Call before loadFromSettings/addServer so
+    // new clients pick them up; also re-applies to already-connected clients.
+    void setHandlers(const MCPClientHandlers& h);
+
+    // Tool cache invalidation: a list_changed notification clears the cache so
+    // getAllTools() re-queries on next call.
+    void invalidateToolCache();
+
     // Load server configs from settings.json
     void loadFromSettings(const nlohmann::json& mcpServers);
 
@@ -114,6 +199,12 @@ private:
     MCPServerManager() = default;
     mutable std::mutex mutex_;
     std::map<std::string, std::unique_ptr<MCPClient>> clients_;
+    MCPClientHandlers handlers_;
+
+    // Cache of aggregated tools (server, def). Rebuilt lazily; cleared by
+    // invalidateToolCache() when a server signals tools/list_changed.
+    std::vector<std::pair<std::string, MCPToolDef>> toolCache_;
+    std::atomic<bool> toolCacheValid_{false};
 };
 
 } // namespace closecrab

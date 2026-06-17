@@ -103,8 +103,29 @@ public:
         std::transform(msg.begin(), msg.end(), lower.begin(),
                        [](unsigned char c) { return std::tolower(c); });
 
+        // English / Anthropic-native signals
         if (lower.find("prompt is too long") != std::string::npos) return true;
+        if (lower.find("prompt too long") != std::string::npos) return true;
         if (lower.find("context_length_exceeded") != std::string::npos) return true;
+        if (lower.find("context length") != std::string::npos &&
+            lower.find("exceed") != std::string::npos) return true;
+        if (lower.find("too many tokens") != std::string::npos) return true;
+        if (lower.find("maximum context") != std::string::npos) return true;
+        if (lower.find("input is too long") != std::string::npos) return true;
+        if (lower.find("max_tokens") != std::string::npos &&
+            lower.find("exceed") != std::string::npos) return true;
+        if (lower.find("request entity too large") != std::string::npos) return true;
+        if (lower.find("payload too large") != std::string::npos) return true;
+        // Proxy-localized signals (yikoulian.cc and similar relays return the
+        // size-limit error in Chinese; match on the original, non-lowered text
+        // since CJK has no case). Covers "上下文过长 / 超出 / 太长 / 令牌超限".
+        if (msg.find("\xe4\xb8\x8a\xe4\xb8\x8b\xe6\x96\x87") != std::string::npos && // 上下文
+            (msg.find("\xe8\xb6\x85") != std::string::npos ||   // 超(出)
+             msg.find("\xe8\xbf\x87\xe9\x95\xbf") != std::string::npos || // 过长
+             msg.find("\xe5\xa4\xaa\xe9\x95\xbf") != std::string::npos)) return true; // 太长
+        if (msg.find("\xe4\xbb\xa4\xe7\x89\x8c") != std::string::npos && // 令牌
+            msg.find("\xe8\xb6\x85") != std::string::npos) return true;   // 超(限)
+
         if (e.httpStatus == 413) return true;
 
         return false;

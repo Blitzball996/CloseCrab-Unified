@@ -78,12 +78,20 @@ public:
                     if (haveMode)
                         SetConsoleMode(hStdin, prevMode | ENABLE_ECHO_INPUT |
                                                    ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT);
-                    // Read line from console
-                    char buf[256] = {};
-                    DWORD read = 0;
-                    ReadConsoleA(hStdin, buf, 255, &read, nullptr);
+                    // Read line via ReadConsoleW (wide chars) then convert to UTF-8.
+                    // ReadConsoleA uses the ANSI code page and silently drops/mangles
+                    // CJK characters — use the same ReadConsoleW path as the main
+                    // input loop so Chinese/Japanese/Korean free-text answers work.
+                    wchar_t wbuf[1024] = {};
+                    DWORD wread = 0;
+                    ReadConsoleW(hStdin, wbuf, 1023, &wread, nullptr);
                     if (haveMode) SetConsoleMode(hStdin, prevMode);
-                    result.customText = std::string(buf, read);
+                    int ulen = WideCharToMultiByte(CP_UTF8, 0, wbuf, (int)wread, nullptr, 0, nullptr, nullptr);
+                    if (ulen > 0) {
+                        std::string utf8(ulen, '\0');
+                        WideCharToMultiByte(CP_UTF8, 0, wbuf, (int)wread, &utf8[0], ulen, nullptr, nullptr);
+                        result.customText = utf8;
+                    }
                     // Trim trailing \r\n
                     while (!result.customText.empty() &&
                            (result.customText.back() == '\n' || result.customText.back() == '\r'))

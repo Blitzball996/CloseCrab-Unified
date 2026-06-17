@@ -1,4 +1,5 @@
 #include "QueryEngine.h"
+#include "../mcp/MCPClient.h"
 #include "../utils/UUID.h"
 #include "../utils/StringUtils.h"
 #include "../api/APIError.h"
@@ -313,6 +314,31 @@ ModelConfig QueryEngine::buildModelConfig() const {
             }
         }
 
+        // MCP tools: expose every tool from every connected MCP server as a
+        // first-class native tool, named "mcp__<server>__<tool>" (JackProAi
+        // convention). Without this the model can't see what an MCP server
+        // offers — it could only be reached through the generic MCPTool with a
+        // hand-written server_name/tool_name. Not gated behind ToolSearch:
+        // users add MCP servers precisely so the model uses them directly.
+        if (!(config_.appState && config_.appState->coordinatorMode)) {
+            try {
+                auto mcpTools = MCPServerManager::getInstance().getAllTools();
+                for (auto& [server, def] : mcpTools) {
+                    nlohmann::json td;
+                    td["name"] = "mcp__" + server + "__" + def.name;
+                    td["description"] = def.description.empty()
+                        ? ("MCP tool '" + def.name + "' from server '" + server + "'")
+                        : def.description;
+                    td["input_schema"] = def.inputSchema.is_null()
+                        ? nlohmann::json{{"type", "object"}, {"properties", nlohmann::json::object()}}
+                        : def.inputSchema;
+                    toolDefs.push_back(std::move(td));
+                }
+            } catch (const std::exception& e) {
+                spdlog::warn("MCP: failed to enumerate tools for request: {}", e.what());
+            }
+        }
+
         mc.tools = std::move(toolDefs);
     }
 
@@ -348,6 +374,48 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
         }
     }
 
+    // MCP tool routing: a tool named "mcp__<server>__<tool>" is dispatched to
+    // the matching MCP server instead of the local ToolRegistry. This is the
+    // execution side of the dynamic MCP tool exposure in buildModelConfig().
+    if (event.toolName.rfind("mcp__", 0) == 0) {
+        if (callbacks.onToolUse) callbacks.onToolUse(event.toolName, event.toolInput);
+        std::string rest = event.toolName.substr(5);
+        size_t sep = rest.find("__");
+        ToolResult mcpResult;
+        if (sep == std::string::npos) {
+            mcpResult = ToolResult::fail("Malformed MCP tool name: " + event.toolName);
+        } else {
+            std::string server = rest.substr(0, sep);
+            std::string toolName = rest.substr(sep + 2);
+            auto* client = MCPServerManager::getInstance().getClient(server);
+            if (!client || !client->isConnected()) {
+                mcpResult = ToolResult::fail("MCP server not available: " + server);
+            } else {
+                try {
+                    auto r = client->callTool(toolName, event.toolInput);
+                    if (r.contains("error") && !r["error"].is_null()) {
+                        mcpResult = ToolResult::fail("MCP tool error: " + r["error"].dump());
+                    } else if (r.contains("content") && r["content"].is_array()) {
+                        std::string text;
+                        for (const auto& c : r["content"]) {
+                            if (c.value("type", "") == "text") text += c.value("text", "") + "\n";
+                        }
+                        mcpResult = ToolResult::ok(text.empty() ? r.dump(2) : text, r);
+                    } else {
+                        mcpResult = ToolResult::ok(r.dump(2), r);
+                    }
+                } catch (const std::exception& e) {
+                    mcpResult = ToolResult::fail(std::string("MCP call failed: ") + e.what());
+                }
+            }
+        }
+        if (callbacks.onToolResult) callbacks.onToolResult(event.toolName, mcpResult);
+        std::string safe = ensureUtf8(mcpResult.success ? mcpResult.content : mcpResult.error);
+        safe = budgetTracker_.applyToolResultBudget(safe);
+        messages_.push_back(Message::makeToolResult(event.toolUseId,
+            nlohmann::json(safe), !mcpResult.success));
+        return;
+    }
     Tool* tool = config_.toolRegistry->getTool(event.toolName);
     if (!tool) {
         spdlog::warn("Unknown tool: {}", event.toolName);
@@ -760,9 +828,25 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
             // input. The query loop only breaks on non-retryable errors (auth).
             spdlog::debug("API call failed: {}", e.what());
             if (e.type == APIErrorType::OVERLOADED || e.type == APIErrorType::SERVER_ERROR) {
-                // Transient server error — tell user and break (they can retry)
-                if (callbacks.onError) callbacks.onError(
-                    "API temporarily unavailable after retries. Your conversation is preserved — just send another message to continue.");
+                // Server error after all in-client retries were exhausted. On a
+                // long conversation this is almost always the proxy rejecting an
+                // oversized request, not genuine provider overload — and the
+                // RemoteAPIClient retry-compaction only shrank the request COPY,
+                // not our persistent messages_. So if we don't compact here, the
+                // user's next message resends the same oversized history and 503s
+                // again — the exact "轮数一长又 503" loop. Force one aggressive
+                // compaction now so the next turn starts smaller.
+                bool shrank = ErrorRecovery::handlePromptTooLong(
+                                  messages_, config_.apiClient, compactor_).success;
+                if (shrank) {
+                    spdlog::warn("Post-503 auto-compaction applied; next message will send a smaller context");
+                    if (callbacks.onError) callbacks.onError(
+                        "API busy after retries — I trimmed old context automatically. "
+                        "Send another message to continue (it should go through now).");
+                } else {
+                    if (callbacks.onError) callbacks.onError(
+                        "API temporarily unavailable after retries. Your conversation is preserved — just send another message to continue.");
+                }
             } else if (e.type == APIErrorType::AUTH_ERROR) {
                 // Auth error — can't recover
                 if (callbacks.onError) callbacks.onError(e.what());

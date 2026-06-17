@@ -275,9 +275,20 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
     // `context-management-2025-06-27` beta header is already sent, so enabling it
     // is just flipping the env var once the proxy is confirmed to honor it.
     {
-        const char* clearEnv = std::getenv("CLOSECRAB_API_CLEAR_TOOL_RESULTS");
-        bool enableServerClear = clearEnv && (std::string(clearEnv) == "1" ||
-                                              std::string(clearEnv) == "true");
+        // Default ON now (opt-out). The proxy is confirmed to honor the
+        // `context-management-2025-06-27` beta, so let the SERVER clear old
+        // read-tool results once input crosses kTrigger. This is the cleanest
+        // defense against the "many turns -> 503/504" growth: it shrinks the
+        // input the proxy sees WITHOUT disturbing our local cached prefix.
+        // Set CLOSECRAB_API_CLEAR_TOOL_RESULTS=0 to opt out.
+        auto envOptOut = [](const char* name) -> bool {
+            const char* v = std::getenv(name);
+            return v && (std::string(v) == "0" || std::string(v) == "false");
+        };
+        bool enableServerClear = !envOptOut("CLOSECRAB_API_CLEAR_TOOL_RESULTS");
+        // clear_tool_USES stays opt-IN (default OFF): clearing the tool_use
+        // record itself is more aggressive and can confuse turn pairing on some
+        // proxies. Enable with CLOSECRAB_API_CLEAR_TOOL_USES=1.
         const char* clearUsesEnv = std::getenv("CLOSECRAB_API_CLEAR_TOOL_USES");
         bool enableClearUses = clearUsesEnv && (std::string(clearUsesEnv) == "1" ||
                                                 std::string(clearUsesEnv) == "true");
@@ -635,8 +646,93 @@ void RemoteAPIClient::streamChat(
     int consecutive503 = 0;
     std::string activeModel = model_;
 
+    // Retry-time compaction level. buildRequestBody() rebuilds `body` from the
+    // original `messages` on every attempt, so any in-place edit to `body` would
+    // be discarded next loop. Instead we carry a level here and RE-APPLY the
+    // compaction to the freshly-built body each attempt. Each retry that still
+    // fails on an oversized request bumps the level, shrinking the kept tail.
+    //   0 = no compaction (first try sends full context)
+    //  >0 = truncate old tool_result/text blocks, keeping the last `keepTail`
+    //       messages intact; higher level => smaller keepTail + smaller cap.
+    int compactLevel = 0;
+
+    // Safety fallback for proxies that don't understand the server-side
+    // `context_management` field (clear_tool_uses_20250919). If such a proxy
+    // returns 400 INVALID_REQUEST, we strip the field and retry ONCE instead of
+    // failing the whole turn. Once set, every subsequent rebuilt body has the
+    // field removed before sending.
+    bool stripContextMgmt = false;
+
+    // Truncate old, large tool_result / text blocks in the request body so a
+    // retry sends a smaller payload. Returns true if anything was trimmed.
+    auto applyRetryCompaction = [](nlohmann::json& reqBody, int level) -> bool {
+        if (level <= 0 || !reqBody.contains("messages") || !reqBody["messages"].is_array())
+            return false;
+        auto& msgArray = reqBody["messages"];
+        // keepTail shrinks as the level rises: 6, 4, 3, 2 ... floor at 2.
+        size_t keepTail = (level >= 4) ? 2 : (level >= 3) ? 3 : (level >= 2) ? 4 : 6;
+        // cap also shrinks: 200, 150, 100 chars of each oversized block.
+        size_t cap = (level >= 3) ? 100 : (level >= 2) ? 150 : 200;
+        if (msgArray.size() <= keepTail) return false;
+        size_t scanEnd = msgArray.size() - keepTail;
+        bool trimmed = false;
+        for (size_t i = 0; i < scanEnd; i++) {
+            if (!msgArray[i].contains("content") || !msgArray[i]["content"].is_array())
+                continue;
+            for (auto& block : msgArray[i]["content"]) {
+                const std::string btype = block.value("type", "");
+                if (btype == "tool_result") {
+                    if (block.contains("content") && block["content"].is_string()) {
+                        std::string content = block["content"].get<std::string>();
+                        if (content.size() > cap) {
+                            block["content"] = content.substr(0, cap) +
+                                "\n[cleared: request too large for proxy]";
+                            trimmed = true;
+                        }
+                    } else if (block.contains("content") && block["content"].is_array()) {
+                        for (auto& sub : block["content"]) {
+                            if (sub.value("type", "") == "text") {
+                                std::string text = sub.value("text", "");
+                                if (text.size() > cap) {
+                                    sub["text"] = text.substr(0, cap) + "\n[cleared]";
+                                    trimmed = true;
+                                }
+                            }
+                        }
+                    }
+                } else if (btype == "text") {
+                    if (block.contains("text") && block["text"].is_string()) {
+                        std::string text = block["text"].get<std::string>();
+                        if (text.size() > cap) {
+                            block["text"] = text.substr(0, cap) + "\n[cleared]";
+                            trimmed = true;
+                        }
+                    }
+                }
+            }
+        }
+        return trimmed;
+    };
+
     for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         auto body = buildRequestBody(messages, systemPrompt, config, activeModel);
+        // If a prior attempt got a 400 with context_management present, the proxy
+        // likely rejects that field — drop it on this and all further attempts.
+        if (stripContextMgmt && body.contains("context_management")) {
+            body.erase("context_management");
+        }
+        // Re-apply retry-time compaction (see compactLevel above). On the first
+        // attempt level==0 so this is a no-op and the full context is sent.
+        if (compactLevel > 0) {
+            size_t beforeBytes = body.dump(-1, ' ', false,
+                nlohmann::json::error_handler_t::replace).size();
+            if (applyRetryCompaction(body, compactLevel)) {
+                size_t afterBytes = body.dump(-1, ' ', false,
+                    nlohmann::json::error_handler_t::replace).size();
+                spdlog::warn("Retry compaction L{}: {}KB -> {}KB",
+                             compactLevel, beforeBytes / 1024, afterBytes / 1024);
+            }
+        }
         // Use error_handler_t::replace to handle invalid UTF-8 (Chinese chars, tool output)
         std::string bodyStr = body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 
@@ -678,6 +774,19 @@ void RemoteAPIClient::streamChat(
                 spdlog::info("Stream aborted by user (Esc)");
                 return;
             }
+            // Proxy rejected the request with 400. If we sent the server-side
+            // `context_management` field and haven't yet stripped it, the most
+            // likely cause is that this proxy doesn't support that field. Strip
+            // it and retry ONCE before giving up (400 is otherwise non-retryable).
+            if (e.type == APIErrorType::INVALID_REQUEST && !stripContextMgmt &&
+                body.contains("context_management") && attempt < MAX_RETRIES) {
+                spdlog::warn("400 with context_management present — proxy likely rejects it; "
+                             "stripping field and retrying without server-side tool clearing");
+                stripContextMgmt = true;
+                // Don't count this as a server-error retry; just loop again.
+                continue;
+            }
+
             if (!isRetryable(e.type)) throw;
 
             consecutive503++;
@@ -693,38 +802,22 @@ void RemoteAPIClient::streamChat(
 
             if (attempt >= MAX_RETRIES) throw;
 
-            // claude-code strategy: on network timeout, the request is likely too
-            // large for the proxy. Compact messages BEFORE retrying so the next
-            // attempt sends a smaller request. Without this, all 10 retries send
-            // the same oversized request and all time out identically.
-            if (e.type == APIErrorType::NETWORK_ERROR && bodyStr.size() > 80000) {
-                spdlog::warn("Request was {}KB — compacting before retry", bodyStr.size() / 1024);
-                auto& msgArray = body["messages"];
-                for (size_t i = 0; i + 4 < msgArray.size(); i++) {
-                    if (msgArray[i].value("role", "") == "user" && msgArray[i].contains("content") && msgArray[i]["content"].is_array()) {
-                        for (auto& block : msgArray[i]["content"]) {
-                            if (block.value("type", "") == "tool_result") {
-                                if (block.contains("content") && block["content"].is_string()) {
-                                    std::string content = block["content"].get<std::string>();
-                                    if (content.size() > 200) {
-                                        block["content"] = content.substr(0, 150) + "\n[cleared: request too large for proxy]";
-                                    }
-                                } else if (block.contains("content") && block["content"].is_array()) {
-                                    for (auto& sub : block["content"]) {
-                                        if (sub.value("type", "") == "text") {
-                                            std::string text = sub.value("text", "");
-                                            if (text.size() > 200) {
-                                                sub["text"] = text.substr(0, 150) + "\n[cleared]";
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                bodyStr = body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
-                spdlog::info("Compacted to {}KB", bodyStr.size() / 1024);
+            // The request is likely too large for the proxy. Bump the retry
+            // compaction level so the NEXT loop iteration rebuilds the body and
+            // re-applies a (stronger) trim before sending. This fires for BOTH
+            // network timeouts AND server errors (503/504/500/502) — a 503 after
+            // many turns is almost always an oversized-request rejection from the
+            // proxy, not genuine provider overload. Without bumping the level,
+            // all 10 retries resend the same oversized payload and all fail
+            // identically (the previous code edited `body` in place, which the
+            // next iteration's buildRequestBody() silently discarded).
+            bool oversized = bodyStr.size() > 80000;
+            bool serverOrNet = (e.type == APIErrorType::NETWORK_ERROR ||
+                                e.type == APIErrorType::SERVER_ERROR);
+            if (serverOrNet && oversized) {
+                compactLevel++;
+                spdlog::warn("{} on {}KB request — raising retry compaction to L{} before retry",
+                             apiErrorTypeName(e.type), bodyStr.size() / 1024, compactLevel);
             }
 
             // Exponential backoff: 500ms base, cap 30s
@@ -749,7 +842,7 @@ void RemoteAPIClient::streamChat(
                 retryEvent.retryAttempt = attempt;
                 retryEvent.retryMax = MAX_RETRIES;
                 retryEvent.retryDelayMs = delayMs;
-                retryEvent.content = (e.httpStatus == 503 || e.httpStatus == 529)
+                retryEvent.content = (e.httpStatus == 503 || e.httpStatus == 504 || e.httpStatus == 529)
                     ? "service busy" : "network error";
                 callback(retryEvent);
             }

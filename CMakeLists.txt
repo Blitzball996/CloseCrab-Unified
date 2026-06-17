@@ -374,6 +374,7 @@ add_executable(closecrab-unified
     src/permissions/PermissionEngine.cpp
     src/agents/AgentManager.cpp
     src/mcp/MCPClient.cpp
+    src/mcp/MCPTransport.cpp
     src/lsp/LSPClient.cpp
     src/bridge/BridgeClient.cpp
     src/config/Config.cpp
