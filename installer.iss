@@ -1,12 +1,13 @@
 ; CloseCrab-Unified Installer
 ; Cross-platform packaging: Windows Inno Setup script
-; Version 0.3.4 - Permission wildcard glob fix
-;   - Permission rules now support '*' (any run) and '?' (one char) at ANY
-;     position, not just a trailing '*'. Fixes leading/mid-pattern wildcard
-;     rules (e.g. WebFetch *.example.com, Read secrets-*/x.json) that silently
-;     never matched and fell through to ASK_USER. Adds glob regression tests.
+; Version 0.3.5 - Remote control + Windows file-lock fix
+;   - closecrab-web can now remotely control the local CloseCrab process.
+;   - FileReadTool unmaps the memory-mapped view right after the read so an
+;     active mapping no longer prevents the file from being truncated,
+;     overwritten or deleted on Windows (editors/compilers and CloseCrab's
+;     own write/edit tools).
 #define MyAppName "CloseCrab-Unified"
-#define MyAppVersion "0.3.4"
+#define MyAppVersion "0.3.5"
 #define MyAppPublisher "Blitzball996"
 #define MyAppURL "https://github.com/Blitzball996/CloseCrab-Unified"
 #define MyAppExeName "closecrab.exe"
