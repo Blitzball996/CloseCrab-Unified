@@ -507,6 +507,12 @@ private:
 
         int totalLines = lineNum;
 
+        // Release the memory-mapped view now that content is copied into result.
+        // On Windows an active file mapping prevents the file from being truncated,
+        // overwritten or deleted by any process (editors/compilers and even
+        // CloseCrab own write/edit tools). Data is already copied, so unmap now.
+        mmapCache.invalidate(path);
+
         bool truncated = truncatedByBytes || (linesRead >= limit && totalLines > offset + linesRead);
         if (truncated) {
        int nextOffset = offset + linesRead;
