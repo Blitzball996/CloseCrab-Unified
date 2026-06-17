@@ -106,7 +106,7 @@ public:
     }
 
     ToolResult call(ToolContext& ctx, const nlohmann::json& input) override {
-        bool enabled = input.value("enabled", true);
+        bool enabled = jsonBool(input, "enabled", true);
         // Brief mode is stored in AppState — affects system prompt
         if (ctx.appState) {
             ctx.appState->fastMode = enabled; // Reuse fastMode for brief

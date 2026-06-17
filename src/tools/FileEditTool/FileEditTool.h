@@ -109,8 +109,8 @@ public:
 
         // Line-number mode: replace lines line_start to line_end with new_string
         if (input.contains("line_start") && input.contains("line_end")) {
-            int lineStart = input["line_start"].get<int>();
-            int lineEnd = input["line_end"].get<int>();
+            int lineStart = jsonInt(input, "line_start", 0);
+            int lineEnd = jsonInt(input, "line_end", 0);
 
             std::vector<std::string> lines;
             std::istringstream stream(content);
@@ -170,7 +170,7 @@ public:
 
         // old_string mode
         std::string oldStr = input["old_string"].get<std::string>();
-        bool replaceAll = input.value("replace_all", false);
+        bool replaceAll = jsonBool(input, "replace_all", false);
 
         // Count occurrences
         size_t count = 0;

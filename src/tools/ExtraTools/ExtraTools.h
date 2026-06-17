@@ -166,7 +166,7 @@ public:
         return {{"type", "object"}, {"properties", {{"pr_number", {{"type", "integer"}}}, {"repo", {{"type", "string"}}}}}, {"required", {"pr_number"}}};
     }
     ToolResult call(ToolContext&, const nlohmann::json& input) override {
-        int pr = input["pr_number"].get<int>(); std::string repo = input.value("repo", "");
+        int pr = jsonInt(input, "pr_number", 0); std::string repo = input.value("repo", "");
         std::string cmd = "gh pr view " + std::to_string(pr) + " --json state,reviews,statusCheckRollup";
         if (!repo.empty()) cmd += " -R " + repo;
         FILE* pipe = popen(cmd.c_str(), "r"); if (!pipe) return ToolResult::fail("gh not available");

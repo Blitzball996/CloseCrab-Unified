@@ -45,22 +45,22 @@ public:
         if (action == "screenshot") {
             return takeScreenshot();
         } else if (action == "click") {
-            int x = input.value("x", 0);
-            int y = input.value("y", 0);
+            int x = jsonInt(input, "x", 0);
+            int y = jsonInt(input, "y", 0);
             std::string button = input.value("button", "left");
             return doClick(x, y, button);
         } else if (action == "type") {
             std::string text = input.value("text", "");
             return doType(text);
         } else if (action == "move") {
-            int x = input.value("x", 0);
-            int y = input.value("y", 0);
+            int x = jsonInt(input, "x", 0);
+            int y = jsonInt(input, "y", 0);
             return doMove(x, y);
         } else if (action == "key") {
             std::string key = input.value("key", "");
             return doKey(key);
         } else if (action == "scroll") {
-            int amount = input.value("amount", 3);
+            int amount = jsonInt(input, "amount", 3);
             return doScroll(amount);
         }
 #endif

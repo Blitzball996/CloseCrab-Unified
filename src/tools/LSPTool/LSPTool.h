@@ -25,8 +25,8 @@ public:
     ToolResult call(ToolContext& ctx, const nlohmann::json& input) override {
         std::string action = input["action"].get<std::string>();
         std::string filePath = input["file_path"].get<std::string>();
-        int line = input.value("line", 0);
-        int character = input.value("character", 0);
+        int line = jsonInt(input, "line", 0);
+        int character = jsonInt(input, "character", 0);
 
         // Resolve relative path
         std::string fullPath = filePath;

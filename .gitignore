@@ -51,6 +51,9 @@ data/
 *.swp
 *.swo
 
+# 本地权限/设置（每台机器各异，勿提交）
+.crab/
+
 # 系统文件
 Thumbs.db
 .DS_Store

@@ -91,9 +91,9 @@ public:
     }
 
     ToolResult call(ToolContext& ctx, const nlohmann::json& input) override {
-        std::string cmd = input["command"].get<std::string>();
-        int timeout = input.value("timeout", 120000);
-        bool background = input.value("run_in_background", false);
+        std::string cmd = input.value("command", "");
+        int timeout = jsonInt(input, "timeout", 120000);
+        bool background = jsonBool(input, "run_in_background", false);
 
         if (cmd.empty()) return ToolResult::fail("Empty command");
         if (timeout > 600000) timeout = 600000;

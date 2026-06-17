@@ -83,17 +83,17 @@ private:
         std::string pattern = input["pattern"].get<std::string>();
         std::string searchPath = input.value("path", ctx.cwd);
         std::string outputMode = input.value("output_mode", "files_with_matches");
-        int headLimit = input.value("head_limit", 250);
+        int headLimit = jsonInt(input, "head_limit", 250);
 
         std::string cmd = "rg";
         if (outputMode == "files_with_matches") cmd += " -l";
         else if (outputMode == "count") cmd += " -c";
-        else if (input.value("-n", true)) cmd += " -n";
-        if (input.value("-i", false)) cmd += " -i";
-        if (input.contains("-C")) cmd += " -C " + std::to_string(input["-C"].get<int>());
+        else if (jsonBool(input, "-n", true)) cmd += " -n";
+        if (jsonBool(input, "-i", false)) cmd += " -i";
+        if (input.contains("-C")) cmd += " -C " + std::to_string(jsonInt(input, "-C", 0));
         else {
-            if (input.contains("-A")) cmd += " -A " + std::to_string(input["-A"].get<int>());
-            if (input.contains("-B")) cmd += " -B " + std::to_string(input["-B"].get<int>());
+            if (input.contains("-A")) cmd += " -A " + std::to_string(jsonInt(input, "-A", 0));
+            if (input.contains("-B")) cmd += " -B " + std::to_string(jsonInt(input, "-B", 0));
         }
         if (input.contains("glob")) {
             std::string g = input["glob"].get<std::string>();
@@ -124,11 +124,11 @@ private:
         std::string pattern = input["pattern"].get<std::string>();
         std::string searchPath = input.value("path", ctx.cwd);
         std::string outputMode = input.value("output_mode", "files_with_matches");
-        int headLimit = input.value("head_limit", 250);
-        bool icase = input.value("-i", false);
-        bool lineNums = input.value("-n", true);
-        int ctxA = input.value("-A", 0), ctxB = input.value("-B", 0);
-        if (input.contains("-C")) ctxA = ctxB = input["-C"].get<int>();
+        int headLimit = jsonInt(input, "head_limit", 250);
+        bool icase = jsonBool(input, "-i", false);
+        bool lineNums = jsonBool(input, "-n", true);
+        int ctxA = jsonInt(input, "-A", 0), ctxB = jsonInt(input, "-B", 0);
+        if (input.contains("-C")) ctxA = ctxB = jsonInt(input, "-C", 0);
 
         auto flags = std::regex::ECMAScript | std::regex::optimize;
         if (icase) flags |= std::regex::icase;

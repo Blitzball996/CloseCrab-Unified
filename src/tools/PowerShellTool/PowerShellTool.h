@@ -55,9 +55,9 @@ public:
 #ifndef _WIN32
         return ToolResult::fail("PowerShell is only available on Windows");
 #else
-        std::string cmd = input["command"].get<std::string>();
+        std::string cmd = input.value("command", "");
         if (cmd.empty()) return ToolResult::fail("Empty command");
-        int timeout = input.value("timeout", 120000);
+        int timeout = jsonInt(input, "timeout", 120000);
         if (timeout > 600000) timeout = 600000;
         if (timeout < 1000) timeout = 1000;
 

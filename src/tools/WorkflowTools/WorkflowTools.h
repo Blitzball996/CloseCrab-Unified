@@ -104,7 +104,7 @@ public:
     ToolResult call(ToolContext& ctx, const nlohmann::json& input) override {
         std::string action = input["action"].get<std::string>();
         if (action == "remove") {
-            bool force = input.value("discard_changes", false);
+            bool force = jsonBool(input, "discard_changes", false);
             std::string cmd = "git worktree remove \"" + ctx.cwd + "\"";
             if (force) cmd += " --force";
 #ifdef _WIN32

@@ -26,9 +26,9 @@ public:
     }
 
     ToolResult call(ToolContext& ctx, const nlohmann::json& input) override {
-        std::string id = input["task_id"].get<std::string>();
-        bool block = input.value("block", true);
-        int timeoutMs = input.value("timeout", 30000);
+        std::string id = input.value("task_id", "");
+        bool block = jsonBool(input, "block", true);
+        int timeoutMs = jsonInt(input, "timeout", 30000);
 
         auto& store = TaskStore::getInstance();
         auto* t = store.get(id);

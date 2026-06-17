@@ -20,7 +20,7 @@ public:
     }
 
     ToolResult call(ToolContext& ctx, const nlohmann::json& input) override {
-        int seconds = input["seconds"].get<int>();
+        int seconds = jsonInt(input, "seconds", 0);
         if (seconds < 0 || seconds > 300) return ToolResult::fail("Duration must be 0-300 seconds");
         std::this_thread::sleep_for(std::chrono::seconds(seconds));
         return ToolResult::ok("Slept for " + std::to_string(seconds) + " seconds");

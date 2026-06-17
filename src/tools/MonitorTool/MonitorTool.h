@@ -39,8 +39,8 @@ public:
     ToolResult call(ToolContext& ctx, const nlohmann::json& input) override {
         std::string cmd = input["command"].get<std::string>();
         std::string desc = input.value("description", cmd.substr(0, 60));
-        int timeoutMs = input.value("timeout_ms", 300000);
-        bool persistent = input.value("persistent", false);
+        int timeoutMs = jsonInt(input, "timeout_ms", 300000);
+        bool persistent = jsonBool(input, "persistent", false);
         if (persistent) timeoutMs = 3600000;
 
         auto& store = TaskStore::getInstance();

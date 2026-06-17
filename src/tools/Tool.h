@@ -5,6 +5,7 @@
 #include <map>
 #include <functional>
 #include <atomic>
+#include <cctype>
 #include <nlohmann/json.hpp>
 #include "../core/Message.h"
 
@@ -115,7 +116,67 @@ struct ToolContext {
 };
 
 // ============================================================
-// Tool base class (对标 JackProAi Tool<Input, Output, Progress>)
+// JSON parameter coercion (vs JackProAi zod .coerce on tool inputs)
+// ============================================================
+// LLMs frequently emit numeric/boolean tool arguments as JSON *strings*
+// (e.g. {"timeout":"5000"} or {"run_in_background":"true"}). nlohmann's
+// get<int>()/value<int>() then throws type_error.302 ("type must be number,
+// but is string") and the whole tool call dies. JackProAi sidesteps this in
+// TS because zod coerces "5000" -> 5000. These helpers do the same: accept a
+// real number OR a numeric/boolean string, and fall back to the default for
+// anything unparseable instead of throwing.
+
+inline int jsonInt(const nlohmann::json& input, const std::string& key, int def) {
+    if (!input.contains(key) || input[key].is_null()) return def;
+    const auto& v = input[key];
+    try {
+        if (v.is_number_integer())  return v.get<int>();
+        if (v.is_number())          return static_cast<int>(v.get<double>());
+        if (v.is_boolean())         return v.get<bool>() ? 1 : 0;
+        if (v.is_string()) {
+            const std::string s = v.get<std::string>();
+            if (s.empty()) return def;
+            size_t pos = 0;
+            long long n = std::stoll(s, &pos);
+            return static_cast<int>(n);
+        }
+    } catch (...) { /* fall through to default */ }
+    return def;
+}
+
+inline double jsonDouble(const nlohmann::json& input, const std::string& key, double def) {
+    if (!input.contains(key) || input[key].is_null()) return def;
+    const auto& v = input[key];
+    try {
+        if (v.is_number())  return v.get<double>();
+        if (v.is_boolean()) return v.get<bool>() ? 1.0 : 0.0;
+        if (v.is_string()) {
+            const std::string s = v.get<std::string>();
+            if (s.empty()) return def;
+            return std::stod(s);
+        }
+    } catch (...) { /* fall through to default */ }
+    return def;
+}
+
+inline bool jsonBool(const nlohmann::json& input, const std::string& key, bool def) {
+    if (!input.contains(key) || input[key].is_null()) return def;
+    const auto& v = input[key];
+    try {
+        if (v.is_boolean()) return v.get<bool>();
+        if (v.is_number())  return v.get<double>() != 0.0;
+        if (v.is_string()) {
+            std::string s = v.get<std::string>();
+            for (auto& c : s) c = static_cast<char>(std::tolower((unsigned char)c));
+            if (s == "true" || s == "1" || s == "yes" || s == "on")  return true;
+            if (s == "false" || s == "0" || s == "no" || s == "off") return false;
+        }
+    } catch (...) { /* fall through to default */ }
+    return def;
+}
+
+// ============================================================
+// Tool base class (vs JackProAi Tool<Input, Output, Progress>)
 // ============================================================
 
 class Tool {

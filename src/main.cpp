@@ -1285,6 +1285,10 @@ Then work step by step using your tools to complete the task.)";
     // Start WebSocket server for mobile remote control
     auto& mobileWs = closecrab::MobileWebSocket::getInstance();
     mobileWs.start(9002);
+    // Tag the discovery file with our session id so CloseCrab-Web can match this
+    // live window to its transcript precisely (closed windows then stop showing
+    // up as live/controllable in the web session list).
+    mobileWs.setSessionId(sessionId);
 
     // === Team Mode: SessionRouter for multi-client parallel inference ===
     closecrab::SessionRouter sessionRouter(qeConfig, 4);

@@ -391,8 +391,8 @@ private:
                      const nlohmann::json& input) {
         namespace fs = std::filesystem;
 
-     int offset = input.value("offset", 0);
-        int limit = input.value("limit", 2000);
+     int offset = jsonInt(input, "offset", 0);
+        int limit = jsonInt(input, "limit", 2000);
         if (limit <= 0) limit = 2000;
         bool hasExplicitLimit = input.contains("limit") && !input["limit"].is_null();
 

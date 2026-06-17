@@ -32,7 +32,7 @@ public:
         AgentConfig config;
         config.type = parseAgentType(input.value("subagent_type", "general-purpose"));
         config.prompt = input["prompt"].get<std::string>();
-        config.runInBackground = input.value("run_in_background", false);
+        config.runInBackground = jsonBool(input, "run_in_background", false);
         config.maxTurns = 20;
 
         auto& mgr = AgentManager::getInstance();

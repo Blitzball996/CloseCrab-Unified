@@ -43,7 +43,7 @@ public:
             return ToolResult::ok("Saved snippet '" + name + "' (" + std::to_string(content.size()) + " chars)");
 
         } else if (action == "trim") {
-            int count = input.value("count", 2);
+            int count = jsonInt(input, "count", 2);
             if (!ctx.messages || ctx.messages->empty()) return ToolResult::fail("No messages to trim");
             int removed = 0;
             // Remove oldest message pairs (skip system messages at the start)

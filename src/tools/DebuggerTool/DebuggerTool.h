@@ -40,21 +40,21 @@ public:
         std::string action = input["action"].get<std::string>();
         if (action == "list_processes") return listProcesses();
         if (action == "read_memory") {
-            int pid = input.value("pid", 0);
+            int pid = jsonInt(input, "pid", 0);
             uint64_t addr = input.value("address", (uint64_t)0);
-            int size = input.value("size", 64);
+            int size = jsonInt(input, "size", 64);
             return readMemory(pid, addr, size);
         }
         if (action == "list_threads") {
-            int pid = input.value("pid", 0);
+            int pid = jsonInt(input, "pid", 0);
             return listThreads(pid);
         }
         if (action == "list_modules") {
-            int pid = input.value("pid", 0);
+            int pid = jsonInt(input, "pid", 0);
             return listModules(pid);
         }
         if (action == "search_memory") {
-            int pid = input.value("pid", 0);
+            int pid = jsonInt(input, "pid", 0);
             std::string pattern = input.value("pattern", "");
             return searchMemory(pid, pattern);
         }

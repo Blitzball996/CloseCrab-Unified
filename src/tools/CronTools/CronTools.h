@@ -200,8 +200,8 @@ public:
         std::string id = CronScheduler::getInstance().schedule(
             input["cron"].get<std::string>(),
             input["prompt"].get<std::string>(),
-            input.value("recurring", true),
-            input.value("durable", false)
+            jsonBool(input, "recurring", true),
+            jsonBool(input, "durable", false)
         );
         return ToolResult::ok("Scheduled cron job: " + id);
     }

@@ -28,7 +28,7 @@ public:
         std::string path = input["notebook_path"].get<std::string>();
         std::string newSource = input["new_source"].get<std::string>();
         std::string editMode = input.value("edit_mode", "replace");
-        int cellNum = input.value("cell_number", 0);
+        int cellNum = jsonInt(input, "cell_number", 0);
         std::string cellType = input.value("cell_type", "code");
 
         // Read notebook

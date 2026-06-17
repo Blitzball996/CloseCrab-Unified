@@ -55,11 +55,11 @@ public:
         }
 
         if (action == "hexdump") {
-            int offset = input.value("offset", 0);
-            int length = input.value("length", 256);
+            int offset = jsonInt(input, "offset", 0);
+            int length = jsonInt(input, "length", 256);
             return hexDump(path, offset, length);
         } else if (action == "strings") {
-            int minLen = input.value("min_length", 4);
+            int minLen = jsonInt(input, "min_length", 4);
             return extractStrings(path, minLen);
         } else if (action == "headers") {
             return parseHeaders(path);
@@ -68,8 +68,8 @@ public:
         } else if (action == "sections") {
             return parseSections(path);
         } else if (action == "disasm") {
-            int offset = input.value("offset", -1); // -1 = auto-detect entry point
-            int length = input.value("length", 512);
+            int offset = jsonInt(input, "offset", -1); // -1 = auto-detect entry point
+            int length = jsonInt(input, "length", 512);
             return disassemble(path, offset, length);
         } else if (action == "functions") {
             return findFunctions(path);

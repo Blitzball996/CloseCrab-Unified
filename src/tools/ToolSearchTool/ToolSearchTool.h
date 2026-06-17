@@ -47,7 +47,7 @@ public:
             return ToolResult::fail("Tool registry unavailable");
         }
         std::string query = input.value("query", "");
-        int maxResults = input.value("max_results", 5);
+        int maxResults = jsonInt(input, "max_results", 5);
         if (query.empty()) {
             return ToolResult::fail("query is required");
         }

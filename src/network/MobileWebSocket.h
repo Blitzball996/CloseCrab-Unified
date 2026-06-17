@@ -137,6 +137,14 @@ public:
         spdlog::info("MobileWebSocket started on port {}", port);
     }
 
+    // The session id this window is currently working on. CloseCrab-Web uses it
+    // to match a live window to its transcript precisely (instead of guessing by
+    // sort order), so closed windows stop showing up as "live/controllable".
+    void setSessionId(const std::string& id) {
+        sessionId_ = id;
+        if (running_) writePortFile();
+    }
+
     void stop() {
         if (!running_) return;
         server_->stop();
@@ -220,6 +228,7 @@ private:
     MobileWebSocket() = default;
     int port_ = 0;
     std::string portFilePath_;
+    std::string sessionId_;
 
     // Write data/mobile-ws-port-<PID>.json so CloseCrab-Web can find all running windows.
     void writePortFile() {
@@ -229,7 +238,7 @@ private:
         int pid = CC_GETPID();
         portFilePath_ = (dir / ("mobile-ws-port-" + std::to_string(pid) + ".json")).string();
         try {
-            nlohmann::json j = {{"pid", pid}, {"port", port_}};
+            nlohmann::json j = {{"pid", pid}, {"port", port_}, {"sessionId", sessionId_}};
             std::ofstream(portFilePath_) << j.dump();
         } catch (const std::exception& e) {
             spdlog::warn("Could not write port file: {}", e.what());
