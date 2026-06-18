@@ -40,7 +40,9 @@ The project merges two predecessors: **CloseCrab** (a C++ local inference engine
 
 ---
 
-## What's New in 0.3.7 (503/504 Resilience & Resume)
+## What's New in 0.3.8 (503/504 Resilience & Resume)
+
+> **0.3.8 hotfix:** 0.3.7 crashed on launch (a duplicate `-c` short flag made CLI parsing throw before `main` could run). 0.3.8 fixes that — use `--continue` (no short form). Everything below shipped in 0.3.7 and is now actually runnable.
 
 This release breaks the "long conversation eventually 503/504s" loop and fixes session resume:
 

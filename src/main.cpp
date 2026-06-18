@@ -648,7 +648,7 @@ int main(int argc, char* argv[]) {
     // loads the past history into context; --new forces a brand-new session.
     bool continueSession = false;
     bool forceNewSession = false;
-    app.add_flag("-c,--continue", continueSession, "Resume the most recent session AND load its history into context");
+    app.add_flag("--continue", continueSession, "Resume the most recent session AND load its history into context");
     app.add_flag("--new", forceNewSession, "Force a brand-new session (don't reuse the most recent one)");
     CLI11_PARSE(app, argc, argv);
 
