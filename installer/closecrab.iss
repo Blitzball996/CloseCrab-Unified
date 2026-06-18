@@ -2,7 +2,7 @@
 ; Requires Inno Setup 6.x: https://jrsoftware.org/isinfo.php
 
 #define MyAppName "CloseCrab"
-#define MyAppVersion "0.3.6"
+#define MyAppVersion "0.3.7"
 #define MyAppPublisher "Blitzball Labs"
 #define MyAppURL "https://github.com/Blitzball996/CloseCrab-Unified"
 #define MyAppExeName "closecrab.exe"

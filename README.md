@@ -40,6 +40,21 @@ The project merges two predecessors: **CloseCrab** (a C++ local inference engine
 
 ---
 
+## What's New in 0.3.7 (503/504 Resilience & Resume)
+
+This release breaks the "long conversation eventually 503/504s" loop and fixes session resume:
+
+- **No more 503/504 death-loop** -- The root cause was that retry-time compaction only shrank a *copy* of the request, never the persisted history, so every retry (and your next message) resent the same oversized payload and failed again. Compaction is now carried across retries and re-applied to each rebuilt request, and it triggers on server errors (`503`/`504`/`500`/`502`), not just network timeouts.
+- **504 handled explicitly** -- Gateway-timeout is now classified as a retryable server error (it usually means the request was too large for the proxy to process in time).
+- **Server-side context management on by default** -- Old read-tool results (`Bash`/`Glob`/`Grep`/`Read`/`WebFetch`/`WebSearch`) are cleared by the server once input crosses the threshold, without disturbing the cached prefix. Auto-strips the field and retries if a proxy rejects it; opt out with `CLOSECRAB_API_CLEAR_TOOL_RESULTS=0`.
+- **Post-retry auto-compaction** -- If all retries are exhausted on a server error, the conversation is compacted once so your *next* message starts smaller instead of 503ing again.
+- **`/resume` actually shows your history** -- Previously it loaded messages into memory but only printed "Restored N messages"; the past turns never appeared. It now replays the restored conversation on screen.
+- **Transcripts keep tool calls** -- Session transcripts now store full content blocks (`tool_use`/`tool_result`/`thinking`) instead of flattened text, so resumed sessions are complete. Legacy transcripts still load.
+- **Session continuity** -- Launches now reuse the most recent session id (the transcript keeps growing across runs) without preloading past turns into context. New flags: `--continue` loads past history into context, `--new` forces a fresh session.
+- **Version banner fix** -- The in-app version (banner / `/version`) was stuck at an old number because `CMakeLists.txt` lagged behind the installer/tag; the single source of truth is now corrected.
+
+---
+
 ## What's New in 0.3.1 (Licensing & macOS/Linux Persistence)
 
 This release adds offline license activation and improves cross-platform persistence:
