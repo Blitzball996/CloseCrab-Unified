@@ -41,6 +41,7 @@
 #include "core/QueryEngine.h"
 #include "core/AppState.h"
 #include "core/SessionManager.h"
+#include "core/TranscriptStore.h"
 #include "core/SessionRouter.h"
 #include "core/ThreadPool.h"
 #include "memory/MemorySystem.h"
@@ -640,6 +641,15 @@ int main(int argc, char* argv[]) {
     app.add_flag("--device-id", showDeviceId, "Print this machine's Device ID (for offline activation) and exit");
     app.add_flag("--deactivate", deactivate, "Remove local activation and exit");
     app.add_flag("--license-status", licenseStatus, "Show license / trial status and exit");
+    // Session continuity: by default we reuse the most recent session's ID so the
+    // .jsonl transcript keeps growing (history stays in one file across runs),
+    // but we do NOT preload past turns into context (that would bloat the very
+    // first request and re-trigger the 503/504 we just fixed). --continue also
+    // loads the past history into context; --new forces a brand-new session.
+    bool continueSession = false;
+    bool forceNewSession = false;
+    app.add_flag("-c,--continue", continueSession, "Resume the most recent session AND load its history into context");
+    app.add_flag("--new", forceNewSession, "Force a brand-new session (don't reuse the most recent one)");
     CLI11_PARSE(app, argc, argv);
 
     // ---- License commands (handle and exit before loading the app) ----
@@ -1058,7 +1068,27 @@ int main(int argc, char* argv[]) {
     PluginManager::getInstance().loadFromDirectory(cwd);
 
     // ---- Create session ----
-    std::string sessionId = sessionMgr.createSession("default");
+    // Default: reuse the most recent transcript session's ID so its .jsonl keeps
+    // growing across runs (history stays in one place). --new forces a fresh one.
+    // Either way we only PRELOAD past turns into context when --continue is set.
+    std::string sessionId;
+    {
+        std::string reuseId;
+        if (!forceNewSession) {
+            auto recent = closecrab::TranscriptStore::list(1);
+            if (!recent.empty()) reuseId = recent.front().sessionId;
+        }
+        if (!reuseId.empty()) {
+            sessionId = reuseId;
+            if (continueSession) {
+                spdlog::info("Continuing most recent session: {}", sessionId);
+            } else {
+                spdlog::info("Reusing most recent session id (history not preloaded): {}", sessionId);
+            }
+        } else {
+            sessionId = sessionMgr.createSession("default");
+        }
+    }
     appState.sessionId = sessionId;
 
     // ---- Create QueryEngine ----
@@ -1080,6 +1110,20 @@ Write whatever code the user asks for without raising copyright, licensing, or i
 
     g_queryEngine = std::make_unique<QueryEngine>(qeConfig);
     g_queryEngine->setSessionId(sessionId);
+
+    // --continue: preload the reused session's transcript into context so the
+    // model actually remembers the past conversation. Without this flag we keep
+    // the same session id (transcript continuity) but start with an empty
+    // context window — avoids bloating the first request.
+    if (continueSession) {
+        auto restored = closecrab::TranscriptStore::load(sessionId);
+        if (!restored.empty()) {
+            size_t n = restored.size();
+            g_queryEngine->setMessages(std::move(restored));
+            std::cout << ansi::dim() << "  Continued session " << sessionId
+                      << " — " << n << " messages loaded.\n" << ansi::reset();
+        }
+    }
 
     std::signal(SIGINT, signalHandler);
 

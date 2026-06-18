@@ -104,6 +104,28 @@ public:
     }
 
 private:
+    // Re-render the restored conversation to the terminal. deserializeMessages()
+    // only loads messages into memory and prints a one-line "Restored N" — the
+    // user never SEES the past turns, so /resume felt like it did nothing. This
+    // replays the loaded history (like Claude Code / JackProAi show on resume).
+    void renderRestoredHistory(CommandContext& ctx) {
+        const auto& msgs = ctx.queryEngine->getMessages();
+        if (msgs.empty()) return;
+        ctx.print("\n\033[2m---------- restored conversation ----------\033[0m\n");
+        for (const auto& msg : msgs) {
+            std::string text = msg.getText();
+            if (text.empty()) continue;
+            std::string role;
+            if (msg.role == MessageRole::USER)            role = "\033[36mYou\033[0m: ";
+            else if (msg.role == MessageRole::ASSISTANT)  role = "\033[32mCloseCrab\033[0m: ";
+            else                                          role = "\033[90m·\033[0m ";
+            // Cap each message so a long transcript doesn't flood the screen.
+            if (text.size() > 2000) text = text.substr(0, 2000) + "\033[2m …(truncated)\033[0m";
+            ctx.print(role + text + "\n");
+        }
+        ctx.print("\033[2m-------------------------------------------\033[0m\n\n");
+    }
+
     CommandResult restoreFork(const std::string& forkPath, const std::string& forkId, CommandContext& ctx) {
         try {
             std::ifstream f(forkPath);
@@ -113,6 +135,7 @@ private:
             ctx.queryEngine->deserializeMessages(data);
             ctx.print("Restored " + std::to_string(ctx.queryEngine->getMessages().size()) +
                       " messages from fork [" + forkId + "]\n");
+            renderRestoredHistory(ctx);
         } catch (const std::exception& e) {
             ctx.print("Failed to restore fork: " + std::string(e.what()) + "\n");
         }
@@ -125,12 +148,14 @@ private:
     CommandResult restoreSessionId(const std::string& sessionId, CommandContext& ctx) {
         auto msgs = TranscriptStore::load(sessionId);
         if (!msgs.empty()) {
-            // Serialize to the deserializeMessages shape and hand off.
-            nlohmann::json arr = nlohmann::json::array();
-            for (const auto& m : msgs) arr.push_back(TranscriptStore::messageToEntry(m));
-            ctx.queryEngine->deserializeMessages(arr);
-            ctx.print("Restored " + std::to_string(ctx.queryEngine->getMessages().size()) +
+            // Hand the full Message objects over directly — preserves tool_use /
+            // tool_result / thinking blocks (the old deserializeMessages path
+            // flattened everything to text and dropped tool calls).
+            size_t n = msgs.size();
+            ctx.queryEngine->setMessages(std::move(msgs));
+            ctx.print("Restored " + std::to_string(n) +
                       " messages from session [" + sessionId + "]\n");
+            renderRestoredHistory(ctx);
             return CommandResult::ok();
         }
         // Legacy fallback: SQLite context blob.
@@ -150,6 +175,7 @@ private:
             ctx.queryEngine->deserializeMessages(data);
             ctx.print("Restored " + std::to_string(ctx.queryEngine->getMessages().size()) +
                       " messages from session [" + sessionId + "]\n");
+            renderRestoredHistory(ctx);
         } catch (const std::exception& e) {
             ctx.print("Failed to restore session: " + std::string(e.what()) + "\n");
         }
