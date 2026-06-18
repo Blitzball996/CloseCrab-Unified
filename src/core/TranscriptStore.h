@@ -29,16 +29,27 @@ public:
         return dir() / (sessionId + ".jsonl");
     }
 
-    // Serialize ONE message to the JSONL line shape (role + flat text + timestamp
-    // + content blocks). Matches QueryEngine::serializeMessages per-entry so
-    // deserialize reads the top-level "text".
+    // Serialize ONE message to a JSONL line. We store the FULL message — role +
+    // content blocks (tool_use / tool_result / thinking / text) via toApiJson —
+    // plus a flat "text" mirror and the timestamp. Older transcripts only had
+    // {role,text}; load() handles both shapes (see below). Storing the blocks is
+    // what lets /resume replay tool calls, not just the plain chatter.
     static nlohmann::json messageToEntry(const Message& msg) {
-        nlohmann::json m;
-        m["role"] = (msg.role == MessageRole::USER) ? "user" :
-                    (msg.role == MessageRole::ASSISTANT) ? "assistant" : "system";
-        m["text"] = msg.getText();
+        nlohmann::json m = msg.toApiJson();   // { role, content:[...] }
+        m["text"] = msg.getText();            // flat mirror for cheap previews
         m["timestamp"] = msg.timestamp;
+        // Preserve system role: toApiJson() collapses non-user to "assistant",
+        // but transcripts want to distinguish system/local-command lines.
+        if (msg.role == MessageRole::SYSTEM) m["role"] = "system";
         return m;
+    }
+
+    // True if a message carries anything worth persisting: visible text OR any
+    // content block (a pure tool_use assistant turn has empty getText() but MUST
+    // be kept, otherwise the restored transcript loses the tool call entirely).
+    static bool isMeaningful(const Message& msg) {
+        if (!msg.getText().empty()) return true;
+        return !msg.content.empty();
     }
 
     // Append messages[fromIndex..end] as JSONL lines (append-only, like
@@ -52,16 +63,18 @@ public:
         std::ofstream f(pathFor(sessionId), std::ios::app | std::ios::binary);
         if (!f.is_open()) return fromIndex;
         for (size_t i = fromIndex; i < messages.size(); i++) {
-            // Skip empty messages so the transcript stays meaningful (JackProAi
-            // isTranscriptMessage filters non-meaningful entries).
-            std::string t = messages[i].getText();
-            if (t.empty()) continue;
-            f << messageToEntry(messages[i]).dump() << "\n";
+            // Skip truly-empty messages, but KEEP tool_use/tool_result turns even
+            // when their flat text is empty (previously these were dropped).
+            if (!isMeaningful(messages[i])) continue;
+            f << messageToEntry(messages[i]).dump(-1, ' ', false,
+                  nlohmann::json::error_handler_t::replace) << "\n";
         }
         return messages.size();
     }
 
-    // Load a session transcript back into Message objects (resume).
+    // Load a session transcript back into Message objects (resume). Handles both
+    // the new shape ({role,content:[...],text}) and the legacy shape
+    // ({role,text} only) transparently.
     static std::vector<Message> load(const std::string& sessionId) {
         std::vector<Message> out;
         std::ifstream f(pathFor(sessionId), std::ios::binary);
@@ -72,6 +85,23 @@ public:
             try {
                 auto m = nlohmann::json::parse(line);
                 std::string role = m.value("role", "user");
+                // New shape: a content array is present -> reconstruct full blocks.
+                bool hasBlockArray = m.contains("content") && m["content"].is_array();
+                if (hasBlockArray) {
+                    Message msg = Message::fromApiJson(m);
+                    // fromApiJson() maps non-assistant to USER; fix up system rows.
+                    if (role == "system") {
+                        msg.role = MessageRole::SYSTEM;
+                        msg.type = MessageType::SYSTEM;
+                    }
+                    if (m.contains("timestamp") && m["timestamp"].is_number())
+                        msg.timestamp = m["timestamp"].get<int64_t>();
+                    // Keep it only if it carries something.
+                    if (!msg.content.empty() || !msg.getText().empty())
+                        out.push_back(std::move(msg));
+                    continue;
+                }
+                // Legacy shape: flat text only.
                 std::string text = m.value("text", "");
                 if (text.empty()) continue;
                 if (role == "user") out.push_back(Message::makeUser(text));

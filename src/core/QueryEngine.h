@@ -77,6 +77,15 @@ public:
     const std::vector<Message>& getMessages() const { return messages_; }
     void clearMessages() { messages_.clear(); }
 
+    // Restore full Message objects directly (resume), preserving content blocks
+    // (tool_use / tool_result / thinking) instead of round-tripping through the
+    // text-only deserializeMessages() path. Marks them already-persisted so the
+    // next transcript flush won't re-append them.
+    void setMessages(std::vector<Message> msgs) {
+        messages_ = std::move(msgs);
+        lastPersistedIndex_ = messages_.size();
+    }
+
     // Session
     void setSessionId(const std::string& id) { sessionId_ = id; }
     std::string getSessionId() const { return sessionId_; }
