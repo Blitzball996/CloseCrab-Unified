@@ -9,7 +9,7 @@ if(POLICY CMP0167)
 endif()
 set(CMAKE_POLICY_DEFAULT_CMP0148 OLD)
 
-project(CloseCrab-Unified VERSION 0.4.0 LANGUAGES C CXX)
+project(CloseCrab-Unified VERSION 0.4.1 LANGUAGES C CXX)
 
 # ============================================
 # Build options

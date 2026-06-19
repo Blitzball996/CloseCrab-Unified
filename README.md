@@ -40,6 +40,26 @@ The project merges two predecessors: **CloseCrab** (a C++ local inference engine
 
 ---
 
+## What's New in 0.4.1 ("[1m]" 1M-context model names now work)
+
+Fixes a `model_not_found` storm (59 failed requests in one session) when the
+model is configured with the `[1m]` suffix, e.g. `claude-opus-4-8[1m]`.
+
+The `[1m]` suffix is a **client-side** marker (Claude Code convention) meaning
+"use the 1M context window" — the proxy/upstream doesn't know it, so sending
+`claude-opus-4-8[1m]` verbatim returns `model_not_found: No available channel`.
+CloseCrab now mirrors Claude Code exactly: it **strips `[1m]`** from the model
+name before sending (so the proxy sees the real `claude-opus-4-8`) and instead
+opts into 1M via the **`anthropic-beta: context-1m-2025-08-07`** header, added
+only when the configured model carries `[1m]`. After a fallback to a non-`[1m]`
+model the header is automatically dropped. Verified live: `claude-opus-4-8[1m]`
+now responds normally with no `model_not_found`.
+
+This pairs with 0.4.0's `[1m]` → 1,000,000 context-window detection, so a 1M
+model gets both the right request headers and the right compaction threshold.
+
+---
+
 ## What's New in 0.4.0 (The 503 / "forgets what it was doing" Fix + MCP Tool Expansion)
 
 This release fixes the real root cause behind "卡 503 一会会就忘了之前在做什么" and makes MCP server tools first-class. The 503 fixes are all aligned to JackProAi's actual context-management source (`services/compact/`).

@@ -37,6 +37,24 @@
 
 ---
 
+## 0.4.1 新增（带 `[1m]` 的 1M 上下文模型名现在可用）
+
+修复配置 `[1m]` 后缀模型名（如 `claude-opus-4-8[1m]`）时的 `model_not_found`
+风暴（一次会话 59 次失败请求）。
+
+`[1m]` 后缀是**客户端**标记（Claude Code 约定），意为"用 1M 上下文窗口"——中转/
+上游不认它，所以原样发 `claude-opus-4-8[1m]` 会返回 `model_not_found: No
+available channel`。CloseCrab 现在完全对齐 Claude Code：发请求前**剥离 `[1m]`**
+（中转看到真实的 `claude-opus-4-8`），改用 **`anthropic-beta:
+context-1m-2025-08-07`** header 开启 1M，且仅在配置模型带 `[1m]` 时添加；fallback
+到不带 `[1m]` 的模型后该 header 自动去掉。已实测：`claude-opus-4-8[1m]` 现在正常
+回复，无 `model_not_found`。
+
+这与 0.4.0 的 `[1m]` → 1,000,000 上下文窗口检测配套：1M 模型既拿到正确的请求
+header，也用上正确的压缩阈值。
+
+---
+
 ## 0.4.0 新增（503 / "处理着就忘了在做什么" 根治 + MCP 工具摊开）
 
 本次彻底修掉"卡 503 一会会就忘了之前在做什么"的真因，并把 MCP server 工具变成一等公民。所有 503 修复均对齐 JackProAi 真实的上下文管理源码（`services/compact/`）。

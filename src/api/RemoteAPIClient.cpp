@@ -7,6 +7,7 @@
 #include <spdlog/spdlog.h>
 #include <fstream>
 #include <cstdlib>
+#include <cctype>
 #include <chrono>
 #include <thread>
 #include <vector>
@@ -15,6 +16,28 @@
 // Removed global mutex serialization that was blocking concurrent agent requests.
 
 namespace closecrab {
+
+// "[1m]" suffix handling, mirroring Claude Code (utils/context.ts + cli.js).
+// The suffix is a client-side opt-in for the 1M context window; it must be
+// stripped from the model name sent to the API (the proxy/upstream rejects the
+// literal "[1m]" with model_not_found) and instead signaled via the
+// anthropic-beta: context-1m-2025-08-07 header.
+static bool wants1MContext(const std::string& model) {
+    // case-insensitive endsWith "[1m]"
+    if (model.size() < 4) return false;
+    std::string tail = model.substr(model.size() - 4);
+    for (auto& c : tail) c = (char)std::tolower((unsigned char)c);
+    return tail == "[1m]";
+}
+static std::string stripOneMSuffix(const std::string& model) {
+    if (wants1MContext(model)) {
+        std::string s = model.substr(0, model.size() - 4);
+        // trim trailing spaces, mirroring Claude Code's .trim() after replace
+        while (!s.empty() && s.back() == ' ') s.pop_back();
+        return s;
+    }
+    return model;
+}
 
 RemoteAPIClient::RemoteAPIClient(const std::string& apiKey,
                                    const std::string& baseUrl,
@@ -28,7 +51,14 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
     const std::string& modelOverride
 ) const {
     nlohmann::json body;
-    body["model"] = modelOverride.empty() ? model_ : modelOverride;
+    // The "[1m]" suffix is a CLIENT-SIDE marker (Claude Code convention) meaning
+    // "use the 1M context window". The proxy/upstream does NOT know the suffix —
+    // sending "claude-opus-4-8[1m]" verbatim gets model_not_found. Claude Code
+    // strips it before sending (cli.js: replace(/\[1m]$/i,"")) and instead opts
+    // into 1M via the anthropic-beta: context-1m-2025-08-07 header (added in
+    // performCurlSSE). So: send the CLEAN model name here.
+    std::string requested = modelOverride.empty() ? model_ : modelOverride;
+    body["model"] = stripOneMSuffix(requested);
     body["max_tokens"] = config.maxTokens;
     body["stream"] = config.stream;
 
@@ -493,7 +523,8 @@ static void performCurlSSE(
     const std::string& bodyStr,
     const std::string& apiKey,
     CurlStreamCtx& curlCtx,
-    const std::atomic<bool>* abortFlag = nullptr
+    const std::atomic<bool>* abortFlag = nullptr,
+    bool want1M = false
 ) {
     CURL* curl = curl_easy_init();
     if (!curl) {
@@ -507,7 +538,18 @@ static void performCurlSSE(
     // anthropic-beta: matching Claude Code v2.1.152 headers. web-search-2025-03-05
     // is harmless when no web_search tool is present (server ignores unused betas)
     // and enables the server-side web_search_20250305 tool when WebSearchTool uses it.
-    headers = curl_slist_append(headers, "anthropic-beta: claude-code-20250219,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05,extended-cache-ttl-2025-04-11,context-management-2025-06-27,structured-outputs-2025-12-15,advanced-tool-use-2025-11-20,tool-search-tool-2025-10-19,redact-thinking-2026-02-12,mid-conversation-system-2026-04-07,mcp-servers-2025-12-04,web-search-2025-03-05");
+    // When the model was requested with the "[1m]" suffix, append the 1M-context
+    // beta (context-1m-2025-08-07) — same opt-in Claude Code uses. Only added on
+    // request so non-[1m] models aren't forced into (and possibly rejected by) 1M.
+    std::string betaHeader =
+        "anthropic-beta: claude-code-20250219,interleaved-thinking-2025-05-14,"
+        "prompt-caching-scope-2026-01-05,extended-cache-ttl-2025-04-11,"
+        "context-management-2025-06-27,structured-outputs-2025-12-15,"
+        "advanced-tool-use-2025-11-20,tool-search-tool-2025-10-19,"
+        "redact-thinking-2026-02-12,mid-conversation-system-2026-04-07,"
+        "mcp-servers-2025-12-04,web-search-2025-03-05";
+    if (want1M) betaHeader += ",context-1m-2025-08-07";
+    headers = curl_slist_append(headers, betaHeader.c_str());
     // Identity headers matching Claude Code SDK
     headers = curl_slist_append(headers, "User-Agent: claude-cli/2.1.152 (external, cli)");
     headers = curl_slist_append(headers, "x-app: cli");
@@ -760,7 +802,8 @@ void RemoteAPIClient::streamChat(
                 FILE* trace = closecrab::traceOpen();
                 if (trace) { fprintf(trace, "[%d] pre-curl bodySize=%zu\n", attempt, bodyStr.size()); fclose(trace); }
             }
-            performCurlSSE(url, bodyStr, apiKey_, curlCtx, config.abortFlag);
+            performCurlSSE(url, bodyStr, apiKey_, curlCtx, config.abortFlag,
+                           wants1MContext(activeModel));
             {
                 FILE* trace = closecrab::traceOpen();
                 if (trace) { fprintf(trace, "[%d] post-curl OK\n", attempt); fclose(trace); }
