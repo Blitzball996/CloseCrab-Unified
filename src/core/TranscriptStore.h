@@ -14,6 +14,9 @@
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
+#include <cctype>
+#include <cstdio>
+#include <cstdint>
 #include <nlohmann/json.hpp>
 #include "Message.h"
 
@@ -21,9 +24,22 @@ namespace closecrab {
 
 class TranscriptStore {
 public:
-    // <cwd>/data/transcripts/<sessionId>.jsonl
+    // Per-project isolation: transcripts live under a bucket keyed by the user's
+    // project directory, so /resume in project A never shows project B's history.
+    // The process chdir's to a shared app-data dir at startup, so a bare
+    // "data/transcripts" would mix every project together (the old behavior — the
+    // "resume 串项目" bug). setProject() is called once from main() with the user's
+    // launch cwd; the key is a short stable hash of that path plus a readable
+    // folder-name suffix so the buckets are eyeball-identifiable on disk.
+    static void setProject(const std::string& projectCwd) {
+        projectKey() = makeProjectKey(projectCwd);
+    }
+
+    // <cwd>/data/transcripts[/<projectKey>]/<sessionId>.jsonl
     static std::filesystem::path dir() {
-        return std::filesystem::path("data") / "transcripts";
+        std::filesystem::path base = std::filesystem::path("data") / "transcripts";
+        const std::string& key = projectKey();
+        return key.empty() ? base : (base / key);
     }
     static std::filesystem::path pathFor(const std::string& sessionId) {
         return dir() / (sessionId + ".jsonl");
@@ -77,7 +93,17 @@ public:
     // ({role,text} only) transparently.
     static std::vector<Message> load(const std::string& sessionId) {
         std::vector<Message> out;
-        std::ifstream f(pathFor(sessionId), std::ios::binary);
+        std::filesystem::path p = pathFor(sessionId);
+        std::error_code ec;
+        // Legacy fallback: sessions created before per-project bucketing live in
+        // the flat data/transcripts/ dir. If the id isn't in this project's
+        // bucket, look there too, so an explicit /resume <old-id> still works.
+        if (!projectKey().empty() && !std::filesystem::exists(p, ec)) {
+            std::filesystem::path legacy =
+                std::filesystem::path("data") / "transcripts" / (sessionId + ".jsonl");
+            if (std::filesystem::exists(legacy, ec)) p = legacy;
+        }
+        std::ifstream f(p, std::ios::binary);
         if (!f.is_open()) return out;
         std::string line;
         while (std::getline(f, line)) {
@@ -157,6 +183,49 @@ public:
                   [](const Info& a, const Info& b) { return a.mtime > b.mtime; });
         if ((int)infos.size() > limit) infos.resize(limit);
         return infos;
+    }
+
+private:
+    // Process-wide project bucket key. Empty = un-set (falls back to the flat
+    // dir, preserving old single-project behavior until setProject() is called).
+    static std::string& projectKey() {
+        static std::string key;
+        return key;
+    }
+
+    // Build a stable, filesystem-safe bucket name from the project path:
+    //   "<8-hex-hash>__<sanitized-leaf-folder-name>"
+    // The hash disambiguates same-named folders in different locations; the
+    // suffix keeps the bucket human-recognizable (e.g. "a3f9c1d2__CloseCrab-Unified").
+    static std::string makeProjectKey(const std::string& projectCwd) {
+        if (projectCwd.empty()) return "";
+        // Normalize the path so the same project always hashes identically
+        // regardless of trailing slash or separator style.
+        std::string norm = projectCwd;
+        for (char& c : norm) if (c == '\\') c = '/';
+        while (norm.size() > 1 && norm.back() == '/') norm.pop_back();
+#ifdef _WIN32
+        // Windows paths are case-insensitive — lowercase so C:\X and c:\x match.
+        for (char& c : norm) c = (char)std::tolower((unsigned char)c);
+#endif
+        // FNV-1a 32-bit — tiny, dependency-free, stable across runs/platforms.
+        uint32_t h = 2166136261u;
+        for (unsigned char c : norm) { h ^= c; h *= 16777619u; }
+        char hex[9];
+        std::snprintf(hex, sizeof(hex), "%08x", h);
+
+        // Readable suffix from the last path segment.
+        std::string leaf;
+        auto pos = norm.find_last_of('/');
+        leaf = (pos == std::string::npos) ? norm : norm.substr(pos + 1);
+        std::string safe;
+        for (char c : leaf) {
+            if (std::isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.') safe += c;
+            else safe += '_';
+        }
+        if (safe.size() > 40) safe.resize(40);
+        if (safe.empty()) safe = "project";
+        return std::string(hex) + "__" + safe;
     }
 };
 

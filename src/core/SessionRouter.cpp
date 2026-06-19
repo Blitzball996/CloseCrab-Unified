@@ -123,7 +123,31 @@ void SessionRouter::workerLoop() {
             requestQueue_.pop_front();
         }
         activeWorkers_++;
-        processRequest(req);
+        // A worker thread must NEVER let an exception escape: an uncaught throw
+        // here unwinds out of the thread function → std::terminate → process
+        // crash (the same 0xE06D7363 class as the curl-callback bug, but on the
+        // mobile/web remote-control path). submitMessage() can throw on 503/504,
+        // bad UTF-8, JSON errors, etc. Catch everything, report it to the client,
+        // and keep the worker alive for the next request.
+        try {
+            processRequest(req);
+        } catch (const std::exception& e) {
+            spdlog::error("[SessionRouter] worker caught exception: {}", e.what());
+            try {
+                if (clientCallback_) {
+                    nlohmann::json j; j["error"] = std::string("worker error: ") + e.what();
+                    clientCallback_(req.clientId, "error", j);
+                }
+            } catch (...) { /* never let the error-report itself escape */ }
+        } catch (...) {
+            spdlog::error("[SessionRouter] worker caught unknown exception");
+            try {
+                if (clientCallback_) {
+                    nlohmann::json j; j["error"] = "worker error: unknown exception";
+                    clientCallback_(req.clientId, "error", j);
+                }
+            } catch (...) {}
+        }
         activeWorkers_--;
     }
 }
@@ -139,6 +163,14 @@ void SessionRouter::processRequest(const PendingRequest& req) {
 
     session->isGenerating = true;
     session->interrupted = false;
+    // Ensure the "generating" flag is cleared no matter how we leave this
+    // function — including if submitMessage() throws. Without this, an exception
+    // would leave the client stuck showing "generating" forever (the success
+    // path's reset at the bottom would be skipped).
+    struct GenGuard {
+        ClientSession* s;
+        ~GenGuard() { if (s) s->isGenerating = false; }
+    } genGuard{session};
 
     if (clientCallback_) {
         nlohmann::json j; j["message"] = req.message;

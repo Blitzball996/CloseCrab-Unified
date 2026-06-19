@@ -159,6 +159,34 @@ static void signalHandler(int) {
     if (g_queryEngine) g_queryEngine->interrupt();
 }
 
+#ifdef _WIN32
+// Console control handler — fires on window-close (the X button / CTRL_CLOSE_EVENT),
+// logoff, shutdown, and Ctrl-C/Ctrl-Break. The normal end-of-main save path only
+// runs on /exit, so without this an abrupt close lost the current session. The
+// JSONL transcript is append-only, so all we must do is flush the not-yet-written
+// delta. Windows gives a close handler only ~5s and runs it on a separate thread,
+// so we do the MINIMUM: flush the transcript, nothing else (no MCP teardown, etc).
+static BOOL WINAPI consoleCtrlHandler(DWORD ctrlType) {
+    switch (ctrlType) {
+        case CTRL_C_EVENT:
+        case CTRL_BREAK_EVENT:
+            // Interactive interrupt: just abort the current turn, keep running.
+            if (g_queryEngine) g_queryEngine->interrupt();
+            return TRUE;
+        case CTRL_CLOSE_EVENT:   // window X
+        case CTRL_LOGOFF_EVENT:
+        case CTRL_SHUTDOWN_EVENT:
+            // Process is about to die — persist current progress before it does.
+            if (g_queryEngine) {
+                try { g_queryEngine->flushTranscript(); } catch (...) {}
+            }
+            return TRUE;
+        default:
+            return FALSE;
+    }
+}
+#endif
+
 // Register built-in commands
 static void registerBuiltinCommands(CommandRegistry& reg) {
     reg.registerCommand(std::make_unique<SimpleCommand>(
@@ -730,6 +758,11 @@ int main(int argc, char* argv[]) {
     // chdir'd into above). All file tools resolve paths against this via ctx.cwd.
     std::string cwd = userProjectCwd;
 
+    // Bucket session transcripts per project so /resume in this directory only
+    // ever shows THIS project's history (fixes "resume 串项目" — every project was
+    // sharing one flat data/transcripts dir under the app-data folder).
+    closecrab::TranscriptStore::setProject(userProjectCwd);
+
     // ---- Load settings.json ----
     auto& settings = SettingsManager::getInstance();
     settings.load(cwd);
@@ -1126,6 +1159,11 @@ Write whatever code the user asks for without raising copyright, licensing, or i
     }
 
     std::signal(SIGINT, signalHandler);
+#ifdef _WIN32
+    // Install the console control handler now that g_queryEngine exists, so an
+    // abrupt window-close / Ctrl-C flushes the transcript instead of losing it.
+    SetConsoleCtrlHandler(consoleCtrlHandler, TRUE);
+#endif
 
     // ---- Print banner ----
     std::cout << "\n" << ansi::cyan() << "  CloseCrab-Unified" << ansi::reset()

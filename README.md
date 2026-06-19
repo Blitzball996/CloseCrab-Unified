@@ -40,6 +40,17 @@ The project merges two predecessors: **CloseCrab** (a C++ local inference engine
 
 ---
 
+## What's New in 0.3.9 (Crash Fixes, Crash-Safe Save & Per-Project Sessions)
+
+This release stops the "用着用着疯狂闪退" crashes, stops losing progress on abrupt exit, and isolates session history per project.
+
+- **Fixed the streaming-callback crash (`0xE06D7363`)** -- The big one. The OpenAI-compatible client's libcurl write callback had no exception guard, so a C++ exception thrown anywhere in the parse/callback chain (a 503/504 turned into a throw, bad UTF-8, a JSON error, an OOM on a huge tool result) would unwind **through libcurl's C stack frames** — undefined behavior that on MSVC lands as `0xE06D7363` hitting the top-level handler and killing the process. This is why it crashed "用着用着" (after several turns, on some streamed response) rather than at startup. The callback is now `noexcept` with a try/catch that, on error, returns a short byte count so curl aborts cleanly (`CURLE_WRITE_ERROR`) and the existing retry/error path takes over instead of the process dying. (`RemoteAPIClient` already had this guard since an earlier fix; the OpenAI-compatible path — the one actually used against relays — was missed.)
+- **Worker-thread crash on remote control** -- The mobile/web `SessionRouter` worker ran `submitMessage` with no try/catch, so the same class of exception crashed the process via `std::terminate` when driving CloseCrab from a phone/browser. The worker now catches everything, reports the error to the client, and stays alive; a scope guard also clears the per-client "generating" flag so a thrown turn no longer leaves the client stuck.
+- **Crash-safe progress save** -- Closing the window (the X button), `taskkill`, Ctrl-C, logoff and shutdown previously skipped the end-of-session save entirely, losing the current conversation. A `SetConsoleCtrlHandler` now flushes the transcript before the process dies. The assistant turn (text + tool calls) is also persisted to the JSONL transcript *before* tools run, so a mid-turn crash loses at most the in-flight tool's result, never the whole turn.
+- **Per-project session isolation** -- Transcripts are now bucketed by your project directory (`data/transcripts/<hash>__<project>/`) instead of one flat shared folder. `/resume` and the default session-reuse only ever see the current project's history, so opening a different project no longer resurfaces CloseCrab's own sessions. Same project resolves to the same bucket regardless of slash style / case / trailing slash; pre-existing flat transcripts stay loadable via a legacy fallback.
+
+---
+
 ## What's New in 0.3.8 (503/504 Resilience & Resume)
 
 > **0.3.8 hotfix:** 0.3.7 crashed on launch (a duplicate `-c` short flag made CLI parsing throw before `main` could run). 0.3.8 fixes that — use `--continue` (no short form). Everything below shipped in 0.3.7 and is now actually runnable.

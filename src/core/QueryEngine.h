@@ -104,6 +104,12 @@ public:
     nlohmann::json serializeMessages() const;
     void deserializeMessages(const nlohmann::json& data);
 
+    // Flush any not-yet-persisted messages to the JSONL transcript. Public so the
+    // shutdown / console-close handler can force a final flush on abrupt exit
+    // (window X, taskkill, Ctrl-C) — see SetConsoleCtrlHandler in main.cpp.
+    // Safe to call anytime; it only appends the delta past lastPersistedIndex_.
+    void flushTranscript() { persistTranscriptDelta(); }
+
 private:
     std::string buildSystemPrompt() const;
     void processToolUse(const StreamEvent& event, const QueryCallbacks& callbacks);

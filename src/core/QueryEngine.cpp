@@ -919,6 +919,13 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
             messages_.push_back(std::move(assistantMsg));
         }
 
+        // Persist the assistant turn (text + tool_use blocks) to the JSONL
+        // transcript NOW, before we run the tools below. Tool execution can be
+        // long and can crash/be-killed mid-way; flushing here means a hard exit
+        // loses at most the in-flight tool's result, never the assistant message
+        // and the tool calls that produced this turn.
+        persistTranscriptDelta();
+
         // Save assistant response to memory
         if (config_.memorySystem && !sessionId_.empty() && !accumulatedText.empty()) {
             config_.memorySystem->addMemory(sessionId_, "assistant", accumulatedText);

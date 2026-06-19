@@ -103,12 +103,34 @@ nlohmann::json OpenAICompatClient::buildRequestBody(
 
 struct OAIStreamCtx {
     closecrab::StreamParser* parser;
+    bool failed = false;       // set if a C++ exception escaped the parse/callback chain
+    std::string errorMsg;      // captured exception text for the post-perform throw
 };
 
-static size_t oaiCurlCallback(char* ptr, size_t size, size_t nmemb, void* userdata) {
+// libcurl WRITEFUNCTION — a C ABI callback. An exception MUST NOT unwind out of
+// here: doing so would propagate through libcurl's C stack frames (undefined
+// behavior), which on MSVC manifests as 0xE06D7363 hitting the top-level
+// unhandled-exception filter and killing the process ("用着用着闪退"). feed()
+// drives the SSE parser, which synchronously calls back into QueryEngine
+// (push_back, json, OutputPersistence...) — any of those can throw. Catch it
+// here, flag the context, and return a short count so curl aborts the transfer
+// cleanly (CURLE_WRITE_ERROR); performOAICurl then turns it into an APIError that
+// the existing retry/error path handles.
+static size_t oaiCurlCallback(char* ptr, size_t size, size_t nmemb, void* userdata) noexcept {
     auto* ctx = static_cast<OAIStreamCtx*>(userdata);
-    ctx->parser->feed(std::string(ptr, size * nmemb));
-    return size * nmemb;
+    const size_t n = size * nmemb;
+    try {
+        ctx->parser->feed(std::string(ptr, n));
+    } catch (const std::exception& e) {
+        ctx->failed = true;
+        ctx->errorMsg = e.what();
+        return 0;  // != n → curl stops with CURLE_WRITE_ERROR
+    } catch (...) {
+        ctx->failed = true;
+        ctx->errorMsg = "unknown exception in stream callback";
+        return 0;
+    }
+    return n;
 }
 
 static void performOAICurl(
@@ -142,6 +164,15 @@ static void performOAICurl(
 
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
+
+    // A C++ exception was caught inside the write callback (and converted to a
+    // CURLE_WRITE_ERROR abort). Surface the REAL cause, not curl's generic
+    // "write error", so retry/logging see what actually happened.
+    if (curlCtx.failed) {
+        throw closecrab::APIError(closecrab::APIErrorType::UNKNOWN,
+                                   static_cast<int>(httpCode),
+                                   "Stream callback error: " + curlCtx.errorMsg);
+    }
 
     if (res != CURLE_OK) {
         throw closecrab::APIError(closecrab::APIErrorType::NETWORK_ERROR,
