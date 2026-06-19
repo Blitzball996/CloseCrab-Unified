@@ -7,6 +7,7 @@
 #include <spdlog/spdlog.h>
 #include "Message.h"
 #include "HistoryCompactor.h"
+#include "MicroCompactStrategy.h"
 #include "AppState.h"
 #include "../api/APIClient.h"
 #include "../api/APIError.h"
@@ -46,34 +47,62 @@ public:
         return {false, "abort", "Cannot compact further"};
     }
 
-    // Handle prompt-too-long error: aggressive compaction
+    // Handle prompt-too-long error: surgical compaction (NOT a nuke).
+    //
+    // The OLD behavior summarized the whole conversation down to a handful of
+    // messages (302 → 11 in one real session — kkk.txt), which is exactly why
+    // the user "卡 503 一会会就忘了之前在做什么": 96% of context vanished, so
+    // after typing "继续" the model had no idea what it was doing.
+    //
+    // JackProAi's answer is microcompact (services/compact/microCompact.ts):
+    // clear only OLD tool_result CONTENT (replace with a placeholder) while
+    // keeping every message and all the actual dialogue, plus the most recent
+    // results intact. We do the same via MicroCompactStrategy, which truncates
+    // oversized tool_result/text blocks in the older messages and leaves the
+    // last ~10 untouched — the conversation structure (and the task) survives.
     static RecoveryResult handlePromptTooLong(
         std::vector<Message>& messages,
         APIClient* apiClient,
         HistoryCompactor& compactor)
     {
-        spdlog::info("Handling prompt-too-long error, attempting aggressive compaction");
+        spdlog::info("Handling prompt-too-long / post-503: surgical micro-compaction "
+                     "(clear old tool results, keep the conversation)");
 
-        // First try: aggressive compaction with a reactive strategy
-        // Use a temporary compactor with very aggressive settings
-        HistoryCompactor::Config aggressiveConfig;
-        aggressiveConfig.maxContextTokens = compactor.getConfig().maxContextTokens;  // keep same window
-        aggressiveConfig.compactThreshold = 0.0f;  // Always compact (threshold = 0)
-        aggressiveConfig.keepRecentMessages = 4;    // Keep only last 4 messages
-        aggressiveConfig.summaryMaxTokens = 300;    // Shorter summary
-
-        HistoryCompactor reactiveCompactor(aggressiveConfig);
         size_t beforeSize = messages.size();
-        bool compacted = reactiveCompactor.forceCompact(messages, apiClient);
+        MicroCompactStrategy micro;
+        // maxContextTokens isn't used by MicroCompactStrategy::compact (it trims
+        // by block size, not a global budget), so any value is fine here.
+        auto meta = micro.compact(messages, apiClient, compactor.getConfig().maxContextTokens);
 
-        if (compacted && messages.size() < beforeSize) {
-            spdlog::info("Aggressive compaction reduced messages from {} to {}", beforeSize, messages.size());
-            return {true, "compacted", "Aggressive compaction for prompt too long"};
+        if (meta.postTokens < meta.preTokens) {
+            spdlog::info("Micro-compaction freed context: {} -> {} tokens, {} messages preserved",
+                         meta.preTokens, meta.postTokens, messages.size());
+            return {true, "compacted",
+                    "Micro-compaction (cleared old tool results, conversation preserved)"};
         }
 
-        // Second try: remove all SYSTEM messages except the last compact boundary
-        spdlog::info("Aggressive compaction insufficient, removing old SYSTEM messages");
-        return removeOldSystemMessages(messages);
+        // Nothing left to trim in the old tool results. As a last resort drop
+        // old SYSTEM messages (still non-destructive to the dialogue), and only
+        // if THAT fails do we fall back to the heavy summarizer.
+        spdlog::info("Micro-compaction found nothing to trim; removing old SYSTEM messages");
+        auto sysResult = removeOldSystemMessages(messages);
+        if (sysResult.success) return sysResult;
+
+        // Genuinely irrecoverable by surgical means — only now summarize, and
+        // keep more recent turns than the old aggressive path (keepRecent 4 was
+        // far too few; that's what produced the 11-message wipe).
+        spdlog::warn("Surgical compaction insufficient; falling back to summary (keepRecent=12)");
+        HistoryCompactor::Config cfg;
+        cfg.maxContextTokens = compactor.getConfig().maxContextTokens;
+        cfg.compactThreshold = 0.0f;
+        cfg.keepRecentMessages = 12;
+        cfg.summaryMaxTokens = 600;
+        HistoryCompactor summarizer(cfg);
+        bool compacted = summarizer.forceCompact(messages, apiClient);
+        if (compacted && messages.size() < beforeSize) {
+            return {true, "compacted", "Summary fallback (kept last 12 turns)"};
+        }
+        return {false, "abort", "Cannot compact further"};
     }
 
     // Handle generic errors by falling back to a different model

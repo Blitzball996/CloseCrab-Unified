@@ -37,6 +37,21 @@
 
 ---
 
+## 0.4.0 新增（503 / "处理着就忘了在做什么" 根治 + MCP 工具摊开）
+
+本次彻底修掉"卡 503 一会会就忘了之前在做什么"的真因，并把 MCP server 工具变成一等公民。所有 503 修复均对齐 JackProAi 真实的上下文管理源码（`services/compact/`）。
+
+**503 "健忘"循环——真因与修复。** 触发它的从来不是供应商随机宕机，而是 CloseCrab 自己的上下文管理。深入排查问题时，模型会狂读文件，tool_result 不断堆积，请求涨到约 16~20 万 tokens。中转因请求过大回 503，而 CloseCrab 误以为"503 = 太大了"，每次重试就压得更狠（L1→L9），最后把整段对话从 302 条总结成 11 条，毁掉 96% 的上下文。你输入"继续"时，模型已经完全不知道刚才在干嘛。
+
+- **发送前阈值现在跟随真实上下文窗口** —— 主动压缩阈值原本写死 800K，是模型真实上限 200K 的约 4 倍，所以它在请求撑爆之前从不触发。现在按 JackProAi 的方式解析（`getContextWindowForModel` / `getAutoCompactThreshold`）：`环境变量 CLOSECRAB_MAX_CONTEXT_TOKENS` > `config api.context_window` > 模型 ID 含 `[1m]` → 1M > 默认 200K，再算 `有效窗口 = 窗口 − 20K 输出预留`、`阈值 = 有效窗口 − 13K`。现在约 16.7 万就压缩——在请求被拒之前。可在 `config.yaml` 设 `api.context_window` 钉死你中转的真实上限。
+- **503 = "等待"，不是"砍上下文"** —— 错误体含"供应商暂时不可用 / overloaded / service_unavailable"且请求本身不大时，判定为临时宕机：指数退避重试、**保留上下文**、不压缩。只有请求真的过大（或明确的超限错误）才升级压缩。对齐 JackProAi 的 `Hw6`（overloaded → 纯重试）与 `fX4`（真超限 → 调整）。
+- **外科式压缩，不再核爆** —— 真需要裁剪时，改用 micro-compaction（只清**旧的 tool_result 内容**，保留每条消息和最近的结果），而不是 302→11 总结。任务上下文得以幸存，"继续"才能真的继续。对齐 JackProAi 的 `microCompact.ts`。
+- **压缩熔断器** —— 连续 3 次压缩都释放不出空间后，停止对 API 的徒劳重试（JackProAi `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3`）；下一轮成功后重置。
+
+**MCP 工具现在是一等公民。** 每个已连接的 MCP server 工具都注册成独立工具（`mcp__<server>__<tool>`），带 server 真实的名称、描述和 schema，模型可直接调用如 `mcp__codebase-memory__search_graph`，不再走那个笼统的代理。已用 codebase-memory-mcp 经 stdio 验证（摊开 14 个工具）。
+
+---
+
 ## 0.3.9 新增（闪退修复、崩溃安全保存与按项目隔离会话）
 
 本次更新终结"用着用着疯狂闪退"，避免异常退出丢进度，并把会话历史按项目隔离。

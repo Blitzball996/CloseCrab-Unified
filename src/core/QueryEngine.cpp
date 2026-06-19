@@ -1,5 +1,6 @@
 #include "QueryEngine.h"
 #include "../mcp/MCPClient.h"
+#include "../config/Config.h"
 #include "../utils/UUID.h"
 #include "../utils/StringUtils.h"
 #include "../api/APIError.h"
@@ -23,6 +24,7 @@
 #include <map>
 #include <algorithm>
 #include <vector>
+#include <cstdlib>
 #include <mutex>
 
 namespace closecrab {
@@ -59,8 +61,30 @@ static nlohmann::json normalizeToolInput(const std::string& toolName, const nloh
     return out;
 }
 
+// Resolve the model's REAL context window the same way JackProAi does
+// (utils/context.ts getContextWindowForModel): env override > config >
+// "[1m]" model tag > 200K default. Single source of truth for both the
+// pre-flight threshold and the HistoryCompactor's window, so they never drift.
+static int64_t resolveContextWindow(const std::string& modelId) {
+    if (const char* envCtx = std::getenv("CLOSECRAB_MAX_CONTEXT_TOKENS")) {
+        int v = std::atoi(envCtx);
+        if (v > 0) return v;
+    }
+    int cfg = Config::getInstance().getInt("api.context_window", 0);
+    if (cfg > 0) return cfg;
+    if (modelId.find("[1m]") != std::string::npos) return 1000000;
+    return 200000;  // JackProAi MODEL_CONTEXT_WINDOW_DEFAULT
+}
+
 QueryEngine::QueryEngine(const QueryEngineConfig& config)
-    : config_(config), budgetTracker_(config.tokenBudget) {}
+    : config_(config), budgetTracker_(config.tokenBudget) {
+    // Keep the strategy-based compactor (used at turn boundaries) on the same
+    // effective window as the pre-flight check, so both compact at consistent
+    // thresholds instead of the old 128K default fighting an 800K pre-flight.
+    int64_t ctxWindow = resolveContextWindow(
+        config.appState ? config.appState->currentModel : "");
+    compactor_.setMaxContextTokens(static_cast<int>(ctxWindow - 20000)); // effective window
+}
 
 std::string QueryEngine::buildSystemPrompt() const {
     if (!systemPromptDirty_ && !cachedSystemPrompt_.empty()) {
@@ -660,13 +684,29 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                 }
             }
 
-            // Context window limits: yikoulian.cc proxy supports full opus 200K.
-            // Previous 30K/50K was overly conservative and caused complex tasks
-            // Claude Opus 4.7 supports 1M (1,000,000) token context window.
-            // Compact at 800K to leave room for output (64K) + tools + system prompt.
-            // Hard stop at 950K to avoid API rejection.
-            const int64_t AUTOCOMPACT_THRESHOLD = 800000;  // Compact at 800K
-            const int64_t BLOCKING_LIMIT = 950000;         // Hard stop at 950K
+            // Context window thresholds, derived from the model's REAL context
+            // window via resolveContextWindow() (env > config > "[1m]" > 200K),
+            // the SAME way JackProAi resolves it (utils/context.ts) and the SAME
+            // value the compactor_ uses — no drift, no magic number.
+            //
+            //   effectiveWindow      = contextWindow - reservedForOutput(20k)
+            //   AUTOCOMPACT_THRESHOLD = effectiveWindow - 13k  (JackProAi buffer)
+            //   BLOCKING_LIMIT        = effectiveWindow - 3k
+            //
+            // The OLD code hardcoded 800K — ~4x the real 200K limit — so this
+            // pre-flight NEVER fired: context ballooned to 150-200K during deep
+            // investigations (file reads piling up tool_result blocks), the proxy
+            // rejected the oversized request with a 503, and only THEN did
+            // reactive compaction kick in destructively. Sizing to the REAL limit
+            // compacts BEFORE the request is rejected. (This user's model id ends
+            // "[1m]" but the yikoulian.cc proxy actually caps ~200K — it 503s at
+            // 161-200K, see kkk.txt — so config api.context_window can pin it.)
+            const int64_t contextWindow =
+                resolveContextWindow(config_.appState ? config_.appState->currentModel : "");
+            const int64_t RESERVED_FOR_OUTPUT   = 20000;
+            const int64_t EFFECTIVE_WINDOW      = contextWindow - RESERVED_FOR_OUTPUT;
+            const int64_t AUTOCOMPACT_THRESHOLD = EFFECTIVE_WINDOW - 13000;
+            const int64_t BLOCKING_LIMIT        = EFFECTIVE_WINDOW - 3000;
 
             if (estimatedTokens > AUTOCOMPACT_THRESHOLD) {
                 spdlog::warn("Pre-flight: {} tokens (>{} threshold), applying layered context management...",
@@ -834,10 +874,27 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                 // RemoteAPIClient retry-compaction only shrank the request COPY,
                 // not our persistent messages_. So if we don't compact here, the
                 // user's next message resends the same oversized history and 503s
-                // again — the exact "轮数一长又 503" loop. Force one aggressive
-                // compaction now so the next turn starts smaller.
-                bool shrank = ErrorRecovery::handlePromptTooLong(
-                                  messages_, config_.apiClient, compactor_).success;
+                // again — the exact "轮数一长又 503" loop. Surgically compact now
+                // so the next turn starts smaller — UNLESS the circuit breaker has
+                // tripped (compaction stopped helping), in which case retrying is
+                // futile and we just preserve context and tell the user to wait.
+                bool shrank = false;
+                if (consecutiveCompactionFailures_ < MAX_COMPACTION_FAILURES) {
+                    shrank = ErrorRecovery::handlePromptTooLong(
+                                 messages_, config_.apiClient, compactor_).success;
+                    if (shrank) {
+                        consecutiveCompactionFailures_ = 0;
+                    } else {
+                        consecutiveCompactionFailures_++;
+                        if (consecutiveCompactionFailures_ >= MAX_COMPACTION_FAILURES) {
+                            spdlog::warn("Compaction circuit breaker tripped after {} failures — "
+                                         "context is irrecoverable by trimming; stopping retries",
+                                         consecutiveCompactionFailures_);
+                        }
+                    }
+                } else {
+                    spdlog::info("Compaction circuit breaker open — skipping futile compaction");
+                }
                 if (shrank) {
                     spdlog::warn("Post-503 auto-compaction applied; next message will send a smaller context");
                     if (callbacks.onError) callbacks.onError(
@@ -870,6 +927,9 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
 
         if (apiCallFailed) break; // Don't continue the turn loop on API failure
         PredictiveEngine::getInstance().stopPreloading();
+        // A turn completed successfully — the context is healthy again, so reset
+        // the post-503 compaction circuit breaker.
+        consecutiveCompactionFailures_ = 0;
 
         { FILE* t = closecrab::traceOpen(); if(t){fprintf(t,"[turn%d] post-stream stopReason=%s tools=%zu text=%zu\n", turnCount, stopReason.c_str(), pendingToolCalls.size(), accumulatedText.size()); fclose(t);} }
 

@@ -802,22 +802,48 @@ void RemoteAPIClient::streamChat(
 
             if (attempt >= MAX_RETRIES) throw;
 
-            // The request is likely too large for the proxy. Bump the retry
-            // compaction level so the NEXT loop iteration rebuilds the body and
-            // re-applies a (stronger) trim before sending. This fires for BOTH
-            // network timeouts AND server errors (503/504/500/502) — a 503 after
-            // many turns is almost always an oversized-request rejection from the
-            // proxy, not genuine provider overload. Without bumping the level,
-            // all 10 retries resend the same oversized payload and all fail
-            // identically (the previous code edited `body` in place, which the
-            // next iteration's buildRequestBody() silently discarded).
-            bool oversized = bodyStr.size() > 80000;
+            // Decide whether this error means "request too big" (→ compact harder
+            // before retry) or "provider temporarily down" (→ just wait & retry,
+            // do NOT touch context). The OLD code treated EVERY 503/504/timeout on
+            // a >80KB request as oversized and kept bumping the compaction level
+            // L1→L9, shrinking context on each retry — but the real cause was
+            // usually a transient upstream outage ("所有供应商暂时不可用"), so it
+            // destroyed context chasing a size problem that didn't exist.
+            //
+            // JackProAi separates these: overloaded_error/529 is purely retryable
+            // (Hw6 → retry, never compact); only a real context-limit error (fX4)
+            // adjusts tokens. We mirror that here. Since the yikoulian.cc proxy
+            // reports outages as a generic 503 "供应商不可用", we use two signals:
+            //   1. the error text explicitly says overloaded/unavailable  → overload
+            //   2. the request is genuinely large vs the real context window → oversized
+            // Only #2 (or an explicit size error) bumps compaction.
+            std::string emsg = e.what();
+            auto contains = [&](const char* s){ return emsg.find(s) != std::string::npos; };
+            bool overloadSignal =
+                contains("overloaded") || contains("service_unavailable") ||
+                contains("\xe4\xbe\x9b\xe5\xba\x94\xe5\x95\x86") ||  // 供应商
+                contains("\xe6\x9a\x82\xe6\x97\xb6\xe4\xb8\x8d\xe5\x8f\xaf\xe7\x94\xa8"); // 暂时不可用
+            // "Genuinely large" = within ~85% of the real usable window. Below
+            // that, a 503 is almost certainly an outage, not a size rejection, so
+            // shrinking context would be both useless and destructive.
+            // ~3.5 chars/token on the serialized body → bytes threshold.
+            const size_t kOversizedBytes = 580000; // ~165K tokens of body
+            bool sizeError = contains("too long") || contains("context limit") ||
+                             contains("\xe8\xbf\x87\xe9\x95\xbf") ||  // 过长
+                             e.httpStatus == 413;
+            bool oversized = bodyStr.size() > kOversizedBytes;
             bool serverOrNet = (e.type == APIErrorType::NETWORK_ERROR ||
                                 e.type == APIErrorType::SERVER_ERROR);
-            if (serverOrNet && oversized) {
+
+            if (sizeError || (serverOrNet && oversized && !overloadSignal)) {
                 compactLevel++;
-                spdlog::warn("{} on {}KB request — raising retry compaction to L{} before retry",
-                             apiErrorTypeName(e.type), bodyStr.size() / 1024, compactLevel);
+                spdlog::warn("{} on {}KB request — raising retry compaction to L{} before retry "
+                             "(reason: {})", apiErrorTypeName(e.type), bodyStr.size() / 1024,
+                             compactLevel, sizeError ? "explicit size error" : "oversized body");
+            } else if (serverOrNet) {
+                spdlog::info("{} on {}KB request — treating as transient overload, "
+                             "retrying without compaction (context preserved)",
+                             apiErrorTypeName(e.type), bodyStr.size() / 1024);
             }
 
             // Exponential backoff: 500ms base, cap 30s

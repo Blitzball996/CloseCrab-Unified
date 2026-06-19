@@ -146,6 +146,14 @@ private:
     int64_t lastKnownInputTokens_ = 0;
     int lastKnownTokensAtMessageIndex_ = 0;
 
+    // Circuit breaker for post-503 compaction (JackProAi
+    // MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES). Once compaction stops freeing any
+    // context N times in a row, the context is irrecoverable by trimming and
+    // hammering it on every failed turn just wastes API calls — so we stop.
+    // Reset to 0 whenever a turn succeeds.
+    int consecutiveCompactionFailures_ = 0;
+    static constexpr int MAX_COMPACTION_FAILURES = 3;
+
     // Cached system prompt (rebuilt only when needed)
     mutable std::string cachedSystemPrompt_;
     mutable bool systemPromptDirty_ = true;
