@@ -6,7 +6,13 @@
 
 # CloseCrab-Unified — 本地 AI 编程助手
 
-一个用 C++17 编写的本地优先 AI 编程助手。可以在你自己的 GPU 上运行大语言模型，也可以连接 Claude、OpenAI 等远程 API — 只需改一行配置。AI 拥有 59 个工具、84 个命令、多智能体协作、Coordinator Mode、Team Mode（多客户端并行推理）、语音输入输出（TTS+ASR）、百万 token 上下文窗口，全部受权限系统保护。单文件可执行程序，约 3.2MB。
+> **代码不出本机的 AI 编程助手** —— 单文件 3.2MB，显卡本地跑，
+> 系统开销约为 Claude Code 的 1/60，还能手机远程控。
+
+CloseCrab 是一个终端 AI 编程 agent，可以在**你自己的硬件上本地运行大模型** ——
+也能改一行配置切到 Claude / OpenAI。你的代码无需离开本机。它是一个约 3.2MB 的
+C++ 单文件程序，含 59 个工具、自主 agentic 循环、内置代码知识图谱，以及一个其他
+agent 都没有的手机远程控制模式。
 
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
 [![CUDA](https://img.shields.io/badge/CUDA-12.x-green.svg)](https://developer.nvidia.com/cuda-toolkit)
@@ -17,23 +23,51 @@
 [![Skills](https://img.shields.io/badge/Skills-11-purple.svg)](#skills)
 [![Context](https://img.shields.io/badge/Context-1M%20tokens-blueviolet.svg)](#)
 
+**[⬇ 下载](#快速开始) · [💳 获取授权 — blitzball.lol](https://blitzball.lol) · [📖 文档](#目录)**
+
 ---
 
-## 这是什么？
+## 为什么选 CloseCrab？（对比 Claude Code / Aider / Cline / Tabby）
 
-大多数 AI 编程工具需要联网。CloseCrab-Unified 给你选择权：在本地 GPU 上运行模型（零网络依赖），或者连接 Claude/OpenAI/任何兼容 API。无论哪种方式，AI 都能使用同一套 59 个工具。
+| | **CloseCrab** | Claude Code | Aider | Cline | Tabby |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **形态** | 单文件 3.2MB | Node/npm | Python pip | VS Code 插件 | Rust 服务器 |
+| **本地 GPU 推理** | ✅ 内置 | ❌ 仅云 | ❌ 自带key | ❌ 自带key | ✅ |
+| **离线可用** | ✅ | ❌ | ❌ | ❌ | ⚠ 需服务器 |
+| **系统提示开销** | **~200 token** | ~12K token | 中 | 中 | — |
+| **小显存可跑** | ✅ MoE→CPU 卸载 | — | — | — | 需大显卡 |
+| **极速读文件** | ✅ mmap 零拷贝 | — | — | — | — |
+| **自主循环+防失控** | ✅ | ✅ | ✅ | ✅ | ❌ |
+| **内置代码知识图谱** | ✅ | ❌ | ❌ | ⚠ 靠MCP | ✅ 搜索 |
+| **手机远程控制** | ✅ **(Pro)** | ❌ | ❌ | ❌ | ❌ |
+| **语音 (TTS+ASR)** | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **价格** | 一次性授权 | 按量计费 | 免费 | 免费 | 免费 |
 
-它融合了两个项目：**CloseCrab**（C++ 本地推理引擎，带 RAG 和 MoE 流式加载）和 **JackProAi-claudecode**（TypeScript CLI，40+ 工具和 95 个命令）。最终产出一个 C++ 单文件可执行程序，~170 个源文件编译为 ~3.2MB，包含 59 个工具、84 个命令、30+ 个服务模块。
+### 它的不同之处
 
-### 为什么用它？
+- **跑起来更省钱。** CloseCrab 的系统提示词约 200 token，而 Claude Code 约
+  12K —— 这是**每次请求**都要带的。再加上 prompt 缓存和实时上下文管理，每轮的
+  token 账单只是云端 agent 的一个零头。
+- **在你自己的机器上跑。** 本地 llama.cpp 推理，代码留在你的网络内。隔离网、
+  离线、隐私敏感的工作都没问题。
+- **低端硬件也能跑。** MoE 专家层卸载到 CPU（`n_cpu_moe`），没有大显卡也能跑
+  16B 的 MoE 模型。
+- **快。** C++17、内存映射零拷贝读文件（重复读取近乎瞬时）、并发工具执行、零运行
+  时依赖。
+- **能放手自动跑，还不烧钱。** agentic 循环内置循环检测（不会反复空转浪费
+  token），跑在轻量 harness 上，既受控又便宜 —— 别的 agent 一开自动模式就是大把
+  token，CloseCrab 自动跑还省。
+- **它懂你的代码库。** 内置集成代码知识图谱：模型查定义、调用链、架构，而不是盲目
+  读文件（更快、更省 token）。见[知识图谱](#知识图谱可选codebase-memory-mcp)。
+- **能用手机远程控制。** Pro 版支持手机远程操控桌面会话 —— 其他编程 agent 都没有。
 
-- **隐私**：本地模式下所有数据留在你的机器上，零网络依赖
-- **灵活**：改一行配置就能在本地和远程模型之间切换
-- **真工具**：AI 不只是聊天 — 它能读文件、写代码、跑测试、搜索网络
-- **智能**：多 Agent 协调、历史压缩、记忆系统、Hooks 自动化
-- **可扩展**：59 个内置工具 + 插件系统 + MCP 协议 + 技能目录
-- **Team Mode**：多客户端并行推理，内置排行榜、成就系统和共享知识库
-- **快**：C++17，CUDA GPU 加速，无 Python 运行时
+### 本地优先，云端可选
+
+改 `config/config.yaml` 一行，即可在本地 GPU 上的 GGUF 模型与 Claude/OpenAI/兼容
+API 之间切换，AI 用的是同一套 59 个工具。本项目融合 **CloseCrab**（C++ 本地推理
+引擎，带 RAG + MoE 流式）与 **JackProAi-claudecode**（TypeScript CLI，40+ 工具）为
+一个约 3.2MB 单文件：59 工具、84 命令、30+ 服务模块、Team Mode、语音、百万 token
+上下文。
 
 ---
 

@@ -16,27 +16,63 @@
 [![Binary Size](https://img.shields.io/badge/Binary-~3.2MB-brightgreen.svg)](#)
 [![Context](https://img.shields.io/badge/Context-1M%20tokens-blueviolet.svg)](#)
 
-A local-first AI coding assistant. Single C++17 binary, 59 tools, 84 commands, Team Mode, Voice (TTS+ASR), runs LLMs on your GPU or connects to cloud APIs with 1M token context window.
+> **The local-first AI coding agent.** One 3.2 MB binary. Runs on your GPU,
+> ~60× lighter prompts than Claude Code, controlled from your phone.
+
+CloseCrab is a terminal AI coding agent that runs LLMs **locally on your own
+hardware** — or connects to Claude / OpenAI with a one-line config change. Your
+code never has to leave your machine. It's a single ~3.2 MB C++ executable with
+59 tools, an autonomous agentic loop, a built-in code knowledge graph, and a
+phone-remote-control mode no other agent has.
+
+**[⬇ Download](#quick-start) · [💳 Get a license — blitzball.lol](https://blitzball.lol) · [📖 Docs](#table-of-contents)**
 
 ---
 
-## What is CloseCrab-Unified?
+## Why CloseCrab? (vs Claude Code / Aider / Cline / Tabby)
 
-CloseCrab-Unified is a terminal-based AI coding assistant written in C++17. It runs large language models locally on your hardware via llama.cpp, or connects to Anthropic (Claude), OpenAI, and compatible APIs through a single configuration change. The AI gets the same 59 tools either way: file operations, shell execution, code search, multi-agent collaboration, web access, voice input/output, and more.
+| | **CloseCrab** | Claude Code | Aider | Cline | Tabby |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **Form factor** | Single 3.2 MB exe | Node/npm | Python pip | VS Code ext | Rust server |
+| **Local GPU inference** | ✅ built-in | ❌ cloud only | ❌ BYOK | ❌ BYOK | ✅ |
+| **Works offline** | ✅ | ❌ | ❌ | ❌ | ⚠ needs server |
+| **System-prompt overhead** | **~200 tok** | ~12K tok | medium | medium | — |
+| **Runs on low VRAM** | ✅ MoE→CPU offload | — | — | — | needs big GPU |
+| **Fast file reads** | ✅ mmap zero-copy | — | — | — | — |
+| **Autonomous loop + loop-guard** | ✅ | ✅ | ✅ | ✅ | ❌ |
+| **Built-in code knowledge graph** | ✅ | ❌ | ❌ | ⚠ via MCP | ✅ search |
+| **Phone remote control** | ✅ **(Pro)** | ❌ | ❌ | ❌ | ❌ |
+| **Voice (TTS + ASR)** | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Price** | one-time license | usage-based | free | free | free |
 
-The project merges two predecessors: **CloseCrab** (a C++ local inference engine with RAG and MoE streaming) and **JackProAi-claudecode** (a TypeScript CLI with 40+ tools and 95 commands). The result is a single ~3.2 MB executable built from ~170 source files, with 59 tools, 84 commands, and 30+ service modules.
+### What makes it different
 
-### Why use it?
+- **It costs less to run.** CloseCrab's system prompt is ~200 tokens vs Claude
+  Code's ~12K — sent on *every* request. Add prompt-caching and on-the-fly
+  context management and the per-turn token bill is a fraction of cloud agents'.
+- **It runs on your machine.** Local llama.cpp inference means your code stays
+  on your network. Air-gapped, offline, privacy-sensitive work — no problem.
+- **It runs on modest hardware.** MoE expert layers offload to CPU
+  (`n_cpu_moe`), so you can run a 16B MoE model without a big GPU.
+- **It's fast.** C++17, memory-mapped zero-copy file reads (repeat reads are
+  near-instant), concurrent tool execution, no runtime dependencies.
+- **It runs autonomously without burning money.** The agentic loop has built-in
+  loop detection (no token-wasting repeat-call spirals) on a lightweight harness,
+  so you can let it run and it stays both controlled *and* cheap.
+- **It knows your codebase.** Built-in integration with a code knowledge graph:
+  the model queries definitions, call paths and architecture instead of blindly
+  reading files (faster, fewer tokens). See [Knowledge Graph](#knowledge-graph-optional-codebase-memory-mcp).
+- **You can drive it from your phone.** Pro adds mobile remote control of the
+  desktop session — no other coding agent does this.
 
-- **Privacy** -- Local mode keeps everything on your machine. No data leaves your network.
-- **Flexibility** -- Switch between local and remote models by editing one line in a config file.
-- **Real tools** -- The AI reads files, writes code, runs tests, searches the web, manages git, and more.
-- **Extensible** -- Plugin system, MCP protocol support, skill directories, cron scheduling, hooks.
-- **Fast** -- C++17, CUDA GPU acceleration, concurrent tool execution, no runtime dependencies, single binary.
-- **Multi-agent** -- Coordinator mode with cache-sharing sub-agents for complex task decomposition.
-- **Team Mode** -- Multi-client parallel inference with gamification and shared knowledge base.
-- **Voice** -- TTS output + ASR input (Windows SAPI / whisper.cpp).
-- **1M Context** -- Full Claude Opus 4.7 context window support (800K auto-compact threshold).
+### Local-first, cloud-optional
+
+Switch between a local GGUF model on your GPU and Claude/OpenAI/compatible APIs
+by editing one line in `config/config.yaml`. The AI gets the same 59 tools
+either way. Built from merging **CloseCrab** (C++ local inference engine with
+RAG + MoE streaming) and **JackProAi-claudecode** (TypeScript CLI with 40+ tools)
+into a single ~3.2 MB executable: 59 tools, 84 commands, 30+ service modules,
+Team Mode, voice, and 1M-token context support.
 
 ---
 
