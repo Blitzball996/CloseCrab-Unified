@@ -69,10 +69,10 @@ phone-remote-control mode no other agent has.
 
 Switch between a local GGUF model on your GPU and Claude/OpenAI/compatible APIs
 by editing one line in `config/config.yaml`. The AI gets the same 59 tools
-either way. Built from merging **CloseCrab** (C++ local inference engine with
-RAG + MoE streaming) and **JackProAi-claudecode** (TypeScript CLI with 40+ tools)
-into a single ~3.2 MB executable: 59 tools, 84 commands, 30+ service modules,
-Team Mode, voice, and 1M-token context support.
+either way. **CloseCrab is an enhanced rewrite of CloseCrabAI**, rebuilt entirely
+in C++17 (local inference engine with RAG + MoE streaming) and packaged as a
+single ~3.2 MB executable: 59 tools, 84 commands, 30+ service modules, Team Mode,
+voice, and 1M-token context support.
 
 ---
 
@@ -117,14 +117,14 @@ model gets both the right request headers and the right compaction threshold.
 
 ## What's New in 0.4.0 (The 503 / "forgets what it was doing" Fix + MCP Tool Expansion)
 
-This release fixes the real root cause behind "卡 503 一会会就忘了之前在做什么" and makes MCP server tools first-class. The 503 fixes are all aligned to JackProAi's actual context-management source (`services/compact/`).
+This release fixes the real root cause behind "卡 503 一会会就忘了之前在做什么" and makes MCP server tools first-class. The 503 fixes are all aligned to CloseCrabAI prototype's context-management implementation (`services/compact/`).
 
 **The 503 "amnesia" loop — root cause and fix.** The trigger was never random provider downtime; it was CloseCrab's own context management. During a deep investigation the model would read many files, piling up tool-result blocks until the request hit ~160-200K tokens. The proxy rejected the oversized request with a 503, and CloseCrab — which assumed "503 = too big" — kept compacting harder on every retry (L1→L9) and finally summarized the whole conversation from 302 messages down to 11, destroying 96% of context. After you typed "继续" the model genuinely had no idea what it was doing.
 
-- **Pre-flight threshold now tracks the real context window** — The auto-compaction threshold was hardcoded to 800K, ~4× the model's real 200K limit, so it *never fired* before the request was already too big. It's now derived the way JackProAi does it (`getContextWindowForModel` / `getAutoCompactThreshold`): `env CLOSECRAB_MAX_CONTEXT_TOKENS` > `config api.context_window` > `"[1m]"` model tag → 1M > 200K default, then `effectiveWindow = window − 20K output`, `threshold = effectiveWindow − 13K`. CloseCrab now compacts at ~167K — *before* the request is ever rejected. Set `api.context_window` in `config.yaml` to pin it to your proxy's real limit.
-- **503 = "wait", not "shrink"** — A 503/504 whose body says "供应商暂时不可用 / overloaded / service_unavailable" on a request that isn't actually large is now treated as a transient outage: exponential-backoff retry with context **preserved**, no compaction. Only a genuinely oversized request (or an explicit context-limit error) raises the compaction level. Mirrors JackProAi's `Hw6` (overloaded → pure retry) vs `fX4` (real size error → adjust).
-- **Surgical compaction instead of a nuke** — When trimming IS needed, CloseCrab now uses micro-compaction (clear *old tool-result content* only, keep every message and the recent results) instead of summarizing 302→11. Your task context survives, so "继续" continues. Mirrors JackProAi's `microCompact.ts`.
-- **Compaction circuit breaker** — After 3 consecutive compactions that free nothing, CloseCrab stops hammering the API with doomed retries (JackProAi `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3`); resets on the next successful turn.
+- **Pre-flight threshold now tracks the real context window** — The auto-compaction threshold was hardcoded to 800K, ~4× the model's real 200K limit, so it *never fired* before the request was already too big. It's now derived using enterprise-grade context management (`getContextWindowForModel` / `getAutoCompactThreshold`): `env CLOSECRAB_MAX_CONTEXT_TOKENS` > `config api.context_window` > `"[1m]"` model tag → 1M > 200K default, then `effectiveWindow = window − 20K output`, `threshold = effectiveWindow − 13K`. CloseCrab now compacts at ~167K — *before* the request is ever rejected. Set `api.context_window` in `config.yaml` to pin it to your proxy's real limit.
+- **503 = "wait", not "shrink"** — A 503/504 whose body says "供应商暂时不可用 / overloaded / service_unavailable" on a request that isn't actually large is now treated as a transient outage: exponential-backoff retry with context **preserved**, no compaction. Only a genuinely oversized request (or an explicit context-limit error) raises the compaction level. Uses overload isolation (overloaded → pure retry) vs real-limit adjustment (size error → compact).
+- **Surgical compaction instead of a nuke** — When trimming IS needed, CloseCrab now uses micro-compaction (clear *old tool-result content* only, keep every message and the recent results) instead of summarizing 302→11. Your task context survives, so "继续" continues. Uses the microCompact strategy for precise cleanup instead of aggressive summarization.
+- **Compaction circuit breaker** — After 3 consecutive compactions that free nothing, CloseCrab stops hammering the API with doomed retries (`MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3`); resets on the next successful turn.
 
 **MCP tools are now first-class.** Each connected MCP server tool is registered as its own tool (`mcp__<server>__<tool>`) with the server's real name, description and schema, so the model can call e.g. `mcp__codebase-memory__search_graph` directly instead of routing through one opaque proxy. Verified with codebase-memory-mcp over stdio (14 tools exposed).
 
