@@ -1088,6 +1088,27 @@ int main(int argc, char* argv[]) {
 
         MCPServerManager::getInstance().setHandlers(mcpHandlers);
         MCPServerManager::getInstance().loadFromSettings(mcpConfig);
+
+        // Expand each connected server's tools into first-class CloseCrab tools so
+        // the model sees them individually (real name + description + schema) and
+        // can call e.g. mcp__codebase-memory__search_graph directly, instead of
+        // routing everything through the opaque generic MCPTool. One proxy per
+        // (server, tool); names are namespaced "mcp__<server>__<tool>" to avoid
+        // colliding with the built-in tools. The generic MCPTool stays registered
+        // as a fallback for anything not enumerated here.
+        try {
+            auto mcpTools = MCPServerManager::getInstance().getAllTools();
+            int registered = 0;
+            for (auto& [serverName, def] : mcpTools) {
+                toolRegistry.registerTool(std::make_unique<MCPProxyTool>(serverName, def));
+                registered++;
+            }
+            if (registered > 0) {
+                spdlog::info("MCP: exposed {} server tool(s) as first-class tools", registered);
+            }
+        } catch (const std::exception& e) {
+            spdlog::warn("MCP: failed to expand server tools ({}) — generic MCPTool still available", e.what());
+        }
     }
 
     // Load hooks from settings
