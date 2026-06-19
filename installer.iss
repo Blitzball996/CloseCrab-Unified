@@ -7,7 +7,7 @@
 ;     overwritten or deleted on Windows (editors/compilers and CloseCrab's
 ;     own write/edit tools).
 #define MyAppName "CloseCrab-Unified"
-#define MyAppVersion "0.4.1"
+#define MyAppVersion "0.4.2"
 #define MyAppPublisher "Blitzball996"
 #define MyAppURL "https://github.com/Blitzball996/CloseCrab-Unified"
 #define MyAppExeName "closecrab.exe"

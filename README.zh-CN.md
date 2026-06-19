@@ -37,6 +37,23 @@
 
 ---
 
+## 0.4.2 新增（知识图谱 clone 即用）
+
+codebase-memory 知识图谱现在 clone 后**零 settings.json 配置**即可使用。跑一条
+命令装好引擎，之后 CloseCrab 自动识别。
+
+- `scripts/setup-codebase-memory.ps1` 从官方 release 下载预编译二进制（约
+  250MB，刻意不打包进仓库）到 `~/.crab/tools/`。
+- 启动时若未配置 `codebase-memory` MCP server，CloseCrab 自动在
+  `~/.crab/tools/` → `<exe>/tools/` → `<exe>/` 里找二进制并注册为 stdio MCP
+  server——settings.json 里不再需要写死机器相关路径。14 个工具以
+  `mcp__codebase-memory__*` 出现。
+- `scripts/build-graph.bat` 索引项目（拖拽或输入路径），并在
+  `http://localhost:9749` 打开图谱界面。每个项目独立图谱，互不干扰。
+- 详见新增的**知识图谱**章节，以及大型/Unreal 项目用的 `.cbmignore` 提示。
+
+---
+
 ## 0.4.1 新增（带 `[1m]` 的 1M 上下文模型名现在可用）
 
 修复配置 `[1m]` 后缀模型名（如 `claude-opus-4-8[1m]`）时的 `model_not_found`

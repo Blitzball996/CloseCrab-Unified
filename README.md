@@ -40,6 +40,25 @@ The project merges two predecessors: **CloseCrab** (a C++ local inference engine
 
 ---
 
+## What's New in 0.4.2 (Clone-and-go Knowledge Graph)
+
+The codebase-memory knowledge graph now works after a fresh clone with **zero
+settings.json editing**. Run one command to install the engine; CloseCrab
+auto-detects it from then on.
+
+- `scripts/setup-codebase-memory.ps1` downloads the official prebuilt binary
+  (~250MB, intentionally not bundled) into `~/.crab/tools/`.
+- On launch, if no `codebase-memory` MCP server is configured, CloseCrab
+  auto-discovers the binary (`~/.crab/tools/` → `<exe>/tools/` → `<exe>/`) and
+  registers it as a stdio MCP server — no machine-specific path in settings.json.
+  Its 14 tools appear as `mcp__codebase-memory__*`.
+- `scripts/build-graph.bat` indexes a project (drag-and-drop or prompt) and opens
+  the graph view at `http://localhost:9749`. Each project gets an isolated graph.
+- See the new **Knowledge Graph** section for usage and the `.cbmignore` tip for
+  large/Unreal projects.
+
+---
+
 ## What's New in 0.4.1 ("[1m]" 1M-context model names now work)
 
 Fixes a `model_not_found` storm (59 failed requests in one session) when the
