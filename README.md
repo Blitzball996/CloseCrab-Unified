@@ -41,7 +41,7 @@ phone-remote-control mode no other agent has.
 | **Fast file reads** | ✅ mmap zero-copy | — | — | — | — |
 | **Autonomous loop + loop-guard** | ✅ | ✅ | ✅ | ✅ | ❌ |
 | **Built-in code knowledge graph** | ✅ | ❌ | ❌ | ⚠ via MCP | ✅ search |
-| **Phone remote control** | ✅ **(Pro)** | ❌ | ❌ | ❌ | ❌ |
+| **Phone remote control** | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **Voice (TTS + ASR)** | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **Price** | one-time license | usage-based | free | free | free |
 
@@ -62,8 +62,8 @@ phone-remote-control mode no other agent has.
 - **It knows your codebase.** Built-in integration with a code knowledge graph:
   the model queries definitions, call paths and architecture instead of blindly
   reading files (faster, fewer tokens). See [Knowledge Graph](#knowledge-graph-optional-codebase-memory-mcp).
-- **You can drive it from your phone.** Pro adds mobile remote control of the
-  desktop session — no other coding agent does this.
+- **You can drive it from your phone.** Mobile remote control of the desktop
+  session — no other coding agent does this.
 
 ### Local-first, cloud-optional
 
