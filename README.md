@@ -151,6 +151,53 @@ cd G:\CMakePJ\CloseCrab-Unified
 
 ---
 
+## Knowledge Graph (optional, codebase-memory MCP)
+
+CloseCrab can use a code knowledge graph so the model finds definitions, call
+chains and dependencies by querying a graph instead of blindly reading files
+(faster, far fewer tokens, and it avoids the context-bloat that triggers 503s).
+
+It's powered by the [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)
+server. The binary (~250MB) is **not bundled** — one command installs it:
+
+```powershell
+# 1. Install the engine (downloads the official prebuilt binary into ~/.crab/tools/)
+pwsh -File scripts/setup-codebase-memory.ps1
+```
+
+That's it. CloseCrab **auto-detects** the binary on next launch (no settings.json
+editing) and exposes its tools as `mcp__codebase-memory__*`
+(`search_graph`, `trace_path`, `get_architecture`, …).
+
+**Build a graph for a project** — either just ask CloseCrab to "index this
+project", or run the helper:
+
+```
+# Double-click, or drag a project folder onto it:
+scripts\build-graph.bat
+```
+
+It indexes the project and opens a browser graph view at `http://localhost:9749`.
+Each project gets its own isolated graph (keyed by path), so they never mix.
+
+Large projects (e.g. Unreal) should add a `.cbmignore` at the project root to skip
+build/cache dirs — gitignore syntax. Example for an Unreal project:
+
+```
+Intermediate/
+Binaries/
+DerivedDataCache/
+Saved/
+Content/
+Plugins/**/Intermediate/
+Plugins/**/Binaries/
+```
+
+Tip: put the index/update rules in the project's `CLAUDE.md` so CloseCrab follows
+them automatically (query the graph before editing; re-index after changes).
+
+---
+
 ## Switching Between Local and API Mode
 
 There are three ways to configure the provider. Pick whichever suits your workflow.

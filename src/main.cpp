@@ -1026,6 +1026,33 @@ int main(int argc, char* argv[]) {
 
     // Load MCP servers from settings
     auto mcpConfig = settings.getMcpServers();
+
+    // Auto-discover the codebase-memory knowledge-graph server. If the user
+    // hasn't configured it explicitly, look for the binary in the standard
+    // install locations (scripts/setup-codebase-memory.ps1 puts it in
+    // ~/.crab/tools/). This is what makes the feature "clone & go": no need to
+    // hand-edit settings.json with a machine-specific absolute path. The binary
+    // itself is NOT bundled (250MB+, too big for git) — run the setup script.
+    if (!mcpConfig.contains("codebase-memory")) {
+        std::vector<fs::path> candidates = {
+            getHomeDir() / ".crab" / "tools" / "codebase-memory-mcp.exe",
+            getExecutableDir() / "tools" / "codebase-memory-mcp.exe",
+            getExecutableDir() / "codebase-memory-mcp.exe",
+        };
+        for (const auto& c : candidates) {
+            std::error_code ec;
+            if (fs::exists(c, ec) && fs::is_regular_file(c, ec)) {
+                mcpConfig["codebase-memory"] = {
+                    {"command", c.string()},
+                    {"args", nlohmann::json::array()},
+                    {"transport", "stdio"}
+                };
+                spdlog::info("Auto-discovered codebase-memory at {}", c.string());
+                break;
+            }
+        }
+    }
+
     if (!mcpConfig.empty()) {
         // Install client-side MCP handlers so servers can call back into us
         // (full bidirectional MCP): sampling (borrow our LLM), elicitation (ask
