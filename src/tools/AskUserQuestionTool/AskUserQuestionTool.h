@@ -46,8 +46,39 @@ public:
     ToolResult call(ToolContext& ctx, const nlohmann::json& input) override {
         nlohmann::json answers = nlohmann::json::object();
 
-        for (const auto& q : input["questions"]) {
+        // Defensive: the model may emit malformed shapes — `questions` as a bare
+        // string, or each question as a string instead of {question, options}.
+        // Calling .value() on a JSON string throws type_error.306, which used to
+        // surface as "Tool AskUserQuestion threw exception". Normalize everything
+        // to objects first.
+        if (!input.contains("questions")) {
+            return ToolResult::fail("AskUserQuestion: missing required 'questions' field");
+        }
+
+        nlohmann::json questions = input["questions"];
+        if (questions.is_string()) {
+            // Single bare-string question → wrap as one object
+            questions = nlohmann::json::array({ nlohmann::json{{"question", questions.get<std::string>()}} });
+        } else if (questions.is_object()) {
+            // Single question object (not wrapped in an array)
+            questions = nlohmann::json::array({ questions });
+        } else if (!questions.is_array()) {
+            return ToolResult::fail("AskUserQuestion: 'questions' must be an array, object, or string");
+        }
+
+        for (const auto& qRaw : questions) {
+            // Normalize each question: string → {question: <string>}
+            nlohmann::json q;
+            if (qRaw.is_string()) {
+                q = nlohmann::json{{"question", qRaw.get<std::string>()}};
+            } else if (qRaw.is_object()) {
+                q = qRaw;
+            } else {
+                continue;  // skip non-string/non-object entries
+            }
+
             std::string question = q.value("question", "");
+            if (question.empty()) continue;
             std::cout << "\n\033[33m" << question << "\033[0m\n";
 
             if (q.contains("options") && q["options"].is_array() && !q["options"].empty()) {
@@ -57,9 +88,17 @@ public:
                 // input and the spinner thread — that's why typed input landed
                 // before the colon and was capped at one char.
                 std::vector<std::string> labels;
+                std::vector<std::string> optionLabels;  // parallel: resolved label per option
                 for (const auto& opt : q["options"]) {
-                    std::string label = opt.value("label", "");
-                    std::string desc = opt.value("description", "");
+                    // options entries may also be bare strings
+                    std::string label, desc;
+                    if (opt.is_string()) {
+                        label = opt.get<std::string>();
+                    } else if (opt.is_object()) {
+                        label = opt.value("label", "");
+                        desc = opt.value("description", "");
+                    }
+                    optionLabels.push_back(label);
                     labels.push_back(desc.empty() ? label : (label + " — " + desc));
                 }
 
@@ -68,8 +107,8 @@ public:
                 // a free-text answer starting with y/n/a isn't hijacked.
                 SelectorResult sel = KeyboardSelector::select(labels, 0, true, false);
 
-                if (sel.index >= 0 && sel.index < (int)q["options"].size()) {
-                    answers[question] = q["options"][sel.index].value("label", "");
+                if (sel.index >= 0 && sel.index < (int)optionLabels.size()) {
+                    answers[question] = optionLabels[sel.index];
                 } else {
                     // Custom typed answer (or escape fallback)
                     answers[question] = sel.customText;
