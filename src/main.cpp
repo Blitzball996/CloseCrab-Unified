@@ -7,6 +7,7 @@
 #endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <dbghelp.h>
 #ifdef ERROR
 #undef ERROR
 #endif
@@ -596,7 +597,7 @@ int main(int argc, char* argv[]) {
     WSADATA wsaData;
     WSAStartup(MAKEWORD(2, 2), &wsaData);
 
-    // Crash handler: write diagnostic info to crash.log before dying.
+    // Crash handler: write diagnostic info + stack trace to crash.log before dying.
     // This captures the exact reason for "闪退" that's otherwise invisible.
     SetUnhandledExceptionFilter([](EXCEPTION_POINTERS* ep) -> LONG {
         FILE* f = fopen("crash.log", "a");
@@ -611,6 +612,52 @@ int main(int argc, char* argv[]) {
             fprintf(f, "RIP: 0x%p\n", (void*)ep->ContextRecord->Rip);
             fprintf(f, "RSP: 0x%p\n", (void*)ep->ContextRecord->Rsp);
             fprintf(f, "RBP: 0x%p\n", (void*)ep->ContextRecord->Rbp);
+
+            // Stack trace using DbgHelp
+            HANDLE process = GetCurrentProcess();
+            HANDLE thread = GetCurrentThread();
+            SymInitialize(process, NULL, TRUE);
+            SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_UNDNAME);
+
+            STACKFRAME64 frame = {};
+            frame.AddrPC.Offset = ep->ContextRecord->Rip;
+            frame.AddrPC.Mode = AddrModeFlat;
+            frame.AddrFrame.Offset = ep->ContextRecord->Rbp;
+            frame.AddrFrame.Mode = AddrModeFlat;
+            frame.AddrStack.Offset = ep->ContextRecord->Rsp;
+            frame.AddrStack.Mode = AddrModeFlat;
+
+            fprintf(f, "\nStack trace:\n");
+            for (int i = 0; i < 64; i++) {
+                if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, process, thread, &frame,
+                                 ep->ContextRecord, NULL, SymFunctionTableAccess64,
+                                 SymGetModuleBase64, NULL)) {
+                    break;
+                }
+                if (frame.AddrPC.Offset == 0) break;
+
+                char buffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(TCHAR)];
+                PSYMBOL_INFO symbol = (PSYMBOL_INFO)buffer;
+                symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+                symbol->MaxNameLen = MAX_SYM_NAME;
+
+                DWORD64 displacement = 0;
+                if (SymFromAddr(process, frame.AddrPC.Offset, &displacement, symbol)) {
+                    IMAGEHLP_LINE64 line = {};
+                    line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
+                    DWORD lineDisp = 0;
+                    if (SymGetLineFromAddr64(process, frame.AddrPC.Offset, &lineDisp, &line)) {
+                        fprintf(f, "  [%d] %s+0x%llx at %s:%lu\n", i, symbol->Name,
+                                displacement, line.FileName, line.LineNumber);
+                    } else {
+                        fprintf(f, "  [%d] %s+0x%llx\n", i, symbol->Name, displacement);
+                    }
+                } else {
+                    fprintf(f, "  [%d] 0x%p\n", i, (void*)frame.AddrPC.Offset);
+                }
+            }
+
+            SymCleanup(process);
             fflush(f);
             fclose(f);
         }

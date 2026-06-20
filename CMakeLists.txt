@@ -439,7 +439,7 @@ endif()
 
 # Platform-specific system libraries
 if(PLATFORM_WINDOWS)
-    list(APPEND CLOSECRAB_LIBS ws2_32 wldap32 crypt32 advapi32 user32 iphlpapi secur32)
+    list(APPEND CLOSECRAB_LIBS ws2_32 wldap32 crypt32 advapi32 user32 iphlpapi secur32 dbghelp)
 elseif(PLATFORM_MACOS)
     find_library(FOUNDATION Foundation)
     find_library(SECURITY Security)
