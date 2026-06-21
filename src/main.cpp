@@ -721,10 +721,22 @@ int main(int argc, char* argv[]) {
     // but we do NOT preload past turns into context (that would bloat the very
     // first request and re-trigger the 503/504 we just fixed). --continue also
     // loads the past history into context; --new forces a brand-new session.
+    // Session start policy (aligned with Claude Code / JackProAi):
+    //   default       → brand-new session each launch (its own <id>.jsonl), so
+    //                    separate topics across launches stay in SEPARATE
+    //                    transcripts and /resume can tell them apart.
+    //   --continue     → resume the most recent session AND preload its history.
+    //   --reuse        → keep appending to the most recent session id WITHOUT
+    //                    preloading history (the OLD default; kept for anyone who
+    //                    relied on one ever-growing transcript).
+    //   --new          → explicit fresh session (now the same as default; kept
+    //                    for back-compat so existing launch scripts don't break).
     bool continueSession = false;
     bool forceNewSession = false;
+    bool reuseSession = false;
     app.add_flag("--continue", continueSession, "Resume the most recent session AND load its history into context");
-    app.add_flag("--new", forceNewSession, "Force a brand-new session (don't reuse the most recent one)");
+    app.add_flag("--new", forceNewSession, "Force a brand-new session (this is now the default)");
+    app.add_flag("--reuse", reuseSession, "Reuse the most recent session id (append, don't preload history)");
     CLI11_PARSE(app, argc, argv);
 
     // ---- License commands (handle and exit before loading the app) ----
@@ -1196,13 +1208,14 @@ int main(int argc, char* argv[]) {
     PluginManager::getInstance().loadFromDirectory(cwd);
 
     // ---- Create session ----
-    // Default: reuse the most recent transcript session's ID so its .jsonl keeps
-    // growing across runs (history stays in one place). --new forces a fresh one.
-    // Either way we only PRELOAD past turns into context when --continue is set.
+    // Default = a brand-new session per launch so distinct topics don't pile into
+    // one transcript. Reuse the most recent id ONLY for --continue (also preload
+    // history) or --reuse (append, no preload). See the flag block above.
     std::string sessionId;
     {
+        bool wantReuse = continueSession || reuseSession;
         std::string reuseId;
-        if (!forceNewSession) {
+        if (wantReuse) {
             auto recent = closecrab::TranscriptStore::list(1);
             if (!recent.empty()) reuseId = recent.front().sessionId;
         }
@@ -1214,7 +1227,10 @@ int main(int argc, char* argv[]) {
                 spdlog::info("Reusing most recent session id (history not preloaded): {}", sessionId);
             }
         } else {
+            // Fresh session (the default path, and the fallback when there's no
+            // prior transcript to reuse).
             sessionId = sessionMgr.createSession("default");
+            spdlog::info("Started new session: {}", sessionId);
         }
     }
     appState.sessionId = sessionId;

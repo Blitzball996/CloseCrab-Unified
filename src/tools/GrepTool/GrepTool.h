@@ -10,6 +10,7 @@
 #include <fstream>
 #include <mutex>
 #include <cstdio>
+#include <cstdlib>
 #include <array>
 #include <unordered_map>
 #include <unordered_set>
@@ -63,9 +64,12 @@ private:
         static int cached = -1;
         if (cached >= 0) return cached == 1;
 #ifdef _WIN32
-        auto pipe = _popen("rg --version 2>nul", "r");
+        // Wrap in an outer quote pair so a quoted rg path with spaces survives
+        // cmd.exe /c quote-stripping (same reason as execCmd()).
+        std::string vc = "\"" + rgCommand() + " --version 2>nul\"";
+        auto pipe = _popen(vc.c_str(), "r");
 #else
-        auto pipe = popen("rg --version 2>/dev/null", "r");
+        auto pipe = popen((rgCommand() + " --version 2>/dev/null").c_str(), "r");
 #endif
         if (!pipe) { cached = 0; return false; }
         char buf[64]; bool got = fgets(buf, sizeof(buf), pipe) != nullptr;
@@ -78,6 +82,45 @@ private:
         return cached == 1;
     }
 
+    // Resolve the ripgrep command to invoke. Order:
+    //   1. CLOSECRAB_RG_PATH env override (explicit path)
+    //   2. a rg binary bundled alongside the executable — the installer ships
+    //      one in <appDir>/tools/ (same convention as codebase-memory-mcp.exe in
+    //      main.cpp) so users get the fast, crash-isolated rg path out of the box
+    //      WITHOUT installing ripgrep system-wide.
+    //   3. system PATH ("rg").
+    // The chosen value is quoted if it's a path (may contain spaces) and cached.
+    // Locating via fs::current_path(): the process chdir's to appDir at startup
+    // (main.cpp) and never leaves it, so current_path() == the app/exe dir — the
+    // same assumption MobileWebSocket/data and the MCP tool lookup already make.
+    static const std::string& rgCommand() {
+        static const std::string cmd = []() -> std::string {
+            namespace fs = std::filesystem;
+            std::error_code ec;
+            auto quoted = [](const fs::path& p) {
+                return std::string("\"") + p.string() + "\"";
+            };
+            if (const char* env = std::getenv("CLOSECRAB_RG_PATH")) {
+                if (env[0] && fs::exists(env, ec)) return std::string("\"") + env + "\"";
+            }
+            fs::path base = fs::current_path(ec);
+            if (!ec) {
+                const char* rels[] = {
+#ifdef _WIN32
+                    "tools/rg.exe", "rg.exe",
+#endif
+                    "tools/rg", "rg",
+                };
+                for (const char* rel : rels) {
+                    fs::path p = base / rel;
+                    if (fs::exists(p, ec)) return quoted(p);
+                }
+            }
+            return "rg"; // fall back to system PATH
+        }();
+        return cmd;
+    }
+
     // --- rg-based path (fast, used when ripgrep is installed) ---
     ToolResult callWithRg(ToolContext& ctx, const nlohmann::json& input) {
         std::string pattern = input["pattern"].get<std::string>();
@@ -85,7 +128,7 @@ private:
         std::string outputMode = input.value("output_mode", "files_with_matches");
         int headLimit = jsonInt(input, "head_limit", 250);
 
-        std::string cmd = "rg";
+        std::string cmd = rgCommand();
         if (outputMode == "files_with_matches") cmd += " -l";
         else if (outputMode == "count") cmd += " -c";
         else if (jsonBool(input, "-n", true)) cmd += " -n";
@@ -172,18 +215,43 @@ private:
         std::vector<std::future<void>> futs;
         futs.reserve(files.size());
 
-        for (auto& fp : files) {
-            futs.push_back(pool.submit([&, fp]() {
-                auto fr = grepFile(fp, root, re, outputMode, lineNums, ctxB, ctxA);
-                if (fr.matchCount > 0) {
-                    std::lock_guard<std::mutex> lk(mtx);
-                    totalLines += (int)std::count(fr.content.begin(), fr.content.end(), '\n');
-                    if (headLimit <= 0 || totalLines <= headLimit)
-                        results.push_back(std::move(fr));
-                }
-            }));
+        // CRITICAL (crash fix): the worker lambdas capture mtx/results/re/root by
+        // reference — they are locals of THIS stack frame. If a worker throws and
+        // that exception surfaces at f.get() below, the naive `for(f) f.get();`
+        // loop would unwind callBuiltIn and destroy those locals WHILE other
+        // workers are still running in the pool → they then touch freed memory
+        // (the observed `memmove` READ access-violation crash under memory
+        // pressure on huge sessions). Two guarantees prevent that:
+        //   1) a worker NEVER throws (its whole body is wrapped in try/catch), and
+        //   2) we ALWAYS drain every submitted future before returning, even if
+        //      submit() itself throws mid-loop.
+        try {
+            for (auto& fp : files) {
+                futs.push_back(pool.submit([&, fp]() {
+                    try {
+                        auto fr = grepFile(fp, root, re, outputMode, lineNums, ctxB, ctxA);
+                        if (fr.matchCount > 0) {
+                            std::lock_guard<std::mutex> lk(mtx);
+                            totalLines += (int)std::count(fr.content.begin(), fr.content.end(), '\n');
+                            if (headLimit <= 0 || totalLines <= headLimit)
+                                results.push_back(std::move(fr));
+                        }
+                    } catch (...) {
+                        // Swallow: a pooled task must never let an exception escape
+                        // (a single bad/huge file must not abort the whole grep, and
+                        // must never leave siblings dereferencing a half-torn-down
+                        // stack frame). Worst case this file is silently skipped.
+                    }
+                }));
+            }
+        } catch (...) {
+            // submit() failed mid-loop (e.g. allocation under pressure). Fall
+            // through to the drain so already-queued tasks finish before our
+            // captured locals die.
         }
-        for (auto& f : futs) f.get();
+        // Drain ALL futures — swallow per-future errors so one failure can't skip
+        // the rest of the joins. After this loop no worker references our locals.
+        for (auto& f : futs) { try { f.get(); } catch (...) {} }
 
         if (results.empty()) return ToolResult::ok("No matches found for pattern: " + pattern);
         std::sort(results.begin(), results.end(),
@@ -247,7 +315,14 @@ private:
     static std::string execCmd(const std::string& cmd) {
         std::string result;
 #ifdef _WIN32
-        std::unique_ptr<FILE, decltype(&_pclose)> pipe(_popen(cmd.c_str(), "r"), _pclose);
+        // cmd.exe /c (which _popen uses) strips the OUTERMOST pair of quotes from
+        // the command line. When our command starts with a quoted exe path that
+        // contains spaces (e.g. the bundled "C:\Program Files\CloseCrab\tools\
+        // rg.exe"), that stripping would corrupt the path. Wrapping the whole
+        // command in one extra outer quote pair makes cmd.exe strip THAT pair and
+        // leave the inner quoting intact. Harmless for an unquoted "rg" too.
+        std::string wrapped = "\"" + cmd + "\"";
+        std::unique_ptr<FILE, decltype(&_pclose)> pipe(_popen(wrapped.c_str(), "r"), _pclose);
 #else
         std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd.c_str(), "r"), pclose);
 #endif

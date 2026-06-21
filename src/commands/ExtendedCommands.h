@@ -628,33 +628,46 @@ public:
     }
 };
 
-// /effort - set reasoning effort level
+// /effort - set reasoning effort level (Claude Code 2.1.x native effort)
 class EffortCommand : public Command {
 public:
     std::string getName() const override { return "effort"; }
-    std::string getDescription() const override { return "Set reasoning effort (low/medium/high)"; }
+    std::string getDescription() const override { return "Set reasoning effort (low/medium/high/xhigh/max)"; }
 
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
         if (args.empty()) {
             ctx.print("Current effort: " + ctx.appState->thinkingConfig.effort + "\n");
-            ctx.print("Usage: /effort [low|medium|high]\n");
+            ctx.print("Usage: /effort [low|medium|high|xhigh|max]\n");
+            ctx.print("  xhigh = \"ultra\" (Claude Code ultracode runs here); max is Opus/Fable only.\n");
             return CommandResult::ok();
         }
-        if (args == "low" || args == "medium" || args == "high") {
-            ctx.appState->thinkingConfig.effort = args;
-            if (args == "high") {
-                ctx.appState->thinkingConfig.enabled = true;
-                ctx.appState->thinkingConfig.budgetTokens = 20000;
-            } else if (args == "medium") {
-                ctx.appState->thinkingConfig.enabled = true;
-                ctx.appState->thinkingConfig.budgetTokens = 10000;
-            } else {
-                ctx.appState->thinkingConfig.enabled = false;
+        // Normalize input: lower-case + accept "ultra"/"ultracode" as xhigh aliases.
+        std::string level = args;
+        for (auto& c : level) c = (char)std::tolower((unsigned char)c);
+        if (level == "ultra" || level == "ultracode") level = "xhigh";
+
+        if (level == "low" || level == "medium" || level == "high" ||
+            level == "xhigh" || level == "max") {
+            ctx.appState->thinkingConfig.effort = level;
+            // Native effort drives reasoning depth on capable models; the legacy
+            // thinking block is NOT sent when effort is active (they conflict).
+            // Keep the budget mirrored as a sensible fallback for models that
+            // don't support native effort.
+            if (level == "low") {
                 ctx.appState->thinkingConfig.budgetTokens = 5000;
+            } else if (level == "medium") {
+                ctx.appState->thinkingConfig.budgetTokens = 10000;
+            } else if (level == "high") {
+                ctx.appState->thinkingConfig.budgetTokens = 20000;
+            } else { // xhigh / max
+                ctx.appState->thinkingConfig.budgetTokens = 32000;
             }
-            ctx.print("Effort set to: " + args + "\n");
+            ctx.appState->thinkingConfig.enabled = (level != "low");
+            ctx.print("Effort set to: " + level +
+                      (level == "xhigh" ? " (ultra)\n" : "\n"));
         } else {
-            ctx.print("Unknown effort level. Use: low, medium, high\n");
+            ctx.print("Unknown effort level '" + args + "'. "
+                      "Use: low, medium, high, xhigh, max (or ultra).\n");
         }
         return CommandResult::ok();
     }
@@ -1043,7 +1056,7 @@ public:
     std::string getDescription() const override { return "Clear conversation history"; }
 
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
-        ctx.queryEngine->clearMessages();
+        ctx.queryEngine->resetConversation();
         ctx.print("Conversation history cleared.\n");
         return CommandResult::ok();
     }

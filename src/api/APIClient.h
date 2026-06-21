@@ -62,6 +62,14 @@ struct ModelConfig {
     bool thinkingEnabled = false;
     int thinkingBudgetTokens = 10000;
 
+    // Reasoning effort (API-native output_config.effort — Claude Code 2.1.x).
+    // One of: "low" | "medium" | "high" | "xhigh" | "max". Empty = don't send the
+    // field (lets the server pick its model default). This is the NEW mechanism
+    // that supersedes thinkingBudgetTokens on effort-capable models (opus-4-6+,
+    // sonnet-4-6+, opus-4-8). Sent as output_config.effort + the effort beta
+    // header. See RemoteAPIClient::buildRequestBody.
+    std::string effort = "";
+
     // Tool use
     nlohmann::json tools = nlohmann::json::array();
 
