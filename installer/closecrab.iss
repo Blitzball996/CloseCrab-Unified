@@ -34,7 +34,8 @@ Name: "chinesesimplified"; MessagesFile: "Languages\ChineseSimplified.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-Name: "addtopath"; Description: "Add to PATH"; GroupDescription: "System integration:"
+; Checked by default so `closecrab` works in any terminal immediately after install
+Name: "addtopath"; Description: "Add to PATH (recommended — lets you run 'closecrab' from any terminal)"; GroupDescription: "System integration:"; Flags: checkedonce
 Name: "registercontext"; Description: "Add 'Open CloseCrab here' to Explorer context menu"; GroupDescription: "System integration:"
 
 [Files]

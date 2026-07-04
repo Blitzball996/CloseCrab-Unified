@@ -57,6 +57,7 @@ YAML::Node Config::getNode(const std::string& key) const {
 
 bool Config::load(const std::string& filename) {
     try {
+        configPath_ = filename;
         root = YAML::LoadFile(filename);
         spdlog::info("Config loaded from: {}", filename);
 
@@ -114,4 +115,53 @@ double Config::getDouble(const std::string& key, double defaultValue) const {
         return node.as<double>();
     }
     return defaultValue;
+}
+
+// ---------------------------------------------------------------------------
+// Write support
+// ---------------------------------------------------------------------------
+
+void Config::setNode(const std::string& key, const std::string& value) {
+    size_t dot = key.find('.');
+    if (dot == std::string::npos) {
+        root[key] = value;
+        return;
+    }
+    std::string first = key.substr(0, dot);
+    std::string rest  = key.substr(dot + 1);
+
+    size_t dot2 = rest.find('.');
+    if (dot2 == std::string::npos) {
+        root[first][rest] = value;
+        return;
+    }
+    std::string second = rest.substr(0, dot2);
+    std::string third  = rest.substr(dot2 + 1);
+    root[first][second][third] = value;
+}
+
+bool Config::setString(const std::string& key, const std::string& value) {
+    if (configPath_.empty()) {
+        spdlog::warn("Config::setString called before load() — change not persisted");
+        return false;
+    }
+    setNode(key, value);
+    return save();
+}
+
+bool Config::save() {
+    if (configPath_.empty()) return false;
+    try {
+        std::ofstream f(configPath_, std::ios::trunc);
+        if (!f) {
+            spdlog::error("Config::save: cannot open '{}' for writing", configPath_);
+            return false;
+        }
+        f << root;
+        spdlog::info("Config saved to: {}", configPath_);
+        return true;
+    } catch (const std::exception& e) {
+        spdlog::error("Config::save failed: {}", e.what());
+        return false;
+    }
 }

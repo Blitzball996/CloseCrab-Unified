@@ -13,6 +13,12 @@ public:
     bool getBool(const std::string& key, bool defaultValue = false) const;
     double getDouble(const std::string& key, double defaultValue = 0.0) const;
 
+    // Persist a key back to the YAML file loaded by load(). Supports the same
+    // dot-separated key syntax as getString() (up to 3 levels: "api.model").
+    // Returns false if no file was loaded yet or writing fails.
+    bool setString(const std::string& key, const std::string& value);
+    bool save();
+
     int getGpuLayers() const {
         return getInt("gpu.layers", -1);
     }
@@ -32,7 +38,11 @@ public:
 private:
     Config() = default;
     YAML::Node root;
+    std::string configPath_;   // path passed to load(); needed by save()
 
-    // 支持点号分隔的嵌套键
+    // Supports dot-separated nested keys (up to 3 levels deep)
     YAML::Node getNode(const std::string& key) const;
+
+    // Set a value in `root` by dot-separated key (mirrors getNode logic).
+    void setNode(const std::string& key, const std::string& value);
 };

@@ -1,4 +1,4 @@
-#ifdef _WIN32
+﻿#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -217,13 +217,23 @@ static void registerBuiltinCommands(CommandRegistry& reg) {
     ));
 
     reg.registerCommand(std::make_unique<SimpleCommand>(
-        "model", "Show or change current model",
+        "model", "Show or change current model  (/model <name> also saves to config.yaml)",
         [](const std::string& args, CommandContext& ctx) {
             if (args.empty()) {
-                ctx.print("Current model: " + ctx.appState->currentModel + "\n");
+                ctx.print("Model: " + ctx.appState->currentModel + "\n");
+                ctx.print("To change (persists to config.yaml):\n");
+                ctx.print("  /model claude-sonnet-5\n");
+                ctx.print("  /model claude-opus-4-8\n");
+                ctx.print("  /model claude-haiku-4-5-20251001\n");
             } else {
                 ctx.appState->currentModel = args;
-                ctx.print("Model set to: " + args + "\n");
+                // Persist to config.yaml so the change survives restart
+                bool saved = Config::getInstance().setString("api.model", args);
+                if (saved) {
+                    ctx.print("Model set to: " + args + " (saved to config)\n");
+                } else {
+                    ctx.print("Model set to: " + args + " (session only -- config not writable)\n");
+                }
             }
             return CommandResult::ok();
         }
@@ -701,8 +711,14 @@ int main(int argc, char* argv[]) {
     app.add_option("-m,--model", modelPath, "Local model path override");
     app.add_option("--api-key", apiKey, "API key");
     app.add_option("--api-url", apiBaseUrl, "API base URL");
-    app.add_option("--api-model", apiModel, "API model name");
+    app.add_option("--api-model", apiModel, "API model name (per-session override)");
     app.add_option("--provider", provider, "Provider: local, anthropic, openai");
+    // --set-model: persist a new model name into config.yaml and exit.
+    // Simpler than editing the YAML by hand, works on all platforms.
+    std::string setModelPersist;
+    app.add_option("--set-model", setModelPersist,
+                   "Persist a new API model name to config.yaml and exit\n"
+                   "  e.g. closecrab --set-model claude-sonnet-5");
     app.add_flag("-v,--verbose", verbose, "Verbose logging");
     // License / activation (序列号在线激活, see docs/序列号格式规范.md)
     std::string activateKey;
@@ -812,6 +828,18 @@ int main(int argc, char* argv[]) {
     if (configPath.empty()) configPath = resolveConfigPath();
     auto& config = Config::getInstance();
     config.load(configPath);
+
+    // --set-model: persist a new model name to config.yaml and exit.
+    // e.g.  closecrab --set-model claude-sonnet-5
+    if (!setModelPersist.empty()) {
+        if (config.setString("api.model", setModelPersist)) {
+            std::cout << "Model saved to " << configPath << ": " << setModelPersist << "\n";
+            return 0;
+        } else {
+            std::cerr << "Failed to write config: " << configPath << "\n";
+            return 1;
+        }
+    }
 
     // The AI's project root = where the user launched (NOT the app data dir we
     // chdir'd into above). All file tools resolve paths against this via ctx.cwd.
