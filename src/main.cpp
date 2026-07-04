@@ -131,6 +131,7 @@
 
 #include <curl/curl.h>
 #include "license/LicenseGate.h"
+#include "update/Updater.h"
 #include "ui/ConsoleInputGuard.h"
 #include "ui/PosixTty.h"
 
@@ -261,23 +262,23 @@ static void registerBuiltinCommands(CommandRegistry& reg) {
         [](const std::string& args, CommandContext& ctx) {
             auto& cfg = Config::getInstance();
             if (args.empty()) {
-                // List profiles by inspecting the YAML node directly
                 ctx.print("Defined profiles (switch with /profile <name>):\n");
-                // Config doesn't expose the raw YAML node, so we probe common known keys.
-                // Users can also just open config.yaml — profiles section is at the top.
-                const std::vector<std::string> probeNames = {"yikoulian", "official", "openai",
-                    "azure", "local", "default", "groq", "deepseek", "gemini"};
-                bool found = false;
-                for (const auto& name : probeNames) {
-                    std::string url = cfg.getString("profiles." + name + ".url");
-                    if (!url.empty()) {
+                // Use getMapKeys to enumerate ALL profiles the user defined in config.yaml
+                auto profiles = cfg.getMapKeys("profiles");
+                if (profiles.empty()) {
+                    ctx.print("  (none found -- add a profiles: block to config.yaml)\n");
+                    ctx.print("  Example:\n");
+                    ctx.print("    profiles:\n");
+                    ctx.print("      myproxy:\n");
+                    ctx.print("        url: \"https://my-proxy.example.com/\"\n");
+                    ctx.print("        api_key: \"sk-...\"\n");
+                    ctx.print("        model: \"claude-opus-4-8\"\n");
+                } else {
+                    for (const auto& name : profiles) {
+                        std::string url   = cfg.getString("profiles." + name + ".url");
                         std::string model = cfg.getString("profiles." + name + ".model");
                         ctx.print("  " + name + "  ->  " + url + "  [" + model + "]\n");
-                        found = true;
                     }
-                }
-                if (!found) {
-                    ctx.print("  (none found — add profiles to config.yaml)\n");
                 }
                 ctx.print("\nCurrent model: " + ctx.appState->currentModel + "\n");
                 return CommandResult::ok();
@@ -290,7 +291,7 @@ static void registerBuiltinCommands(CommandRegistry& reg) {
 
             if (profileUrl.empty()) {
                 ctx.print("Profile '" + args + "' not found in config.yaml.\n");
-                ctx.print("Add it under profiles: in config.yaml, then retry.\n");
+                ctx.print("Run /profile to see available profiles.\n");
                 return CommandResult::fail("profile not found");
             }
 
@@ -298,7 +299,7 @@ static void registerBuiltinCommands(CommandRegistry& reg) {
             auto* remote = dynamic_cast<closecrab::RemoteAPIClient*>(ctx.apiClient);
             if (remote) {
                 remote->setBaseUrl(profileUrl);
-                if (!profileKey.empty()) remote->setApiKey(profileKey);
+                if (!profileKey.empty())   remote->setApiKey(profileKey);
                 if (!profileModel.empty()) remote->setModel(profileModel);
             }
 
@@ -311,9 +312,35 @@ static void registerBuiltinCommands(CommandRegistry& reg) {
             if (!profileModel.empty()) cfg.setString("api.model",   profileModel);
 
             ctx.print("Switched to profile: " + args + "\n");
-            ctx.print("  URL:   " + profileUrl   + "\n");
+            ctx.print("  URL:   " + profileUrl + "\n");
             ctx.print("  Model: " + (profileModel.empty() ? "(unchanged)" : profileModel) + "\n");
             ctx.print("(saved to config.yaml)\n");
+            return CommandResult::ok();
+        }
+    ));
+    // /update — same logic as --update but inline in the REPL (doesn't exit)
+    reg.registerCommand(std::make_unique<SimpleCommand>(
+        "update", "Check for a newer release and self-update",
+        [](const std::string&, CommandContext& ctx) {
+            ctx.print("Checking for updates ...\n");
+            auto info = closecrab::checkForUpdate();
+            if (!info.errorMsg.empty()) {
+                ctx.print("Update check failed: " + info.errorMsg + "\n");
+                return CommandResult::fail(info.errorMsg);
+            }
+            ctx.print("Current: v" + info.currentVersion + "\n");
+            ctx.print("Latest:  v" + info.latestVersion  + "\n");
+            if (!info.hasUpdate) {
+                ctx.print("Already up to date.\n");
+                return CommandResult::ok();
+            }
+            ctx.print("Downloading " + info.assetName + " ...\n");
+            if (closecrab::installUpdate(info)) {
+                ctx.print("Updated to v" + info.latestVersion +
+                          ". Restart CloseCrab to apply.\n");
+            } else {
+                ctx.print("Update failed: " + info.errorMsg + "\n");
+            }
             return CommandResult::ok();
         }
     ));
@@ -822,6 +849,9 @@ int main(int argc, char* argv[]) {
     app.add_flag("--device-id", showDeviceId, "Print this machine's Device ID (for offline activation) and exit");
     app.add_flag("--deactivate", deactivate, "Remove local activation and exit");
     app.add_flag("--license-status", licenseStatus, "Show license / trial status and exit");
+    // Self-update: check GitHub Releases and replace the binary if a newer version is available.
+    bool doUpdate = false;
+    app.add_flag("--update", doUpdate, "Check for a newer release and self-update if available");
     // Session continuity: by default we reuse the most recent session's ID so the
     // .jsonl transcript keeps growing (history stays in one file across runs),
     // but we do NOT preload past turns into context (that would bloat the very
@@ -868,6 +898,34 @@ int main(int argc, char* argv[]) {
     if (licenseStatus) {
         closecrab::LicenseGate::printStatus();
         return 0;
+    }
+    if (doUpdate) {
+        std::cout << "Checking for updates ...\n";
+        auto info = closecrab::checkForUpdate();
+        if (!info.errorMsg.empty()) {
+            std::cerr << "Update check failed: " << info.errorMsg << "\n";
+            return 1;
+        }
+        std::cout << "Current: v" << info.currentVersion << "\n";
+        std::cout << "Latest:  v" << info.latestVersion << "\n";
+        if (!info.hasUpdate) {
+            std::cout << "Already up to date.\n";
+            return 0;
+        }
+        std::cout << "Downloading " << info.assetName << " ...\n";
+        if (closecrab::installUpdate(info)) {
+#ifdef _WIN32
+            std::cout << "Update staged. Restart CloseCrab to apply v"
+                      << info.latestVersion << ".\n";
+#else
+            std::cout << "Updated to v" << info.latestVersion
+                      << ". Restart CloseCrab.\n";
+#endif
+            return 0;
+        } else {
+            std::cerr << "Update failed: " << info.errorMsg << "\n";
+            return 1;
+        }
     }
     // ---- License gate: block / start trial countdown for unactivated copies ----
     if (!closecrab::LicenseGate::enforceAtStartup()) {

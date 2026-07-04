@@ -379,6 +379,7 @@ add_executable(closecrab-unified
     src/bridge/BridgeClient.cpp
     src/config/Config.cpp
     src/config/SettingsManager.cpp
+    src/update/Updater.cpp
     src/memory/MemorySystem.cpp
     src/llm/LLMEngine.cpp
     src/network/WebSocketServer.cpp

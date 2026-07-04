@@ -66,6 +66,34 @@ jobs:
       - name: Build
         run: cmake --build build --config ${{env.BUILD_TYPE}} --target closecrab-unified
 
+  build-linux-arm64:
+    runs-on: ubuntu-24.04-arm   # native arm64 runner — no cross-compile friction
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build \
+            libcurl4-openssl-dev \
+            zlib1g-dev \
+            libssl-dev
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
+            -DUSE_CUDA=OFF \
+            -DUSE_LOCAL_LLM=OFF \
+            -DUSE_FAISS=OFF \
+            -DUSE_ONNX=OFF
+
+      - name: Build
+        run: cmake --build build --config ${{env.BUILD_TYPE}} --target closecrab-unified
+
   build-macos:
     name: build-macos (universal)
     runs-on: macos-14   # Apple Silicon runner cross-builds a universal (arm64 + x86_64) binary

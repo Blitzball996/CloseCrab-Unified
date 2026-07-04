@@ -1,22 +1,35 @@
 #!/usr/bin/env bash
 # =============================================================================
-# CloseCrab — one-line Linux installer
+# CloseCrab — one-line Linux installer (x86_64 and arm64)
 #
 #   curl -fsSL https://raw.githubusercontent.com/Blitzball996/CloseCrab-Unified/main/scripts/install-linux.sh | bash
 #
-# Downloads the latest x86_64 build, installs it as the `closecrab` command,
-# and adds it to PATH. No sudo required (installs to ~/.local/bin by default).
+# Detects CPU architecture, downloads the matching release binary, installs it
+# as the `closecrab` command, and adds it to PATH. No sudo required by default
+# (installs to ~/.local/bin; falls back to /usr/local/bin with sudo if needed).
 # =============================================================================
 set -euo pipefail
 
 REPO="Blitzball996/CloseCrab-Unified"
-ASSET="CloseCrab-Linux-x86_64.tar.gz"
-URL="https://github.com/${REPO}/releases/latest/download/${ASSET}"
 BIN_DIR="${HOME}/.local/bin"
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
 
+# Detect architecture
+ARCH="$(uname -m)"
+case "${ARCH}" in
+  x86_64)          ASSET="CloseCrab-Linux-x86_64.tar.gz" ;;
+  aarch64|arm64)   ASSET="CloseCrab-Linux-arm64.tar.gz" ;;
+  *)
+    echo "ERROR: unsupported architecture '${ARCH}'. Only x86_64 and arm64 are supported." >&2
+    exit 1
+    ;;
+esac
+
+URL="https://github.com/${REPO}/releases/latest/download/${ASSET}"
+echo "==> Architecture: ${ARCH}"
 echo "==> Downloading ${ASSET} ..."
+
 if command -v curl >/dev/null 2>&1; then
   curl -fL --progress-bar -o "${TMP}/${ASSET}" "${URL}"
 elif command -v wget >/dev/null 2>&1; then
@@ -53,7 +66,6 @@ case ":${PATH}:" in
       fish) SHELL_RC="${HOME}/.config/fish/config.fish" ;;
       *)    SHELL_RC="${HOME}/.profile" ;;
     esac
-    # Also write ~/.profile as a universal fallback.
     for rc in "${SHELL_RC}" "${HOME}/.profile"; do
       if [ -f "${rc}" ] || [ "${rc}" = "${SHELL_RC}" ]; then
         if ! grep -qs "${BIN_DIR}" "${rc}" 2>/dev/null; then
@@ -71,6 +83,7 @@ echo " CloseCrab installed!  ->  ${BIN_DIR}/closecrab"
 echo ""
 echo " Run it with:           closecrab"
 echo " Switch model:          closecrab --set-model claude-sonnet-5"
+echo " Check for updates:     closecrab --update"
 echo " (config auto-creates at ~/.crab/config.yaml on first run)"
 echo ""
 echo " If 'closecrab: command not found', open a new terminal or:"
