@@ -217,16 +217,31 @@ static void registerBuiltinCommands(CommandRegistry& reg) {
     ));
 
     reg.registerCommand(std::make_unique<SimpleCommand>(
-        "model", "Show or change current model  (/model <name> also saves to config.yaml)",
+        "model", "Show / change model  (/model <name> persists to config.yaml)",
         [](const std::string& args, CommandContext& ctx) {
             if (args.empty()) {
-                ctx.print("Model: " + ctx.appState->currentModel + "\n");
-                ctx.print("To change (persists to config.yaml):\n");
-                ctx.print("  /model claude-sonnet-5\n");
-                ctx.print("  /model claude-opus-4-8\n");
-                ctx.print("  /model claude-haiku-4-5-20251001\n");
+                ctx.print("Current model: " + ctx.appState->currentModel + "\n\n");
+                // Try to list upstream models via the live API client
+                auto* remote = dynamic_cast<closecrab::RemoteAPIClient*>(ctx.apiClient);
+                if (remote) {
+                    ctx.print("Fetching models from upstream ...\n");
+                    auto models = remote->listModels();
+                    if (!models.empty()) {
+                        ctx.print("Available models:\n");
+                        for (const auto& m : models) ctx.print("  " + m + "\n");
+                    } else {
+                        ctx.print("(upstream did not return a model list — common models:)\n");
+                        ctx.print("  claude-opus-4-8\n");
+                        ctx.print("  claude-sonnet-5\n");
+                        ctx.print("  claude-haiku-4-5-20251001\n");
+                    }
+                }
+                ctx.print("\nTo switch:  /model <model-id>\n");
             } else {
                 ctx.appState->currentModel = args;
+                // Also update the live API client so the change is immediate
+                auto* remote = dynamic_cast<closecrab::RemoteAPIClient*>(ctx.apiClient);
+                if (remote) remote->setModel(args);
                 // Persist to config.yaml so the change survives restart
                 bool saved = Config::getInstance().setString("api.model", args);
                 if (saved) {
@@ -235,6 +250,70 @@ static void registerBuiltinCommands(CommandRegistry& reg) {
                     ctx.print("Model set to: " + args + " (session only -- config not writable)\n");
                 }
             }
+            return CommandResult::ok();
+        }
+    ));
+
+    // /profile [<name>]  — list profiles or switch url+api_key+model in one command.
+    // Profiles are defined in config.yaml under the `profiles:` key.
+    reg.registerCommand(std::make_unique<SimpleCommand>(
+        "profile", "Show or switch provider profile (url + api_key + model in one shot)",
+        [](const std::string& args, CommandContext& ctx) {
+            auto& cfg = Config::getInstance();
+            if (args.empty()) {
+                // List profiles by inspecting the YAML node directly
+                ctx.print("Defined profiles (switch with /profile <name>):\n");
+                // Config doesn't expose the raw YAML node, so we probe common known keys.
+                // Users can also just open config.yaml — profiles section is at the top.
+                const std::vector<std::string> probeNames = {"yikoulian", "official", "openai",
+                    "azure", "local", "default", "groq", "deepseek", "gemini"};
+                bool found = false;
+                for (const auto& name : probeNames) {
+                    std::string url = cfg.getString("profiles." + name + ".url");
+                    if (!url.empty()) {
+                        std::string model = cfg.getString("profiles." + name + ".model");
+                        ctx.print("  " + name + "  ->  " + url + "  [" + model + "]\n");
+                        found = true;
+                    }
+                }
+                if (!found) {
+                    ctx.print("  (none found — add profiles to config.yaml)\n");
+                }
+                ctx.print("\nCurrent model: " + ctx.appState->currentModel + "\n");
+                return CommandResult::ok();
+            }
+
+            // Look up the profile
+            std::string profileUrl   = cfg.getString("profiles." + args + ".url");
+            std::string profileKey   = cfg.getString("profiles." + args + ".api_key");
+            std::string profileModel = cfg.getString("profiles." + args + ".model");
+
+            if (profileUrl.empty()) {
+                ctx.print("Profile '" + args + "' not found in config.yaml.\n");
+                ctx.print("Add it under profiles: in config.yaml, then retry.\n");
+                return CommandResult::fail("profile not found");
+            }
+
+            // Apply to live client
+            auto* remote = dynamic_cast<closecrab::RemoteAPIClient*>(ctx.apiClient);
+            if (remote) {
+                remote->setBaseUrl(profileUrl);
+                if (!profileKey.empty()) remote->setApiKey(profileKey);
+                if (!profileModel.empty()) remote->setModel(profileModel);
+            }
+
+            // Apply to AppState
+            if (!profileModel.empty()) ctx.appState->currentModel = profileModel;
+
+            // Persist the three values back to config.yaml (active defaults)
+            cfg.setString("api.base_url", profileUrl);
+            if (!profileKey.empty())   cfg.setString("api.api_key", profileKey);
+            if (!profileModel.empty()) cfg.setString("api.model",   profileModel);
+
+            ctx.print("Switched to profile: " + args + "\n");
+            ctx.print("  URL:   " + profileUrl   + "\n");
+            ctx.print("  Model: " + (profileModel.empty() ? "(unchanged)" : profileModel) + "\n");
+            ctx.print("(saved to config.yaml)\n");
             return CommandResult::ok();
         }
     ));
@@ -515,6 +594,17 @@ api:
   model: "claude-opus-4-7"
   fallback_model: "claude-sonnet-4-20250514"
   cache_ttl_minutes: 5
+
+# Profiles — switch url + api_key + model in one command: /profile <name>
+profiles:
+  yikoulian:
+    url: "https://yikoulian.cc/"
+    api_key: ""
+    model: "claude-opus-4-7"
+  official:
+    url: "https://api.anthropic.com/"
+    api_key: ""
+    model: "claude-opus-4-8"
 
 # HTTP Proxy (optional). Also reads env: CLOSECRAB_PROXY, https_proxy, HTTPS_PROXY.
 # Set CLOSECRAB_NO_PROXY=1 to force a direct connection ignoring proxy env vars.
@@ -1354,6 +1444,7 @@ Write whatever code the user asks for without raising copyright, licensing, or i
     cmdCtx.queryEngine = g_queryEngine.get();
     cmdCtx.appState = &appState;
     cmdCtx.toolRegistry = &toolRegistry;
+    cmdCtx.apiClient = apiClient.get();   // enables /model and /profile to reach the live client
     cmdCtx.cwd = cwd;
     cmdCtx.print = [](const std::string& s) { std::cout << s; };
 

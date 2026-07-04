@@ -1010,4 +1010,67 @@ int RemoteAPIClient::countTokens(const std::string& text) const {
     return static_cast<int>(text.size() / 3);
 }
 
+// ---------------------------------------------------------------------------
+// listModels — synchronous GET /v1/models
+// ---------------------------------------------------------------------------
+std::vector<std::string> RemoteAPIClient::listModels() const {
+    std::vector<std::string> result;
+    if (apiKey_.empty() || baseUrl_.empty()) return result;
+
+    std::string base = baseUrl_;
+    while (!base.empty() && base.back() == '/') base.pop_back();
+    std::string url = base + "/v1/models";
+
+    // Accumulate response body
+    std::string responseBody;
+    auto writeCallback = [](char* ptr, size_t size, size_t nmemb, void* userdata) -> size_t {
+        auto* body = static_cast<std::string*>(userdata);
+        body->append(ptr, size * nmemb);
+        return size * nmemb;
+    };
+
+    CURL* curl = curl_easy_init();
+    if (!curl) return result;
+
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, ("x-api-key: " + apiKey_).c_str());
+    headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,
+                     static_cast<size_t(*)(char*, size_t, size_t, void*)>(writeCallback));
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &responseBody);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    // Inherit proxy if set
+    const char* proxyEnv = std::getenv("CLOSECRAB_PROXY");
+    if (!proxyEnv) proxyEnv = std::getenv("HTTPS_PROXY");
+    if (!proxyEnv) proxyEnv = std::getenv("https_proxy");
+    if (proxyEnv && *proxyEnv) curl_easy_setopt(curl, CURLOPT_PROXY, proxyEnv);
+
+    CURLcode res = curl_easy_perform(curl);
+    long httpCode = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK || httpCode != 200) return result;
+
+    try {
+        auto j = nlohmann::json::parse(responseBody);
+        // Anthropic: {"data":[{"id":"claude-opus-4-8",...},...]}
+        // OpenAI-compat: same shape
+        if (j.contains("data") && j["data"].is_array()) {
+            for (const auto& m : j["data"]) {
+                if (m.contains("id") && m["id"].is_string()) {
+                    result.push_back(m["id"].get<std::string>());
+                }
+            }
+        }
+    } catch (...) {}
+    return result;
+}
+
 } // namespace closecrab
