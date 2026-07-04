@@ -1,4 +1,4 @@
-#include "RemoteAPIClient.h"
+﻿#include "RemoteAPIClient.h"
 #include "APIError.h"
 #include "../config/Config.h"
 #include "../core/PredictiveEngine.h"
@@ -611,7 +611,8 @@ static void performCurlSSE(
         "prompt-caching-scope-2026-01-05,extended-cache-ttl-2025-04-11,"
         "context-management-2025-06-27,structured-outputs-2025-12-15,"
         "advanced-tool-use-2025-11-20,tool-search-tool-2025-10-19,"
-        "redact-thinking-2026-02-12,mid-conversation-system-2026-04-07,"
+        "redact-thinking-2026-02-12,thinking-token-count-2026-05-13,"
+        "mid-conversation-system-2026-04-07,"
         "mcp-servers-2025-12-04,web-search-2025-03-05,effort-2025-11-24";
     if (want1M) betaHeader += ",context-1m-2025-08-07";
     headers = curl_slist_append(headers, betaHeader.c_str());
