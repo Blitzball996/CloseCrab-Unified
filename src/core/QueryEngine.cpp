@@ -910,6 +910,16 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
             } else if (e.type == APIErrorType::AUTH_ERROR) {
                 // Auth error — can't recover
                 if (callbacks.onError) callbacks.onError(e.what());
+            } else if (e.type == APIErrorType::INVALID_REQUEST) {
+                // 400 INVALID_REQUEST: the request body was structurally rejected
+                // by the API. ensureToolResultPairing (RemoteAPIClient) runs before
+                // every send and strips orphaned/missing tool_result pairs, so this
+                // usually means a proxy/model that rejected a beta field.
+                // Log the full error so the specific cause is visible.
+                spdlog::error("API 400 INVALID_REQUEST: {}", e.what());
+                if (callbacks.onError) callbacks.onError(
+                    std::string("API rejected the request (400): ") + e.what() +
+                    "\nTry /compact to reduce context, or /clear to start fresh.");
             } else {
                 // Network error — tell user
                 if (callbacks.onError) callbacks.onError(
