@@ -134,6 +134,49 @@ jobs:
           name: CloseCrab-Linux-x86_64
           path: CloseCrab-Linux-x86_64.tar.gz
 
+  build-linux-arm64:
+    runs-on: ubuntu-24.04-arm   # native arm64 runner — no cross-compile friction
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build \
+            libcurl4-openssl-dev \
+            zlib1g-dev \
+            libssl-dev
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
+            -DUSE_CUDA=OFF \
+            -DUSE_LOCAL_LLM=OFF \
+            -DUSE_FAISS=OFF \
+            -DUSE_ONNX=OFF
+
+      - name: Build
+        run: cmake --build build --config ${{env.BUILD_TYPE}} --target closecrab-unified
+
+      - name: Package
+        run: |
+          mkdir -p package/CloseCrab
+          cp build/closecrab package/CloseCrab/
+          cp config/config.yaml.example package/CloseCrab/config.yaml 2>/dev/null || true
+          cp scripts/uninstall.sh package/CloseCrab/ 2>/dev/null || true
+          chmod +x package/CloseCrab/uninstall.sh 2>/dev/null || true
+          tar -czf CloseCrab-Linux-arm64.tar.gz -C package CloseCrab
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CloseCrab-Linux-arm64
+          path: CloseCrab-Linux-arm64.tar.gz
+
   build-macos:
     name: build-macos (universal)
     runs-on: macos-14   # Apple Silicon runner cross-builds a universal (arm64 + x86_64) binary
@@ -222,7 +265,7 @@ jobs:
 
   create-release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-windows, build-linux, build-macos]
+    needs: [build-windows, build-linux, build-linux-arm64, build-macos]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -236,6 +279,7 @@ jobs:
             CloseCrab-Windows-x64/CloseCrab-Windows-x64.zip
             CloseCrab-Windows-Setup/CloseCrab-Setup-*.exe
             CloseCrab-Linux-x86_64/CloseCrab-Linux-x86_64.tar.gz
+            CloseCrab-Linux-arm64/CloseCrab-Linux-arm64.tar.gz
             CloseCrab-macOS-universal/CloseCrab-macOS-universal.pkg
             CloseCrab-macOS-universal/CloseCrab-macOS-universal.tar.gz
           draft: false

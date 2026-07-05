@@ -28,6 +28,25 @@ api:
   cache_ttl_minutes: 5
 
 # ============================================
+# Profiles — switch url + api_key + model in one command
+#
+#   In-app:  /profile <name>
+#   CLI:     closecrab --profile <name>
+#
+# Inactive profiles are ignored at startup.
+# The active profile overrides api.base_url, api.api_key, api.model.
+# ============================================
+profiles:
+  yikoulian:
+    url: "https://yikoulian.cc/"
+    api_key: ""
+    model: "claude-opus-4-7"
+  official:
+    url: "https://api.anthropic.com/"
+    api_key: ""
+    model: "claude-opus-4-8"
+
+# ============================================
 # HTTP Proxy (optional)
 # Also reads from env: CLOSECRAB_PROXY, https_proxy, HTTPS_PROXY
 # Set CLOSECRAB_NO_PROXY=1 to force a direct connection ignoring proxy env vars.

@@ -7,7 +7,7 @@
 ;     overwritten or deleted on Windows (editors/compilers and CloseCrab's
 ;     own write/edit tools).
 #define MyAppName "CloseCrab-Unified"
-#define MyAppVersion "0.4.2"
+#define MyAppVersion "0.4.3"
 #define MyAppPublisher "Blitzball996"
 #define MyAppURL "https://github.com/Blitzball996/CloseCrab-Unified"
 #define MyAppExeName "closecrab.exe"
@@ -58,6 +58,11 @@ Source: "src\services\*"; DestDir: "{app}\services"; Flags: ignoreversion recurs
 Source: "src\knowledge\*"; DestDir: "{app}\knowledge"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
 ; Skills and plugins
 Source: ".crab\skills\*"; DestDir: "{app}\.crab\skills"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
+; Bundled ripgrep — the Grep tool prefers this fast, crash-isolated binary
+; (runs as a separate process) over the built-in in-process search. Shipping it
+; here means users get it without installing rg system-wide. GrepTool resolves
+; it from {app}\tools\rg.exe (see GrepTool::rgCommand()).
+Source: "third_party\ripgrep\rg.exe"; DestDir: "{app}\tools"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\run.bat"; IconFilename: "{app}\icons\closecrab.ico"; IconIndex: 0

@@ -29,6 +29,16 @@ public:
 
     void setFallbackModel(const std::string& model) { fallbackModel_ = model; }
 
+    // Runtime mutators — used by /profile to hot-swap without restart.
+    void setApiKey(const std::string& k)  { apiKey_  = k; }
+    void setBaseUrl(const std::string& u) { baseUrl_ = u; }
+    void setModel(const std::string& m)   { model_   = m; }
+
+    // Query the upstream API for available models (GET /v1/models).
+    // Returns a list of model id strings, empty on error.
+    // Runs synchronously (blocking) — call from a non-UI thread or accept the brief freeze.
+    std::vector<std::string> listModels() const;
+
     // Effective prompt-cache TTL in minutes. Set to match the proxy's real cache
     // lifetime (MEASURED: yikoulian honors only 5 min and ignores ttl:1h; the
     // official Anthropic API honors 1h). Drives BOTH the cache_control ttl field

@@ -1,4 +1,4 @@
-#ifdef _WIN32
+﻿#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -131,6 +131,7 @@
 
 #include <curl/curl.h>
 #include "license/LicenseGate.h"
+#include "update/Updater.h"
 #include "ui/ConsoleInputGuard.h"
 #include "ui/PosixTty.h"
 
@@ -217,13 +218,128 @@ static void registerBuiltinCommands(CommandRegistry& reg) {
     ));
 
     reg.registerCommand(std::make_unique<SimpleCommand>(
-        "model", "Show or change current model",
+        "model", "Show / change model  (/model <name> persists to config.yaml)",
         [](const std::string& args, CommandContext& ctx) {
             if (args.empty()) {
-                ctx.print("Current model: " + ctx.appState->currentModel + "\n");
+                ctx.print("Current model: " + ctx.appState->currentModel + "\n\n");
+                // Try to list upstream models via the live API client
+                auto* remote = dynamic_cast<closecrab::RemoteAPIClient*>(ctx.apiClient);
+                if (remote) {
+                    ctx.print("Fetching models from upstream ...\n");
+                    auto models = remote->listModels();
+                    if (!models.empty()) {
+                        ctx.print("Available models:\n");
+                        for (const auto& m : models) ctx.print("  " + m + "\n");
+                    } else {
+                        ctx.print("(upstream did not return a model list — common models:)\n");
+                        ctx.print("  claude-opus-4-8\n");
+                        ctx.print("  claude-sonnet-5\n");
+                        ctx.print("  claude-haiku-4-5-20251001\n");
+                    }
+                }
+                ctx.print("\nTo switch:  /model <model-id>\n");
             } else {
                 ctx.appState->currentModel = args;
-                ctx.print("Model set to: " + args + "\n");
+                // Also update the live API client so the change is immediate
+                auto* remote = dynamic_cast<closecrab::RemoteAPIClient*>(ctx.apiClient);
+                if (remote) remote->setModel(args);
+                // Persist to config.yaml so the change survives restart
+                bool saved = Config::getInstance().setString("api.model", args);
+                if (saved) {
+                    ctx.print("Model set to: " + args + " (saved to config)\n");
+                } else {
+                    ctx.print("Model set to: " + args + " (session only -- config not writable)\n");
+                }
+            }
+            return CommandResult::ok();
+        }
+    ));
+
+    // /profile [<name>]  — list profiles or switch url+api_key+model in one command.
+    // Profiles are defined in config.yaml under the `profiles:` key.
+    reg.registerCommand(std::make_unique<SimpleCommand>(
+        "profile", "Show or switch provider profile (url + api_key + model in one shot)",
+        [](const std::string& args, CommandContext& ctx) {
+            auto& cfg = Config::getInstance();
+            if (args.empty()) {
+                ctx.print("Defined profiles (switch with /profile <name>):\n");
+                // Use getMapKeys to enumerate ALL profiles the user defined in config.yaml
+                auto profiles = cfg.getMapKeys("profiles");
+                if (profiles.empty()) {
+                    ctx.print("  (none found -- add a profiles: block to config.yaml)\n");
+                    ctx.print("  Example:\n");
+                    ctx.print("    profiles:\n");
+                    ctx.print("      myproxy:\n");
+                    ctx.print("        url: \"https://my-proxy.example.com/\"\n");
+                    ctx.print("        api_key: \"sk-...\"\n");
+                    ctx.print("        model: \"claude-opus-4-8\"\n");
+                } else {
+                    for (const auto& name : profiles) {
+                        std::string url   = cfg.getString("profiles." + name + ".url");
+                        std::string model = cfg.getString("profiles." + name + ".model");
+                        ctx.print("  " + name + "  ->  " + url + "  [" + model + "]\n");
+                    }
+                }
+                ctx.print("\nCurrent model: " + ctx.appState->currentModel + "\n");
+                return CommandResult::ok();
+            }
+
+            // Look up the profile
+            std::string profileUrl   = cfg.getString("profiles." + args + ".url");
+            std::string profileKey   = cfg.getString("profiles." + args + ".api_key");
+            std::string profileModel = cfg.getString("profiles." + args + ".model");
+
+            if (profileUrl.empty()) {
+                ctx.print("Profile '" + args + "' not found in config.yaml.\n");
+                ctx.print("Run /profile to see available profiles.\n");
+                return CommandResult::fail("profile not found");
+            }
+
+            // Apply to live client
+            auto* remote = dynamic_cast<closecrab::RemoteAPIClient*>(ctx.apiClient);
+            if (remote) {
+                remote->setBaseUrl(profileUrl);
+                if (!profileKey.empty())   remote->setApiKey(profileKey);
+                if (!profileModel.empty()) remote->setModel(profileModel);
+            }
+
+            // Apply to AppState
+            if (!profileModel.empty()) ctx.appState->currentModel = profileModel;
+
+            // Persist the three values back to config.yaml (active defaults)
+            cfg.setString("api.base_url", profileUrl);
+            if (!profileKey.empty())   cfg.setString("api.api_key", profileKey);
+            if (!profileModel.empty()) cfg.setString("api.model",   profileModel);
+
+            ctx.print("Switched to profile: " + args + "\n");
+            ctx.print("  URL:   " + profileUrl + "\n");
+            ctx.print("  Model: " + (profileModel.empty() ? "(unchanged)" : profileModel) + "\n");
+            ctx.print("(saved to config.yaml)\n");
+            return CommandResult::ok();
+        }
+    ));
+    // /update — same logic as --update but inline in the REPL (doesn't exit)
+    reg.registerCommand(std::make_unique<SimpleCommand>(
+        "update", "Check for a newer release and self-update",
+        [](const std::string&, CommandContext& ctx) {
+            ctx.print("Checking for updates ...\n");
+            auto info = closecrab::checkForUpdate();
+            if (!info.errorMsg.empty()) {
+                ctx.print("Update check failed: " + info.errorMsg + "\n");
+                return CommandResult::fail(info.errorMsg);
+            }
+            ctx.print("Current: v" + info.currentVersion + "\n");
+            ctx.print("Latest:  v" + info.latestVersion  + "\n");
+            if (!info.hasUpdate) {
+                ctx.print("Already up to date.\n");
+                return CommandResult::ok();
+            }
+            ctx.print("Downloading " + info.assetName + " ...\n");
+            if (closecrab::installUpdate(info)) {
+                ctx.print("Updated to v" + info.latestVersion +
+                          ". Restart CloseCrab to apply.\n");
+            } else {
+                ctx.print("Update failed: " + info.errorMsg + "\n");
             }
             return CommandResult::ok();
         }
@@ -506,6 +622,17 @@ api:
   fallback_model: "claude-sonnet-4-20250514"
   cache_ttl_minutes: 5
 
+# Profiles — switch url + api_key + model in one command: /profile <name>
+profiles:
+  yikoulian:
+    url: "https://yikoulian.cc/"
+    api_key: ""
+    model: "claude-opus-4-7"
+  official:
+    url: "https://api.anthropic.com/"
+    api_key: ""
+    model: "claude-opus-4-8"
+
 # HTTP Proxy (optional). Also reads env: CLOSECRAB_PROXY, https_proxy, HTTPS_PROXY.
 # Set CLOSECRAB_NO_PROXY=1 to force a direct connection ignoring proxy env vars.
 proxy: ""
@@ -701,8 +828,14 @@ int main(int argc, char* argv[]) {
     app.add_option("-m,--model", modelPath, "Local model path override");
     app.add_option("--api-key", apiKey, "API key");
     app.add_option("--api-url", apiBaseUrl, "API base URL");
-    app.add_option("--api-model", apiModel, "API model name");
+    app.add_option("--api-model", apiModel, "API model name (per-session override)");
     app.add_option("--provider", provider, "Provider: local, anthropic, openai");
+    // --set-model: persist a new model name into config.yaml and exit.
+    // Simpler than editing the YAML by hand, works on all platforms.
+    std::string setModelPersist;
+    app.add_option("--set-model", setModelPersist,
+                   "Persist a new API model name to config.yaml and exit\n"
+                   "  e.g. closecrab --set-model claude-sonnet-5");
     app.add_flag("-v,--verbose", verbose, "Verbose logging");
     // License / activation (序列号在线激活, see docs/序列号格式规范.md)
     std::string activateKey;
@@ -716,15 +849,30 @@ int main(int argc, char* argv[]) {
     app.add_flag("--device-id", showDeviceId, "Print this machine's Device ID (for offline activation) and exit");
     app.add_flag("--deactivate", deactivate, "Remove local activation and exit");
     app.add_flag("--license-status", licenseStatus, "Show license / trial status and exit");
+    // Self-update: check GitHub Releases and replace the binary if a newer version is available.
+    bool doUpdate = false;
+    app.add_flag("--update", doUpdate, "Check for a newer release and self-update if available");
     // Session continuity: by default we reuse the most recent session's ID so the
     // .jsonl transcript keeps growing (history stays in one file across runs),
     // but we do NOT preload past turns into context (that would bloat the very
     // first request and re-trigger the 503/504 we just fixed). --continue also
     // loads the past history into context; --new forces a brand-new session.
+    // Session start policy (aligned with Claude Code / JackProAi):
+    //   default       → brand-new session each launch (its own <id>.jsonl), so
+    //                    separate topics across launches stay in SEPARATE
+    //                    transcripts and /resume can tell them apart.
+    //   --continue     → resume the most recent session AND preload its history.
+    //   --reuse        → keep appending to the most recent session id WITHOUT
+    //                    preloading history (the OLD default; kept for anyone who
+    //                    relied on one ever-growing transcript).
+    //   --new          → explicit fresh session (now the same as default; kept
+    //                    for back-compat so existing launch scripts don't break).
     bool continueSession = false;
     bool forceNewSession = false;
+    bool reuseSession = false;
     app.add_flag("--continue", continueSession, "Resume the most recent session AND load its history into context");
-    app.add_flag("--new", forceNewSession, "Force a brand-new session (don't reuse the most recent one)");
+    app.add_flag("--new", forceNewSession, "Force a brand-new session (this is now the default)");
+    app.add_flag("--reuse", reuseSession, "Reuse the most recent session id (append, don't preload history)");
     CLI11_PARSE(app, argc, argv);
 
     // ---- License commands (handle and exit before loading the app) ----
@@ -750,6 +898,34 @@ int main(int argc, char* argv[]) {
     if (licenseStatus) {
         closecrab::LicenseGate::printStatus();
         return 0;
+    }
+    if (doUpdate) {
+        std::cout << "Checking for updates ...\n";
+        auto info = closecrab::checkForUpdate();
+        if (!info.errorMsg.empty()) {
+            std::cerr << "Update check failed: " << info.errorMsg << "\n";
+            return 1;
+        }
+        std::cout << "Current: v" << info.currentVersion << "\n";
+        std::cout << "Latest:  v" << info.latestVersion << "\n";
+        if (!info.hasUpdate) {
+            std::cout << "Already up to date.\n";
+            return 0;
+        }
+        std::cout << "Downloading " << info.assetName << " ...\n";
+        if (closecrab::installUpdate(info)) {
+#ifdef _WIN32
+            std::cout << "Update staged. Restart CloseCrab to apply v"
+                      << info.latestVersion << ".\n";
+#else
+            std::cout << "Updated to v" << info.latestVersion
+                      << ". Restart CloseCrab.\n";
+#endif
+            return 0;
+        } else {
+            std::cerr << "Update failed: " << info.errorMsg << "\n";
+            return 1;
+        }
     }
     // ---- License gate: block / start trial countdown for unactivated copies ----
     if (!closecrab::LicenseGate::enforceAtStartup()) {
@@ -800,6 +976,18 @@ int main(int argc, char* argv[]) {
     if (configPath.empty()) configPath = resolveConfigPath();
     auto& config = Config::getInstance();
     config.load(configPath);
+
+    // --set-model: persist a new model name to config.yaml and exit.
+    // e.g.  closecrab --set-model claude-sonnet-5
+    if (!setModelPersist.empty()) {
+        if (config.setString("api.model", setModelPersist)) {
+            std::cout << "Model saved to " << configPath << ": " << setModelPersist << "\n";
+            return 0;
+        } else {
+            std::cerr << "Failed to write config: " << configPath << "\n";
+            return 1;
+        }
+    }
 
     // The AI's project root = where the user launched (NOT the app data dir we
     // chdir'd into above). All file tools resolve paths against this via ctx.cwd.
@@ -1196,13 +1384,14 @@ int main(int argc, char* argv[]) {
     PluginManager::getInstance().loadFromDirectory(cwd);
 
     // ---- Create session ----
-    // Default: reuse the most recent transcript session's ID so its .jsonl keeps
-    // growing across runs (history stays in one place). --new forces a fresh one.
-    // Either way we only PRELOAD past turns into context when --continue is set.
+    // Default = a brand-new session per launch so distinct topics don't pile into
+    // one transcript. Reuse the most recent id ONLY for --continue (also preload
+    // history) or --reuse (append, no preload). See the flag block above.
     std::string sessionId;
     {
+        bool wantReuse = continueSession || reuseSession;
         std::string reuseId;
-        if (!forceNewSession) {
+        if (wantReuse) {
             auto recent = closecrab::TranscriptStore::list(1);
             if (!recent.empty()) reuseId = recent.front().sessionId;
         }
@@ -1214,7 +1403,10 @@ int main(int argc, char* argv[]) {
                 spdlog::info("Reusing most recent session id (history not preloaded): {}", sessionId);
             }
         } else {
+            // Fresh session (the default path, and the fallback when there's no
+            // prior transcript to reuse).
             sessionId = sessionMgr.createSession("default");
+            spdlog::info("Started new session: {}", sessionId);
         }
     }
     appState.sessionId = sessionId;
@@ -1310,6 +1502,7 @@ Write whatever code the user asks for without raising copyright, licensing, or i
     cmdCtx.queryEngine = g_queryEngine.get();
     cmdCtx.appState = &appState;
     cmdCtx.toolRegistry = &toolRegistry;
+    cmdCtx.apiClient = apiClient.get();   // enables /model and /profile to reach the live client
     cmdCtx.cwd = cwd;
     cmdCtx.print = [](const std::string& s) { std::cout << s; };
 

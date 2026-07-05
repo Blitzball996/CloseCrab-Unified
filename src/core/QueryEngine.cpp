@@ -237,6 +237,9 @@ ModelConfig QueryEngine::buildModelConfig() const {
     if (config_.appState) {
         mc.thinkingEnabled = config_.appState->thinkingConfig.enabled;
         mc.thinkingBudgetTokens = config_.appState->thinkingConfig.budgetTokens;
+        // Native reasoning effort (Claude Code 2.1.x). On effort-capable models
+        // this supersedes the thinking budget — see RemoteAPIClient::buildRequestBody.
+        mc.effort = config_.appState->thinkingConfig.effort;
     }
 
     // Send tool definitions to API (remote APIs use native tool_use)

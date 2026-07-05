@@ -30,7 +30,11 @@ struct ModelUsage {
 struct ThinkingConfig {
     bool enabled = false;
     int budgetTokens = 10000;
-    std::string effort = "medium";  // "low", "medium", "high"
+    // Reasoning effort level (Claude Code 2.1.x native effort). One of:
+    // "low" | "medium" | "high" | "xhigh" | "max". Default xhigh = "ultra"
+    // (Claude Code's ultracode runs at xhigh). Sent to the API as
+    // output_config.effort on effort-capable models (opus-4-6+, opus-4-8...).
+    std::string effort = "xhigh";
 };
 
 // ============================================================

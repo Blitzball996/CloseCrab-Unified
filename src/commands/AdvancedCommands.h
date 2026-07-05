@@ -140,6 +140,8 @@ public:
         out << "  Permissions: " << PermissionEngine::getInstance().getModeName() << "\n";
         out << "  Plan mode: " << (ctx.appState->planMode ? "ON" : "OFF") << "\n";
         out << "  Thinking: " << (ctx.appState->thinkingConfig.enabled ? "ON" : "OFF") << "\n";
+        out << "  Effort: " << ctx.appState->thinkingConfig.effort
+            << (ctx.appState->thinkingConfig.effort == "xhigh" ? " (ultra)" : "") << "\n";
 #ifdef CLOSECRAB_HAS_ONNX
         out << "  RAG: " << (RAGManager::getInstance().isEnabled() ? "enabled" : "disabled")
             << " (" << RAGManager::getInstance().getDocumentCount() << " docs)\n";

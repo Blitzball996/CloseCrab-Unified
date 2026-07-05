@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <chrono>
+#include <atomic>
 
 // Version injected by CMake (target_compile_definitions). Fallback for non-CMake builds.
 #ifndef CLOSECRAB_VERSION
@@ -39,11 +40,22 @@ public:
 class NewSessionCommand : public Command {
 public:
     std::string getName() const override { return "new"; }
-    std::string getDescription() const override { return "Start a new conversation session"; }
+    std::string getDescription() const override { return "Start a new conversation session (separate transcript)"; }
 
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
-        ctx.queryEngine->clearMessages();
-        ctx.print("New session started.\n");
+        if (!ctx.queryEngine) return CommandResult::fail("No active session");
+        // Generate a fresh session id so this conversation gets its OWN
+        // <id>.jsonl transcript instead of being appended onto the previous
+        // session's file (the "/resume shows everything tangled together" bug).
+        // Monotonic per-process counter guards against same-second collisions.
+        static std::atomic<uint64_t> s_seq{0};
+        auto secs = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        std::string newId = "default_" + std::to_string(secs) + "_" +
+                            std::to_string(s_seq.fetch_add(1));
+        ctx.queryEngine->startNewSession(newId);
+        if (ctx.appState) ctx.appState->sessionId = newId;
+        ctx.print("New session started [" + newId + "].\n");
         return CommandResult::ok();
     }
 };
@@ -153,6 +165,12 @@ private:
             // flattened everything to text and dropped tool calls).
             size_t n = msgs.size();
             ctx.queryEngine->setMessages(std::move(msgs));
+            // Switch the ACTIVE session id to the restored one so subsequent turns
+            // append to THIS transcript — not whatever session was active before
+            // /resume (otherwise resuming an old topic silently writes new replies
+            // into the current default_* file, re-tangling history).
+            ctx.queryEngine->setSessionId(sessionId);
+            if (ctx.appState) ctx.appState->sessionId = sessionId;
             ctx.print("Restored " + std::to_string(n) +
                       " messages from session [" + sessionId + "]\n");
             renderRestoredHistory(ctx);
@@ -405,7 +423,7 @@ class ThinkingCommand : public Command {
 public:
     std::string getName() const override { return "thinking"; }
     std::string getDescription() const override { return "Toggle extended thinking mode"; }
-    std::vector<std::string> getAliases() const override { return {"think", "effort"}; }
+    std::vector<std::string> getAliases() const override { return {"think"}; }
 
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
         if (args.empty()) {

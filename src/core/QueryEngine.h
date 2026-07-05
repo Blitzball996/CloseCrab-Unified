@@ -77,6 +77,25 @@ public:
     const std::vector<Message>& getMessages() const { return messages_; }
     void clearMessages() { messages_.clear(); }
 
+    // Start a genuinely fresh conversation: clear in-memory history AND reset the
+    // transcript-flush cursor so the next flush starts from index 0. Does NOT
+    // change sessionId — callers that want a separate transcript file must also
+    // call setSessionId() with a new id (see startNewSession()).
+    void resetConversation() {
+        messages_.clear();
+        lastPersistedIndex_ = 0;
+    }
+
+    // Begin a brand-new session: switch to a fresh sessionId so its transcript
+    // lives in its OWN <sessionId>.jsonl (no more appending every new topic onto
+    // one ever-growing default_* file → fixes /resume "all history tangled
+    // together"). Mirrors JackProAi regenerateSessionId() + clearConversation().
+    void startNewSession(const std::string& newSessionId) {
+        sessionId_ = newSessionId;
+        messages_.clear();
+        lastPersistedIndex_ = 0;
+    }
+
     // Restore full Message objects directly (resume), preserving content blocks
     // (tool_use / tool_result / thinking) instead of round-tripping through the
     // text-only deserializeMessages() path. Marks them already-persisted so the

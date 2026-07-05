@@ -9,7 +9,7 @@ if(POLICY CMP0167)
 endif()
 set(CMAKE_POLICY_DEFAULT_CMP0148 OLD)
 
-project(CloseCrab-Unified VERSION 0.4.2 LANGUAGES C CXX)
+project(CloseCrab-Unified VERSION 0.4.3 LANGUAGES C CXX)
 
 # ============================================
 # Build options
@@ -379,6 +379,7 @@ add_executable(closecrab-unified
     src/bridge/BridgeClient.cpp
     src/config/Config.cpp
     src/config/SettingsManager.cpp
+    src/update/Updater.cpp
     src/memory/MemorySystem.cpp
     src/llm/LLMEngine.cpp
     src/network/WebSocketServer.cpp

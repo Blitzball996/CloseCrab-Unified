@@ -1,4 +1,4 @@
-#include "RemoteAPIClient.h"
+﻿#include "RemoteAPIClient.h"
 #include "APIError.h"
 #include "../config/Config.h"
 #include "../core/PredictiveEngine.h"
@@ -38,6 +38,54 @@ static std::string stripOneMSuffix(const std::string& model) {
     }
     return model;
 }
+
+// Reasoning-effort capability, mirroring Claude Code utils/effort.ts
+// (modelSupportsEffort). Effort is the API-native output_config.effort param,
+// supported by Claude 4.6+ and the newer 4.8 family; legacy haiku/older
+// sonnet/opus variants reject it. We allowlist the known-good families and
+// default unknown strings to true (the proxy ignores an unused output_config
+// on models that don't read it, and our 400-retry path strips it if rejected).
+static bool modelSupportsEffort(const std::string& model) {
+    std::string m = stripOneMSuffix(model);
+    for (auto& c : m) c = (char)std::tolower((unsigned char)c);
+    if (m.find("opus-4-6") != std::string::npos) return true;
+    if (m.find("sonnet-4-6") != std::string::npos) return true;
+    if (m.find("opus-4-7") != std::string::npos) return true;
+    if (m.find("opus-4-8") != std::string::npos) return true;
+    if (m.find("sonnet-4-8") != std::string::npos) return true;
+    if (m.find("fable-5") != std::string::npos) return true;
+    if (m.find("fable5") != std::string::npos) return true;
+    // Legacy / unsupported families explicitly OFF.
+    if (m.find("haiku") != std::string::npos) return false;
+    if (m.find("sonnet") != std::string::npos) return false;
+    if (m.find("opus") != std::string::npos) return false;
+    // Unknown model string: assume capable (matches Claude Code's 1P default).
+    return true;
+}
+
+// 'max' is the highest effort and is opus-4-6/4-8 only on public models; other
+// models return an error, so we downgrade 'max' -> 'xhigh' there (Claude Code
+// downgrades to 'high'; we keep 'xhigh' since 4.8 supports it and it's closer in
+// intent to the user's "ultra" ask).
+static std::string normalizeEffortForModel(const std::string& effort,
+                                           const std::string& model) {
+    if (effort.empty()) return effort;
+    static const char* kValid[] = {"low", "medium", "high", "xhigh", "max"};
+    bool ok = false;
+    for (auto* v : kValid) if (effort == v) { ok = true; break; }
+    if (!ok) return "high";  // unknown level -> safe middle-high
+    if (effort == "max") {
+        std::string m = stripOneMSuffix(model);
+        for (auto& c : m) c = (char)std::tolower((unsigned char)c);
+        bool maxOk = (m.find("opus-4-6") != std::string::npos) ||
+                     (m.find("opus-4-8") != std::string::npos) ||
+                     (m.find("fable-5") != std::string::npos) ||
+                     (m.find("fable5") != std::string::npos);
+        if (!maxOk) return "xhigh";
+    }
+    return effort;
+}
+
 
 RemoteAPIClient::RemoteAPIClient(const std::string& apiKey,
                                    const std::string& baseUrl,
@@ -287,8 +335,25 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
         }
     }
 
-    // Thinking
-    if (config.thinkingEnabled) {
+    // Reasoning effort (Claude Code 2.1.x native output_config.effort).
+    // On effort-capable models this SUPERSEDES thinking.budget_tokens: we send
+    // output_config.effort and the `effort-2025-11-24` beta header (added in
+    // performCurlSSE when body carries output_config.effort). The model then
+    // self-allocates reasoning depth — "ultra" == xhigh. We DON'T also send a
+    // thinking block in that case (the two mechanisms conflict).
+    std::string effortToSend;
+    {
+        std::string activeModel = modelOverride.empty() ? model_ : modelOverride;
+        if (!config.effort.empty() && modelSupportsEffort(activeModel)) {
+            effortToSend = normalizeEffortForModel(config.effort, activeModel);
+        }
+    }
+
+    if (!effortToSend.empty()) {
+        body["output_config"]["effort"] = effortToSend;
+    } else if (config.thinkingEnabled) {
+        // Fallback path: model doesn't support native effort (or none set) —
+        // use the legacy extended-thinking budget mechanism.
         body["thinking"]["type"] = "enabled";
         body["thinking"]["budget_tokens"] = config.thinkingBudgetTokens;
     }
@@ -546,8 +611,9 @@ static void performCurlSSE(
         "prompt-caching-scope-2026-01-05,extended-cache-ttl-2025-04-11,"
         "context-management-2025-06-27,structured-outputs-2025-12-15,"
         "advanced-tool-use-2025-11-20,tool-search-tool-2025-10-19,"
-        "redact-thinking-2026-02-12,mid-conversation-system-2026-04-07,"
-        "mcp-servers-2025-12-04,web-search-2025-03-05";
+        "redact-thinking-2026-02-12,thinking-token-count-2026-05-13,"
+        "mid-conversation-system-2026-04-07,"
+        "mcp-servers-2025-12-04,web-search-2025-03-05,effort-2025-11-24";
     if (want1M) betaHeader += ",context-1m-2025-08-07";
     headers = curl_slist_append(headers, betaHeader.c_str());
     // Identity headers matching Claude Code SDK
@@ -705,6 +771,11 @@ void RemoteAPIClient::streamChat(
     // field removed before sending.
     bool stripContextMgmt = false;
 
+    // Same defensive fallback for output_config.effort (native effort). If a
+    // proxy doesn't understand the `effort-2025-11-24` beta / output_config, it
+    // may 400. Strip output_config and retry ONCE rather than failing the turn.
+    bool stripEffort = false;
+
     // Truncate old, large tool_result / text blocks in the request body so a
     // retry sends a smaller payload. Returns true if anything was trimmed.
     auto applyRetryCompaction = [](nlohmann::json& reqBody, int level) -> bool {
@@ -762,6 +833,11 @@ void RemoteAPIClient::streamChat(
         // likely rejects that field — drop it on this and all further attempts.
         if (stripContextMgmt && body.contains("context_management")) {
             body.erase("context_management");
+        }
+        // If a prior attempt got a 400 with output_config present, the proxy
+        // likely rejects native effort — drop it on this and all further attempts.
+        if (stripEffort && body.contains("output_config")) {
+            body.erase("output_config");
         }
         // Re-apply retry-time compaction (see compactLevel above). On the first
         // attempt level==0 so this is a no-op and the full context is sent.
@@ -827,6 +903,16 @@ void RemoteAPIClient::streamChat(
                              "stripping field and retrying without server-side tool clearing");
                 stripContextMgmt = true;
                 // Don't count this as a server-error retry; just loop again.
+                continue;
+            }
+            // Same handling for native effort (output_config). A proxy that
+            // doesn't grok the effort beta 400s; drop output_config and retry once
+            // so the turn still completes (just without effort-controlled depth).
+            if (e.type == APIErrorType::INVALID_REQUEST && !stripEffort &&
+                body.contains("output_config") && attempt < MAX_RETRIES) {
+                spdlog::warn("400 with output_config (effort) present — proxy likely rejects it; "
+                             "stripping effort and retrying without native reasoning effort");
+                stripEffort = true;
                 continue;
             }
 
@@ -922,6 +1008,69 @@ void RemoteAPIClient::streamChat(
 
 int RemoteAPIClient::countTokens(const std::string& text) const {
     return static_cast<int>(text.size() / 3);
+}
+
+// ---------------------------------------------------------------------------
+// listModels — synchronous GET /v1/models
+// ---------------------------------------------------------------------------
+std::vector<std::string> RemoteAPIClient::listModels() const {
+    std::vector<std::string> result;
+    if (apiKey_.empty() || baseUrl_.empty()) return result;
+
+    std::string base = baseUrl_;
+    while (!base.empty() && base.back() == '/') base.pop_back();
+    std::string url = base + "/v1/models";
+
+    // Accumulate response body
+    std::string responseBody;
+    auto writeCallback = [](char* ptr, size_t size, size_t nmemb, void* userdata) -> size_t {
+        auto* body = static_cast<std::string*>(userdata);
+        body->append(ptr, size * nmemb);
+        return size * nmemb;
+    };
+
+    CURL* curl = curl_easy_init();
+    if (!curl) return result;
+
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, ("x-api-key: " + apiKey_).c_str());
+    headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,
+                     static_cast<size_t(*)(char*, size_t, size_t, void*)>(writeCallback));
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &responseBody);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    // Inherit proxy if set
+    const char* proxyEnv = std::getenv("CLOSECRAB_PROXY");
+    if (!proxyEnv) proxyEnv = std::getenv("HTTPS_PROXY");
+    if (!proxyEnv) proxyEnv = std::getenv("https_proxy");
+    if (proxyEnv && *proxyEnv) curl_easy_setopt(curl, CURLOPT_PROXY, proxyEnv);
+
+    CURLcode res = curl_easy_perform(curl);
+    long httpCode = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK || httpCode != 200) return result;
+
+    try {
+        auto j = nlohmann::json::parse(responseBody);
+        // Anthropic: {"data":[{"id":"claude-opus-4-8",...},...]}
+        // OpenAI-compat: same shape
+        if (j.contains("data") && j["data"].is_array()) {
+            for (const auto& m : j["data"]) {
+                if (m.contains("id") && m["id"].is_string()) {
+                    result.push_back(m["id"].get<std::string>());
+                }
+            }
+        }
+    } catch (...) {}
+    return result;
 }
 
 } // namespace closecrab
