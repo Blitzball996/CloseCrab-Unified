@@ -560,6 +560,11 @@ void RemoteAPIClient::handleSSEEvent(
         }
     } catch (const std::exception& e) {
         spdlog::warn("Failed to parse SSE event: {}", e.what());
+    } catch (...) {
+        // Catch non-std exceptions (Win32 SEH rethrown as C++, etc.) so they
+        // don't escape back through the libcurl C callback stack (which would
+        // hit the unhandled-exception filter and crash with 0xE06D7363).
+        spdlog::warn("Failed to parse SSE event: unknown exception type");
     }
 }
 
@@ -734,6 +739,164 @@ static void performCurlSSE(
 
 namespace closecrab { // reopen
 
+// ---------------------------------------------------------------------------
+// ensureToolResultPairing
+// Mirrors JackProAi src/utils/messages.ts ensureToolResultPairing().
+// Runs on the wire JSON messages array before every API send.
+// Fixes the class of 400 INVALID_REQUEST errors caused by:
+//   1. tool_use blocks with no matching tool_result in the next user message
+//      (happens when compaction deletes an intervening turn, or on session resume)
+//   2. tool_result blocks in a user message with no preceding assistant tool_use
+//      (orphans from previous session / interrupted stream)
+//   3. Duplicate tool_use IDs across messages (repeat-turn corruption)
+//   4. Duplicate tool_result IDs in a single user message (doubled orphan runs)
+// ---------------------------------------------------------------------------
+static bool ensureToolResultPairing(nlohmann::json& messages) {
+    if (!messages.is_array() || messages.empty()) return false;
+
+    static const std::string kSynthetic = "[Tool result missing due to internal error]";
+    static const std::string kInterrupted = "[Tool use interrupted]";
+
+    bool repaired = false;
+    std::set<std::string> allSeenToolUseIds; // cross-message dup detection
+    nlohmann::json result = nlohmann::json::array();
+
+    for (size_t i = 0; i < messages.size(); i++) {
+        auto& msg = messages[i];
+        std::string role = msg.value("role", "");
+
+        // ---- User message ----
+        if (role != "assistant") {
+            // Strip orphaned tool_result blocks at the start of the history
+            // (i.e. user message whose preceding entry is NOT an assistant).
+            if (role == "user"
+                && msg.contains("content") && msg["content"].is_array()
+                && (result.empty() || result.back().value("role", "") != "assistant"))
+            {
+                nlohmann::json stripped = nlohmann::json::array();
+                for (auto& b : msg["content"]) {
+                    if (b.value("type", "") == "tool_result") { repaired = true; continue; }
+                    stripped.push_back(b);
+                }
+                if (repaired && stripped.empty())
+                    stripped.push_back({{"type","text"},{"text","[Orphaned tool result removed]"}});
+                if (stripped.size() != msg["content"].size())
+                    msg["content"] = stripped;
+            }
+            result.push_back(msg);
+            continue;
+        }
+
+        // ---- Assistant message ----
+        if (!msg.contains("content") || !msg["content"].is_array()) {
+            result.push_back(msg); continue;
+        }
+
+        // Dedupe tool_use blocks (cross-message; same id in two different messages)
+        nlohmann::json finalContent = nlohmann::json::array();
+        std::set<std::string> localIds;
+        for (auto& block : msg["content"]) {
+            if (block.value("type", "") == "tool_use") {
+                std::string id = block.value("id", "");
+                if (!id.empty() && allSeenToolUseIds.count(id)) { repaired = true; continue; }
+                if (!id.empty()) { allSeenToolUseIds.insert(id); localIds.insert(id); }
+            }
+            finalContent.push_back(block);
+        }
+        if (finalContent.empty()) {
+            finalContent.push_back({{"type","text"},{"text",kInterrupted}});
+            repaired = true;
+        }
+        if (finalContent.size() != msg["content"].size()) {
+            msg["content"] = finalContent; repaired = true;
+        }
+        result.push_back(msg);
+
+        if (localIds.empty()) continue; // no tool_use in this assistant turn
+
+        // ---- Check next user message for matching tool_results ----
+        std::set<std::string> existingResultIds;
+        bool hasDupResults = false;
+        bool nextIsUser = (i+1 < messages.size() && messages[i+1].value("role","") == "user");
+
+        if (nextIsUser && messages[i+1].contains("content") && messages[i+1]["content"].is_array()) {
+            for (auto& b : messages[i+1]["content"]) {
+                if (b.value("type","") == "tool_result") {
+                    std::string trId = b.value("tool_use_id","");
+                    if (!trId.empty()) {
+                        if (existingResultIds.count(trId)) hasDupResults = true;
+                        existingResultIds.insert(trId);
+                    }
+                }
+            }
+        }
+
+        // Missing: tool_use without tool_result. Orphaned: tool_result without tool_use.
+        std::vector<std::string> missing, orphaned;
+        for (const auto& id : localIds)
+            if (!existingResultIds.count(id)) missing.push_back(id);
+        for (const auto& id : existingResultIds)
+            if (!localIds.count(id)) orphaned.push_back(id);
+
+        if (missing.empty() && orphaned.empty() && !hasDupResults) continue;
+
+        repaired = true;
+
+        // Build synthetic tool_result blocks for missing IDs
+        nlohmann::json synths = nlohmann::json::array();
+        for (const auto& id : missing)
+            synths.push_back({{"type","tool_result"},{"tool_use_id",id},
+                              {"content",kSynthetic},{"is_error",true}});
+
+        if (nextIsUser) {
+            auto& nextMsg = messages[i+1];
+            nlohmann::json content = (nextMsg.contains("content") && nextMsg["content"].is_array())
+                ? nextMsg["content"] : nlohmann::json::array();
+
+            // Strip orphaned and duplicate tool_results
+            if (!orphaned.empty() || hasDupResults) {
+                std::set<std::string> orphanSet(orphaned.begin(), orphaned.end());
+                std::set<std::string> seenTr;
+                nlohmann::json filtered = nlohmann::json::array();
+                for (auto& b : content) {
+                    if (b.value("type","") == "tool_result") {
+                        std::string trId = b.value("tool_use_id","");
+                        if (orphanSet.count(trId) || seenTr.count(trId)) continue;
+                        seenTr.insert(trId);
+                    }
+                    filtered.push_back(b);
+                }
+                content = filtered;
+            }
+
+            // Prepend synthetic blocks
+            nlohmann::json patched = nlohmann::json::array();
+            for (auto& b : synths)   patched.push_back(b);
+            for (auto& b : content)  patched.push_back(b);
+            if (patched.empty())
+                patched.push_back({{"type","text"},{"text","[Conversation resume placeholder]"}});
+
+            nextMsg["content"] = patched;
+            i++; // consume the (now patched) next message
+            result.push_back(nextMsg);
+        } else if (!synths.empty()) {
+            // No user message follows — insert a synthetic one to maintain pairing
+            nlohmann::json synUser;
+            synUser["role"] = "user";
+            synUser["content"] = synths;
+            result.push_back(synUser);
+        }
+    }
+
+    if (repaired) {
+        spdlog::warn("ensureToolResultPairing: repaired tool_use/tool_result mismatch "
+                     "({} -> {} messages). Check logs for root cause.",
+                     messages.size(), result.size());
+        messages = result;
+    }
+    return repaired;
+}
+
 void RemoteAPIClient::streamChat(
     const std::vector<Message>& messages,
     const std::string& systemPrompt,
@@ -829,6 +992,12 @@ void RemoteAPIClient::streamChat(
 
     for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         auto body = buildRequestBody(messages, systemPrompt, config, activeModel);
+        // Repair tool_use/tool_result pairing on the wire copy before sending.
+        // Mirrors JackProAi's ensureToolResultPairing (called at claude.ts:1301).
+        // Prevents the class of 400 INVALID_REQUEST errors caused by compaction
+        // dropping a turn that left a stranded tool_use without a tool_result.
+        if (body.contains("messages"))
+            ensureToolResultPairing(body["messages"]);
         // If a prior attempt got a 400 with context_management present, the proxy
         // likely rejects that field — drop it on this and all further attempts.
         if (stripContextMgmt && body.contains("context_management")) {
