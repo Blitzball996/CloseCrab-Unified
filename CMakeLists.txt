@@ -9,7 +9,7 @@ if(POLICY CMP0167)
 endif()
 set(CMAKE_POLICY_DEFAULT_CMP0148 OLD)
 
-project(CloseCrab-Unified VERSION 0.4.4 LANGUAGES C CXX)
+project(CloseCrab-Unified VERSION 0.4.5 LANGUAGES C CXX)
 
 # ============================================
 # Build options
@@ -393,6 +393,11 @@ add_executable(closecrab-unified
     src/license/tweetnacl.c
     src/license/tweetnacl_glue.c
 )
+
+# Add Windows icon resource
+if(WIN32)
+    target_sources(closecrab-unified PRIVATE src/closecrab.rc)
+endif()
 
 if(USE_ONNX)
     target_sources(closecrab-unified PRIVATE
