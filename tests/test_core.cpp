@@ -197,6 +197,81 @@ TEST(PermissionGlob, MultipleWildcardsAndQuestionMark) {
     pe.removeDenyRule("Read", "file?.txt");
 }
 
+// ============================================================
+// MmapCache tests — pin keeps mapping valid across invalidate
+// (regression for ACCESS_VIOLATION in memchr on reader threads)
+// ============================================================
+#include "../src/core/MmapCache.h"
+#include <fstream>
+#include <thread>
+#include <atomic>
+
+TEST(MmapCache, PinSurvivesInvalidate) {
+    namespace fs = std::filesystem;
+    auto path = (fs::temp_directory_path() / "mmap_pin_test.txt").string();
+    {
+        std::ofstream f(path, std::ios::trunc);
+        for (int i = 0; i < 1000; ++i) f << "line " << i << "\n";
+    }
+
+    auto& cache = MmapCache::getInstance();
+    auto pin = cache.acquire(path);
+    ASSERT_NE(pin, nullptr);
+    ASSERT_NE(pin->data, nullptr);
+    ASSERT_GT(pin->size, 0u);
+
+    // Invalidate while the pin is held — the view must stay readable.
+    cache.invalidate(path);
+    volatile char sum = 0;
+    for (size_t i = 0; i < pin->size; i += 4096) sum += pin->data[i];
+    sum += pin->data[pin->size - 1];   // touch last byte
+    (void)sum;
+
+    pin.reset();               // last ref → real unmap happens here
+    fs::remove(path);
+}
+
+TEST(MmapCache, ConcurrentAcquireInvalidate) {
+    namespace fs = std::filesystem;
+    auto path = (fs::temp_directory_path() / "mmap_race_test.txt").string();
+    {
+        std::ofstream f(path, std::ios::trunc);
+        for (int i = 0; i < 5000; ++i) f << "the quick brown fox " << i << "\n";
+    }
+
+    auto& cache = MmapCache::getInstance();
+    std::atomic<bool> stop{false};
+
+    // Writer thread hammers invalidate() — pre-fix this unmapped views under
+    // concurrent readers and crashed in memchr.
+    std::thread invalidator([&] {
+        while (!stop.load()) cache.invalidate(path);
+    });
+
+    for (int iter = 0; iter < 200; ++iter) {
+        auto pin = cache.acquire(path);
+        ASSERT_NE(pin, nullptr);
+        if (pin->size > 0) {
+            const char* p = pin->data;
+            const char* end = p + pin->size;
+            int lines = 0;
+            while (p < end) {
+                const char* nl = static_cast<const char*>(
+                    std::memchr(p, '\n', static_cast<size_t>(end - p)));
+                if (!nl) break;
+                ++lines;
+                p = nl + 1;
+            }
+            EXPECT_EQ(lines, 5000);
+        }
+    }
+
+    stop = true;
+    invalidator.join();
+    cache.invalidate(path);
+    fs::remove(path);
+}
+
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();

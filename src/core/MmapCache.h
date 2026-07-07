@@ -3,6 +3,7 @@
 #include <string>
 #include <unordered_map>
 #include <list>
+#include <memory>
 #include <mutex>
 #include <filesystem>
 #include <cstring>
@@ -24,8 +25,14 @@ namespace closecrab {
 
 /// Memory-mapped file cache with LRU eviction.
 /// Singleton. Thread-safe. Caches up to 50 files / 100MB total.
-/// On cache hit with unchanged mtime, returns a string_view into the mapped region
-/// without any copy. Callers that need a std::string can construct one from the view.
+///
+/// SAFETY: acquire() returns a shared_ptr "pin". The underlying view is
+/// guaranteed valid for as long as the caller holds the pin — invalidate(),
+/// LRU eviction and mtime-change replacement only drop the CACHE's reference;
+/// the actual UnmapViewOfFile/munmap runs when the last pin is released.
+/// (Previously get()/map() handed out raw pointers that another thread's
+/// invalidate()/evict could unmap mid-scan → ACCESS_VIOLATION in memchr/
+/// memmove on reader threads.)
 class MmapCache {
 public:
     static constexpr size_t MAX_FILES = 50;
@@ -48,86 +55,62 @@ public:
 #endif
     };
 
-    /// Try to get a cached mapping. Returns true on hit (data/size populated).
-    /// If the file's mtime changed since caching, the old mapping is evicted and
-    /// this returns false so the caller can re-request via `map()`.
-    bool get(const std::string& path, const char*& outData, size_t& outSize) {
+    /// A pin keeps the mapping alive while the caller reads from it.
+    using Pin = std::shared_ptr<const MappedFile>;
+
+    /// Get a pinned mapping for `path` — cache hit (mtime unchanged) or fresh map.
+    /// Returns nullptr if the file can't be opened/mapped (caller should fall
+    /// back to ifstream). For an empty file, returns a pin with data==nullptr
+    /// and size==0.
+    Pin acquire(const std::string& path) {
         std::lock_guard<std::mutex> lock(mutex_);
+
         auto it = lookup_.find(path);
-        if (it == lookup_.end()) return false;
-
-        // Validate mtime
-        std::error_code ec;
-        auto currentMtime = std::filesystem::last_write_time(path, ec);
-        if (ec || currentMtime != it->second->entry.mtime) {
-            unmapAndRemove(it->second);
-            return false;
+        if (it != lookup_.end()) {
+            std::error_code ec;
+            auto currentMtime = std::filesystem::last_write_time(path, ec);
+            if (!ec && currentMtime == it->second->entry->mtime) {
+                lru_.splice(lru_.begin(), lru_, it->second); // promote
+                return it->second->entry;
+            }
+            removeNode(it->second); // stale — drop cache ref (unmap deferred to pins)
         }
 
-        // Promote to front (most recently used)
-        lru_.splice(lru_.begin(), lru_, it->second);
-        outData = it->second->entry.data;
-        outSize = it->second->entry.size;
-        return true;
-    }
+        // Fresh map. Deleter unmaps when the LAST reference (cache or pin) dies.
+        std::shared_ptr<MappedFile> mf(new MappedFile{},
+                                       [](MappedFile* p) { doUnmap(*p); delete p; });
+        if (!doMap(path, *mf)) return nullptr;
 
-    /// Map a file and cache it. Returns true on success.
-    bool map(const std::string& path, const char*& outData, size_t& outSize) {
-        std::lock_guard<std::mutex> lock(mutex_);
-
-        // If already cached (race with another thread), just return it
-        auto existing = lookup_.find(path);
-        if (existing != lookup_.end()) {
-            lru_.splice(lru_.begin(), lru_, existing->second);
-            outData = existing->second->entry.data;
-            outSize = existing->second->entry.size;
-            return true;
-        }
-
-        MappedFile mf{};
-        if (!doMap(path, mf)) return false;
-
-        // Evict until we're within limits
-        while ((lru_.size() >= MAX_FILES || totalBytes_ + mf.size > MAX_BYTES) && !lru_.empty()) {
+        // Evict until we're within limits (unmap of evicted entries is deferred
+        // if some reader still pins them).
+        while ((lru_.size() >= MAX_FILES || totalBytes_ + mf->size > MAX_BYTES) && !lru_.empty()) {
             evictLRU();
         }
 
-        // If single file exceeds max, don't cache it — just return the mapping
-        // without storing. Caller gets the data but it won't persist.
-        if (mf.size > MAX_BYTES) {
-            outData = mf.data;
-            outSize = mf.size;
-            // We can't cache it, but we still return it mapped.
-            // Store in a separate "uncached" set so we can unmap later...
-            // Actually, for simplicity, copy to string and unmap immediately.
-            doUnmap(mf);
-            return false;
-        }
+        // Single file exceeding the cap: hand it out uncached; it unmaps as
+        // soon as the caller drops the pin.
+        if (mf->size > MAX_BYTES) return mf;
 
         lru_.emplace_front(LRUNode{path, mf});
         lookup_[path] = lru_.begin();
-        totalBytes_ += mf.size;
-
-        outData = mf.data;
-        outSize = mf.size;
-        return true;
+        totalBytes_ += mf->size;
+        return mf;
     }
 
-    /// Invalidate a specific path (e.g. after a write tool modifies it)
+    /// Invalidate a specific path (e.g. after a write tool modifies it, or to
+    /// release the Windows file lock a mapping holds). Only drops the cache's
+    /// reference — outstanding pins stay valid until released.
     void invalidate(const std::string& path) {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = lookup_.find(path);
         if (it != lookup_.end()) {
-            unmapAndRemove(it->second);
+            removeNode(it->second);
         }
     }
 
-    /// Clear all cached mappings
+    /// Clear all cached mappings (pins held by readers stay valid).
     void clear() {
         std::lock_guard<std::mutex> lock(mutex_);
-        for (auto& node : lru_) {
-            doUnmap(node.entry);
-        }
         lru_.clear();
         lookup_.clear();
         totalBytes_ = 0;
@@ -145,7 +128,7 @@ private:
 
     struct LRUNode {
         std::string path;
-        MappedFile  entry;
+        std::shared_ptr<MappedFile> entry;
     };
 
     using LRUList = std::list<LRUNode>;
@@ -158,7 +141,7 @@ private:
 
     // --- Platform mmap/unmap ---
 
-    bool doMap(const std::string& path, MappedFile& mf) {
+    static bool doMap(const std::string& path, MappedFile& mf) {
         std::error_code ec;
         mf.mtime = std::filesystem::last_write_time(path, ec);
         if (ec) return false;
@@ -233,7 +216,7 @@ private:
         return true;
     }
 
-    void doUnmap(MappedFile& mf) {
+    static void doUnmap(MappedFile& mf) {
 #ifdef _WIN32
         if (mf.data) UnmapViewOfFile(mf.data);
         if (mf.hMapping) CloseHandle(mf.hMapping);
@@ -253,17 +236,15 @@ private:
     void evictLRU() {
         if (lru_.empty()) return;
         auto& back = lru_.back();
-        totalBytes_ -= back.entry.size;
-        doUnmap(back.entry);
+        totalBytes_ -= back.entry->size;
         lookup_.erase(back.path);
-        lru_.pop_back();
+        lru_.pop_back();   // unmap deferred: shared_ptr deleter fires on last ref
     }
 
-    void unmapAndRemove(LRUIter it) {
-        totalBytes_ -= it->entry.size;
-        doUnmap(it->entry);
+    void removeNode(LRUIter it) {
+        totalBytes_ -= it->entry->size;
         lookup_.erase(it->path);
-        lru_.erase(it);
+        lru_.erase(it);    // unmap deferred: shared_ptr deleter fires on last ref
     }
 };
 

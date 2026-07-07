@@ -157,16 +157,15 @@ public:
         constexpr size_t BYTE_CAP = 1024 * 1024; // 1MB of returned text
 
         // --- Mmap-cached read path ---
-        // Try to get the file from the mmap cache. On hit with unchanged mtime,
-        // this avoids the open/read/close syscall overhead entirely.
+        // acquire() returns a pin that keeps the mapping alive for the whole
+        // scan below, even if another thread invalidates/evicts this path
+        // concurrently (the old raw-pointer API allowed a mid-scan unmap →
+        // ACCESS_VIOLATION in memchr).
         auto& mmapCache = MmapCache::getInstance();
-        const char* mappedData = nullptr;
-        size_t mappedSize = 0;
-
-        bool mmapOk = mmapCache.get(path, mappedData, mappedSize);
-        if (!mmapOk) {
-            mmapOk = mmapCache.map(path, mappedData, mappedSize);
-        }
+        MmapCache::Pin pin = mmapCache.acquire(path);
+        const char* mappedData = pin ? pin->data : nullptr;
+        size_t mappedSize = pin ? pin->size : 0;
+        bool mmapOk = (pin != nullptr);
 
         std::string result;
         int lineNum = 0;
@@ -240,8 +239,10 @@ public:
         // Release the memory-mapped view now that content is copied into result.
         // On Windows an active file mapping prevents the file from being truncated,
         // overwritten or deleted by any process (editors/compilers and even
-        // CloseCrab own write/edit tools). Data is already copied, so unmap now.
+        // CloseCrab own write/edit tools). Data is already copied; dropping the
+        // cache entry AND our pin unmaps it.
         mmapCache.invalidate(path);
+        pin.reset();
 
         // Append a truncation note so the model knows there's more and how to get it.
         bool truncated = truncatedByBytes || (linesRead >= limit && totalLines > offset + linesRead);

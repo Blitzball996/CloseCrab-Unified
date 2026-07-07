@@ -1018,14 +1018,8 @@ int main(int argc, char* argv[]) {
     std::unique_ptr<LLMEngine> llmEngine;
     std::unique_ptr<APIClient> apiClient;
 
-    // Priority: CLI args > env vars > config.yaml
-    // 1. Read from config.yaml first
-    if (provider.empty()) provider = config.getString("provider", "local");
-    if (apiKey.empty()) apiKey = config.getString("api.api_key", "");
-    if (apiBaseUrl.empty()) apiBaseUrl = config.getString("api.base_url", "");
-    if (apiModel.empty()) apiModel = config.getString("api.model", "");
-
-    // 2. Override with env vars
+    // Priority: CLI args > config.yaml > env vars
+    // 1. Read from env vars first (lowest priority)
     if (apiKey.empty()) {
         const char* envKey = std::getenv("ANTHROPIC_AUTH_TOKEN");
         if (envKey) apiKey = envKey;
@@ -1038,10 +1032,23 @@ int main(int argc, char* argv[]) {
         const char* envModel = std::getenv("ANTHROPIC_MODEL");
         if (envModel) apiModel = envModel;
     }
-    {
+    if (provider.empty()) {
         const char* envProvider = std::getenv("CLAUDE_LOCAL_PROVIDER");
-        if (envProvider && !std::string(envProvider).empty()) provider = envProvider;
+        if (envProvider && std::string(envProvider).length() > 0) provider = envProvider;
     }
+
+    // 2. Override with config.yaml (higher priority than env vars)
+    std::string configProvider = config.getString("provider", "");
+    if (!configProvider.empty()) provider = configProvider;
+
+    std::string configKey = config.getString("api.api_key", "");
+    if (!configKey.empty()) apiKey = configKey;
+
+    std::string configUrl = config.getString("api.base_url", "");
+    if (!configUrl.empty()) apiBaseUrl = configUrl;
+
+    std::string configModel = config.getString("api.model", "");
+    if (!configModel.empty()) apiModel = configModel;
 
     if (provider == "anthropic") {
         if (apiBaseUrl.empty()) apiBaseUrl = "https://api.anthropic.com";

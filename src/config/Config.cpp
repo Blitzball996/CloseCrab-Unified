@@ -28,46 +28,56 @@ static std::vector<std::string> splitKey(const std::string& key) {
 }
 
 // Walk the yaml-cpp node tree for the given parts.
-// yaml-cpp Node has reference semantics: assigning "Node n = parent[key]" gives
-// a reference into parent, NOT a copy. We create a local alias each step so we
-// never re-assign the same variable (which could corrupt the parent in older
-// yaml-cpp versions).
+//
+// CRITICAL yaml-cpp semantics: Node::operator= does NOT rebind the local
+// variable — it assigns THROUGH the node into the tree. So the pattern
+//   YAML::Node cur = root;      // cur ALIASES root's underlying node
+//   cur = cur[part];            // rewrites ROOT ITSELF to be the child!
+// corrupts the whole config after the first lookup (every later getter
+// returns Null). Wrapping the RHS in YAML::Node(...) does not help — the
+// damage is on the LHS. Recurse instead: every level is a freshly
+// constructed Node and operator= is never invoked.
+static YAML::Node walkConst(const YAML::Node& node,
+                            const std::vector<std::string>& parts, size_t idx) {
+    if (idx == parts.size()) return node;
+    if (!node.IsMap()) {
+        spdlog::debug("getNode: '{}' is not a map", parts[idx]);
+        return YAML::Node();
+    }
+    const YAML::Node child = node[parts[idx]];  // const lookup: no zombie insert
+    if (!child.IsDefined()) {
+        spdlog::debug("getNode: part '{}' not found", parts[idx]);
+        return YAML::Node();
+    }
+    return walkConst(child, parts, idx + 1);
+}
+
 YAML::Node Config::getNode(const std::string& key) const {
     spdlog::debug("getNode: key='{}'", key);
     if (!root.IsMap()) return YAML::Node();
-
-    auto parts = splitKey(key);
-    YAML::Node cur = root;
-    for (const auto& part : parts) {
-        if (!cur.IsMap()) {
-            spdlog::debug("getNode: '{}' is not a map", part);
-            return YAML::Node();
-        }
-        if (!cur[part].IsDefined()) {
-            spdlog::debug("getNode: part '{}' not found", part);
-            return YAML::Node();
-        }
-        // Explicitly clone so each iteration has its own node object.
-        cur = YAML::Node(cur[part]);
-    }
-    return cur;
+    return walkConst(root, splitKey(key), 0);
 }
 
 // Set a value by dot-separated key, creating intermediate map nodes as needed.
+// Same rule as walkConst: NEVER re-assign a Node variable (operator= writes
+// through into the tree). Copy-constructed nodes share the underlying
+// representation, so mutations via `node[key] = ...` still reach the tree.
+static void walkSet(YAML::Node node, const std::vector<std::string>& parts,
+                    size_t idx, const std::string& value) {
+    if (idx + 1 == parts.size()) {
+        node[parts[idx]] = value;
+        return;
+    }
+    if (!node[parts[idx]].IsDefined() || !node[parts[idx]].IsMap())
+        node[parts[idx]] = YAML::Node(YAML::NodeType::Map);
+    YAML::Node child = node[parts[idx]];   // fresh copy-ctor each level, no operator=
+    walkSet(child, parts, idx + 1, value);
+}
+
 void Config::setNode(const std::string& key, const std::string& value) {
     auto parts = splitKey(key);
     if (parts.empty()) return;
-
-    // Walk / create intermediate nodes.
-    // We build a "path" of references from the root so we can assign at the end.
-    YAML::Node cur = root;
-    for (size_t i = 0; i < parts.size() - 1; ++i) {
-        if (!cur[parts[i]].IsDefined() || !cur[parts[i]].IsMap()) {
-            cur[parts[i]] = YAML::Node(YAML::NodeType::Map);
-        }
-        cur = cur[parts[i]];
-    }
-    cur[parts.back()] = value;
+    walkSet(root, parts, 0, value);
 }
 
 // ---------------------------------------------------------------------------
