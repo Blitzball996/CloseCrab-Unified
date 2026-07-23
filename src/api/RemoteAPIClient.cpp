@@ -1011,17 +1011,41 @@ void RemoteAPIClient::streamChat(
         // Re-apply retry-time compaction (see compactLevel above). On the first
         // attempt level==0 so this is a no-op and the full context is sent.
         if (compactLevel > 0) {
-            size_t beforeBytes = body.dump(-1, ' ', false,
-                nlohmann::json::error_handler_t::replace).size();
-            if (applyRetryCompaction(body, compactLevel)) {
-                size_t afterBytes = body.dump(-1, ' ', false,
+            size_t beforeBytes = 0, afterBytes = 0;
+            try {
+                beforeBytes = body.dump(-1, ' ', false,
                     nlohmann::json::error_handler_t::replace).size();
-                spdlog::warn("Retry compaction L{}: {}KB -> {}KB",
-                             compactLevel, beforeBytes / 1024, afterBytes / 1024);
+            } catch (...) {
+                spdlog::warn("Retry compaction: beforeBytes dump failed, skipping size report");
+            }
+            if (applyRetryCompaction(body, compactLevel)) {
+                try {
+                    afterBytes = body.dump(-1, ' ', false,
+                        nlohmann::json::error_handler_t::replace).size();
+                    spdlog::warn("Retry compaction L{}: {}KB -> {}KB",
+                                 compactLevel, beforeBytes / 1024, afterBytes / 1024);
+                } catch (...) {
+                    spdlog::warn("Retry compaction L{}: afterBytes dump failed", compactLevel);
+                }
             }
         }
         // Use error_handler_t::replace to handle invalid UTF-8 (Chinese chars, tool output)
-        std::string bodyStr = body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+        // Wrap in try-catch: malformed tool output (null bytes, invalid UTF-8, overlarge
+        // strings) can trigger CRT invalid parameter checks inside dump() -> memchr/memmove,
+        // causing __fastfail(0xC0000409) that bypasses all exception handlers. Seen in wild
+        // when ensureToolResultPairing processes corrupted tool_result blocks.
+        std::string bodyStr;
+        try {
+            bodyStr = body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+        } catch (const std::exception& e) {
+            spdlog::error("body.dump() failed (likely malformed tool output): {}", e.what());
+            throw APIError(APIErrorType::NETWORK_ERROR, 0,
+                std::string("Failed to serialize API request body: ") + e.what());
+        } catch (...) {
+            spdlog::error("body.dump() failed with unknown exception (likely CRT invalid parameter)");
+            throw APIError(APIErrorType::NETWORK_ERROR, 0,
+                "Failed to serialize API request body (unknown error, check crash.log)");
+        }
 
         if (attempt == 1) {
             spdlog::debug("API request: {} bytes, {} tools, system_prompt={} chars, model={}, url={}",
@@ -1033,7 +1057,14 @@ void RemoteAPIClient::streamChat(
         if (const char* debugDir = std::getenv("CLOSECRAB_DEBUG_DIR")) {
             std::string debugPath = std::string(debugDir) + "/last_request.json";
             std::ofstream dbg(debugPath);
-            if (dbg.is_open()) { dbg << body.dump(2, ' ', false, nlohmann::json::error_handler_t::replace); dbg.close(); }
+            if (dbg.is_open()) {
+                try {
+                    dbg << body.dump(2, ' ', false, nlohmann::json::error_handler_t::replace);
+                } catch (...) {
+                    dbg << "{\"error\":\"dump failed\"}";
+                }
+                dbg.close();
+            }
         }
 
         try {

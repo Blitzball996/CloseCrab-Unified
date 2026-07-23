@@ -7,6 +7,7 @@
 #include <mutex>
 #include <cstdlib>
 #include <spdlog/spdlog.h>
+#include "../utils/SafePopen.h"
 
 namespace closecrab {
 
@@ -164,12 +165,12 @@ private:
             "$result = $r.Recognize((New-Object TimeSpan(0,0,5)));"
             "if($result){$result.Text}\"";
         // PowerShell Speech Recognition returns text directly
-        FILE* pipe = _popen(recordCmd.c_str(), "r");
+        FILE* pipe = safePopen(recordCmd.c_str(), "r");
         if (!pipe) return "";
         char buf[4096];
         std::string result;
         while (fgets(buf, sizeof(buf), pipe)) result += buf;
-        _pclose(pipe);
+        safePclose(pipe);
         // Trim whitespace
         while (!result.empty() && (result.back() == '\n' || result.back() == '\r'))
             result.pop_back();
@@ -192,7 +193,7 @@ private:
         // Run whisper.cpp CLI on the recorded audio
         std::string whisperCmd = "whisper-cpp -m " + whisperModelPath_
                                + " -f " + tempWav + " --no-timestamps -nt 2>/dev/null";
-        FILE* pipe = popen(whisperCmd.c_str(), "r");
+        FILE* pipe = safePopen(whisperCmd.c_str(), "r");
         if (!pipe) {
             spdlog::warn("Failed to run whisper-cpp");
             return "";
@@ -200,7 +201,7 @@ private:
         char buf[4096];
         std::string result;
         while (fgets(buf, sizeof(buf), pipe)) result += buf;
-        pclose(pipe);
+        safePclose(pipe);
 
         // Clean up temp file
         std::remove(tempWav.c_str());

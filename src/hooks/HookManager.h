@@ -6,6 +6,7 @@
 #include <regex>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
+#include "../utils/SafePopen.h"
 
 namespace closecrab {
 
@@ -147,11 +148,10 @@ private:
     int executeHook(const std::string& cmd, int timeoutMs, std::string& output) {
 #ifdef _WIN32
         std::string fullCmd = "cmd /c \"" + cmd + "\" 2>&1";
-        FILE* pipe = _popen(fullCmd.c_str(), "r");
 #else
         std::string fullCmd = cmd + " 2>&1";
-        FILE* pipe = popen(fullCmd.c_str(), "r");
 #endif
+        FILE* pipe = safePopen(fullCmd.c_str(), "r");
         if (!pipe) return -1;
 
         char buf[1024];
@@ -160,11 +160,7 @@ private:
             if (output.size() > 10240) break; // 10KB limit for hook output
         }
 
-#ifdef _WIN32
-        int exitCode = _pclose(pipe);
-#else
-        int exitCode = pclose(pipe);
-#endif
+        int exitCode = safePclose(pipe);
         return exitCode;
     }
 

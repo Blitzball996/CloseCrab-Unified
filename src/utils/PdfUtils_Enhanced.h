@@ -9,6 +9,7 @@
 #include <chrono>
 #include <climits>
 #include <cstdio>
+#include "SafePopen.h"
 
 // Conditional poppler integration. CMake defines CLOSECRAB_HAS_POPPLER when the
 // poppler-cpp library is found; accept the legacy HAS_POPPLER spelling too.
@@ -119,14 +120,11 @@ inline std::string extractPdfText(const std::filesystem::path& pdfPath,
 
 #else // Fallback to external pdftotext
 
-// MSVC spells the POSIX pipe API with a leading underscore.
-#ifdef _WIN32
-#define CLOSECRAB_POPEN  _popen
-#define CLOSECRAB_PCLOSE _pclose
-#else
-#define CLOSECRAB_POPEN  popen
-#define CLOSECRAB_PCLOSE pclose
-#endif
+// Serialized popen wrappers — raw _popen/popen is NOT thread-safe on Windows
+// (ucrtbase common_popen races on process-wide std handles under concurrency
+// and __fastfail()s with 0xC0000409). See utils/SafePopen.h.
+#define CLOSECRAB_POPEN  closecrab::safePopen
+#define CLOSECRAB_PCLOSE closecrab::safePclose
 
 // Check if PDF tools are available (pdftotext from poppler-utils)
 inline bool isPdfToolsAvailable() {

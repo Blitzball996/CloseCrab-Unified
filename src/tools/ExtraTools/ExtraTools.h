@@ -3,11 +3,13 @@
 #include "../Tool.h"
 #include "../../services/AgentProgress.h"
 #include "../../agents/AgentManager.h"
+#include "../../utils/SafePopen.h"
 
-#ifdef _WIN32
-#define popen _popen
-#define pclose _pclose
-#endif
+// Route ALL popen/pclose in this file through the serialized wrappers.
+// (SafePopen.h must be included BEFORE these macros so its own definitions
+// are unaffected.) See SafePopen.h for the 0xC0000409 root cause.
+#define popen closecrab::safePopen
+#define pclose closecrab::safePclose
 #include <filesystem>
 #include <fstream>
 #include <chrono>

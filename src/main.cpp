@@ -32,6 +32,7 @@
 #include <fstream>
 #include <filesystem>
 #include <csignal>
+#include <cstdlib>
 #include <sstream>
 #include <iomanip>
 #include <spdlog/spdlog.h>
@@ -805,6 +806,46 @@ int main(int argc, char* argv[]) {
             fclose(f);
         }
         std::abort();
+    });
+
+    // Catch CRT invalid parameter errors (e.g. null ptr to memchr, negative length
+    // to memmove, invalid UTF-8 to sprintf). Without this handler, these trigger
+    // __fastfail(FAST_FAIL_INVALID_ARG) -> exception 0xC0000409 which bypasses
+    // all SEH/VEH/terminate handlers and crashes silently. Common trigger: nlohmann
+    // json's dump() calling CRT functions on malformed tool output strings.
+    _set_invalid_parameter_handler([](const wchar_t* expr, const wchar_t* func,
+                                       const wchar_t* file, unsigned line, uintptr_t) {
+        FILE* f = fopen("crash.log", "a");
+        if (f) {
+            auto now = std::chrono::system_clock::now();
+            auto t = std::chrono::system_clock::to_time_t(now);
+            fprintf(f, "\n=== CRT INVALID PARAMETER at %s", ctime(&t));
+            if (func) fprintf(f, "Function: %ls\n", func);
+            if (expr) fprintf(f, "Expression: %ls\n", expr);
+            if (file) fprintf(f, "File: %ls:%u\n", file, line);
+            fflush(f);
+            fclose(f);
+        }
+        // Don't call abort() — let it fall through to the default handler which
+        // will invoke __fastfail. We just wanted to log before dying.
+    });
+
+    // Catch abort() calls (e.g. from vendored C libraries like tweetnacl_glue.c
+    // randombytes() stub, or from ggml assertions in llama.cpp if local LLM enabled).
+    // SIGABRT is raised before the process terminates, giving us one last chance
+    // to write crash.log. Unlike the CRT invalid parameter case above (which can't
+    // be fully intercepted), abort() does honor the signal handler.
+    signal(SIGABRT, [](int) {
+        FILE* f = fopen("crash.log", "a");
+        if (f) {
+            auto now = std::chrono::system_clock::now();
+            auto t = std::chrono::system_clock::to_time_t(now);
+            fprintf(f, "\n=== ABORT at %s", ctime(&t));
+            fprintf(f, "abort() called (likely from C library or assertion failure)\n");
+            fflush(f);
+            fclose(f);
+        }
+        _exit(3); // Skip CRT cleanup and exit immediately
     });
 #endif
 

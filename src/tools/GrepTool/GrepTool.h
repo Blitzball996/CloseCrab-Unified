@@ -2,6 +2,7 @@
 
 #include "../Tool.h"
 #include "../../utils/StringUtils.h"
+#include "../../utils/SafePopen.h"
 #include "../../core/ThreadPool.h"
 #include <filesystem>
 #include <vector>
@@ -67,17 +68,13 @@ private:
         // Wrap in an outer quote pair so a quoted rg path with spaces survives
         // cmd.exe /c quote-stripping (same reason as execCmd()).
         std::string vc = "\"" + rgCommand() + " --version 2>nul\"";
-        auto pipe = _popen(vc.c_str(), "r");
+        auto pipe = safePopen(vc.c_str(), "r");
 #else
-        auto pipe = popen((rgCommand() + " --version 2>/dev/null").c_str(), "r");
+        auto pipe = safePopen((rgCommand() + " --version 2>/dev/null").c_str(), "r");
 #endif
         if (!pipe) { cached = 0; return false; }
         char buf[64]; bool got = fgets(buf, sizeof(buf), pipe) != nullptr;
-#ifdef _WIN32
-        _pclose(pipe);
-#else
-        pclose(pipe);
-#endif
+        safePclose(pipe);
         cached = got ? 1 : 0;
         return cached == 1;
     }
@@ -322,9 +319,9 @@ private:
         // command in one extra outer quote pair makes cmd.exe strip THAT pair and
         // leave the inner quoting intact. Harmless for an unquoted "rg" too.
         std::string wrapped = "\"" + cmd + "\"";
-        std::unique_ptr<FILE, decltype(&_pclose)> pipe(_popen(wrapped.c_str(), "r"), _pclose);
+        std::unique_ptr<FILE, decltype(&safePclose)> pipe(safePopen(wrapped.c_str(), "r"), safePclose);
 #else
-        std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd.c_str(), "r"), pclose);
+        std::unique_ptr<FILE, decltype(&safePclose)> pipe(safePopen(cmd.c_str(), "r"), safePclose);
 #endif
         if (!pipe) return "";
         std::array<char, 4096> buf;

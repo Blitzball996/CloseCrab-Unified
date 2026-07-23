@@ -4,6 +4,7 @@
 #include "../../utils/StringUtils.h"
 #include "../../utils/PathValidation.h"
 #include "../../utils/ShellQuoting.h"
+#include "../../utils/SafePopen.h"
 #include "../../tools/TaskTools/TaskTools.h"
 #include <array>
 #include <memory>
@@ -131,10 +132,10 @@ private:
             std::string evalCmd = buildEvalCommand(normalized);
             std::string fullCmd = "\"C:/Program Files/Git/bin/bash.exe\" -c " +
                                   windowsQuoteArg(evalCmd) + " 2>&1";
-            std::unique_ptr<FILE, decltype(&_pclose)> pipe(_popen(fullCmd.c_str(), "r"), _pclose);
+            std::unique_ptr<FILE, decltype(&safePclose)> pipe(safePopen(fullCmd.c_str(), "r"), safePclose);
 #else
             std::string fullCmd = cmd + " 2>&1";
-            std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(fullCmd.c_str(), "r"), pclose);
+            std::unique_ptr<FILE, decltype(&safePclose)> pipe(safePopen(fullCmd.c_str(), "r"), safePclose);
 #endif
             if (pipe) {
                 std::array<char, 4096> buffer;

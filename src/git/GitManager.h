@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <array>
 #include <memory>
+#include "../utils/SafePopen.h"
 
 namespace closecrab {
 
@@ -14,11 +15,11 @@ public:
     static std::string exec(const std::string& cmd) {
         std::string result;
 #ifdef _WIN32
-        std::unique_ptr<FILE, decltype(&_pclose)> pipe(
-            _popen(("cmd /c \"git " + cmd + "\" 2>&1").c_str(), "r"), _pclose);
+        std::unique_ptr<FILE, decltype(&safePclose)> pipe(
+            safePopen(("cmd /c \"git " + cmd + "\" 2>&1").c_str(), "r"), safePclose);
 #else
-        std::unique_ptr<FILE, decltype(&pclose)> pipe(
-            popen(("git " + cmd + " 2>&1").c_str(), "r"), pclose);
+        std::unique_ptr<FILE, decltype(&safePclose)> pipe(
+            safePopen(("git " + cmd + " 2>&1").c_str(), "r"), safePclose);
 #endif
         if (!pipe) return "";
         std::array<char, 4096> buf;

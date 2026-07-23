@@ -5,6 +5,7 @@
 #include <optional>
 #include <filesystem>
 #include <fstream>
+#include "SafePopen.h"
 
 namespace closecrab {
 
@@ -68,7 +69,7 @@ inline int getPdfPageCount(const std::filesystem::path& pdfPath) {
     std::string cmd = "pdfinfo '" + pdfPath.string() + "' 2>/dev/null";
 #endif
 
-    FILE* pipe = popen(cmd.c_str(), "r");
+    FILE* pipe = safePopen(cmd.c_str(), "r");
   if (!pipe) return -1;
 
     char buffer[256];
@@ -82,7 +83,7 @@ inline int getPdfPageCount(const std::filesystem::path& pdfPath) {
             break;
         }
     }
-    pclose(pipe);
+    safePclose(pipe);
     return pageCount;
 }
 

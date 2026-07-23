@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../Tool.h"
+#include "../../utils/SafePopen.h"
 #include <cstdio>
 #include <array>
 #include <memory>
@@ -59,11 +60,7 @@ public:
         std::string cmd = interpreter + " " + flag + " " + escapedCode + " 2>&1";
 
         std::string output;
-#ifdef _WIN32
-        std::unique_ptr<FILE, decltype(&_pclose)> pipe(_popen(cmd.c_str(), "r"), _pclose);
-#else
-        std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd.c_str(), "r"), pclose);
-#endif
+        std::unique_ptr<FILE, decltype(&safePclose)> pipe(safePopen(cmd.c_str(), "r"), safePclose);
         if (!pipe) return ToolResult::fail("Failed to start " + interpreter);
 
         std::array<char, 4096> buffer;
@@ -89,27 +86,15 @@ private:
         const char* candidates[] = {"python3", "python", "py"};
         for (const char* name : candidates) {
             std::string cmd = std::string(name) + " --version 2>&1";
-#ifdef _WIN32
-            FILE* f = _popen(cmd.c_str(), "r");
+            FILE* f = safePopen(cmd.c_str(), "r");
             if (f) {
                 char buf[128];
                 if (fgets(buf, sizeof(buf), f) && std::string(buf).find("Python") != std::string::npos) {
-                    _pclose(f);
+                    safePclose(f);
                     return name;
                 }
-                _pclose(f);
+                safePclose(f);
             }
-#else
-            FILE* f = popen(cmd.c_str(), "r");
-            if (f) {
-                char buf[128];
-                if (fgets(buf, sizeof(buf), f) && std::string(buf).find("Python") != std::string::npos) {
-                    pclose(f);
-                    return name;
-                }
-                pclose(f);
-            }
-#endif
         }
         return "";
     }

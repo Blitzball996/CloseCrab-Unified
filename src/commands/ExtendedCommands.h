@@ -11,6 +11,7 @@
 #include "../coordinator/Coordinator.h"
 #include "../voice/VoiceEngine.h"
 #include "../utils/ProcessRunner.h"
+#include "../utils/SafePopen.h"
 #include "../security/Sandbox.h"
 #include "../permissions/PermissionEngine.h"
 #include <filesystem>
@@ -31,11 +32,10 @@ public:
         std::string diffCmd = args.empty() ? "git diff --staged" : "git diff " + args;
 #ifdef _WIN32
         std::string fullCmd = "cmd /c \"" + diffCmd + "\" 2>&1";
-        FILE* pipe = _popen(fullCmd.c_str(), "r");
 #else
         std::string fullCmd = diffCmd + " 2>&1";
-        FILE* pipe = popen(fullCmd.c_str(), "r");
 #endif
+        FILE* pipe = safePopen(fullCmd.c_str(), "r");
         if (!pipe) return CommandResult::fail("Failed to run git diff");
 
         std::string diff;
@@ -44,11 +44,7 @@ public:
             diff += buf;
             if (diff.size() > 50000) { diff += "\n...(truncated)"; break; }
         }
-#ifdef _WIN32
-        _pclose(pipe);
-#else
-        pclose(pipe);
-#endif
+        safePclose(pipe);
 
         if (diff.empty()) {
             ctx.print("No changes to review. Try: /review HEAD~1\n");
@@ -552,21 +548,21 @@ public:
         }
 #ifdef _WIN32
         // Windows: pipe to clip.exe
-        FILE* pipe = _popen("clip", "w");
+        FILE* pipe = safePopen("clip", "w");
         if (pipe) {
             fwrite(lastResponse.c_str(), 1, lastResponse.size(), pipe);
-            _pclose(pipe);
+            safePclose(pipe);
             ctx.print("Copied to clipboard (" + std::to_string(lastResponse.size()) + " chars).\n");
         } else {
             ctx.print("Failed to access clipboard.\n");
         }
 #elif defined(__APPLE__)
-        FILE* pipe = popen("pbcopy", "w");
-        if (pipe) { fwrite(lastResponse.c_str(), 1, lastResponse.size(), pipe); pclose(pipe); }
+        FILE* pipe = safePopen("pbcopy", "w");
+        if (pipe) { fwrite(lastResponse.c_str(), 1, lastResponse.size(), pipe); safePclose(pipe); }
         ctx.print("Copied to clipboard.\n");
 #else
-        FILE* pipe = popen("xclip -selection clipboard", "w");
-        if (pipe) { fwrite(lastResponse.c_str(), 1, lastResponse.size(), pipe); pclose(pipe); }
+        FILE* pipe = safePopen("xclip -selection clipboard", "w");
+        if (pipe) { fwrite(lastResponse.c_str(), 1, lastResponse.size(), pipe); safePclose(pipe); }
         ctx.print("Copied to clipboard.\n");
 #endif
         return CommandResult::ok();

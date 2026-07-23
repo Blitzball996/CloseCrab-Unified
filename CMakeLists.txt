@@ -9,7 +9,7 @@ if(POLICY CMP0167)
 endif()
 set(CMAKE_POLICY_DEFAULT_CMP0148 OLD)
 
-project(CloseCrab-Unified VERSION 0.4.5 LANGUAGES C CXX)
+project(CloseCrab-Unified VERSION 0.4.6 LANGUAGES C CXX)
 
 # ============================================
 # Build options
@@ -51,7 +51,19 @@ if(MSVC)
     # and the runtime sets the console to CP_UTF8; without this MSVC assumes the
     # system code page (936/GBK on zh-CN) and miscompiles those literals (C2001).
     add_compile_options(/utf-8 /Zc:char8_t-)
+    # /bigobj: main.cpp exceeds the default COFF section limit (C1128) once
+    # /Zi debug info is enabled in Release. No downside; just raises the cap.
+    add_compile_options(/bigobj)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    # Always generate PDBs, including Release: crash dumps from users are useless
+    # without symbols (the 0xC0000409 _popen investigation had to be done against
+    # raw addresses). /Zi + /DEBUG costs nothing at runtime; /OPT:REF,ICF keeps
+    # the Release binary as small/fast as before despite /DEBUG implying no-opt
+    # defaults for the linker.
+    add_compile_options("$<$<CONFIG:Release>:/Zi>")
+    add_link_options("$<$<CONFIG:Release>:/DEBUG>"
+                     "$<$<CONFIG:Release>:/OPT:REF>"
+                     "$<$<CONFIG:Release>:/OPT:ICF>")
     # Address Sanitizer: detects use-after-free, buffer overflow, stack corruption.
     # Enable for Debug builds to find the heap corruption causing crash 0xC0000005.
     # The crash reads freed memory containing {3, 1000} as a function pointer.

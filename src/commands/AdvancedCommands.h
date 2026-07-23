@@ -7,6 +7,7 @@
 #endif
 #include "../security/Sandbox.h"
 #include "../permissions/PermissionEngine.h"
+#include "../utils/SafePopen.h"
 #include <sstream>
 #include <iomanip>
 #include <filesystem>
@@ -177,11 +178,10 @@ private:
         std::string fullCmd;
 #ifdef _WIN32
         fullCmd = "cmd /c \"" + cmd + " 2>nul\" 2>nul";
-        FILE* pipe = _popen(fullCmd.c_str(), "r");
 #else
         fullCmd = cmd + " 2>/dev/null";
-        FILE* pipe = popen(fullCmd.c_str(), "r");
 #endif
+        FILE* pipe = safePopen(fullCmd.c_str(), "r");
         if (!pipe) return "\033[31mnot found\033[0m";
 
         char buf[256];
@@ -191,11 +191,7 @@ private:
             while (!result.empty() && (result.back() == '\n' || result.back() == '\r'))
                 result.pop_back();
         }
-#ifdef _WIN32
-        int rc = _pclose(pipe);
-#else
-        int rc = pclose(pipe);
-#endif
+        int rc = safePclose(pipe);
         if (rc != 0 || result.empty()) return "\033[31mnot found\033[0m";
         return "\033[32m" + result + "\033[0m";
     }
