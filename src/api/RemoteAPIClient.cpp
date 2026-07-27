@@ -605,24 +605,33 @@ static void performCurlSSE(
     headers = curl_slist_append(headers, ("x-api-key: " + apiKey).c_str());
     headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
     headers = curl_slist_append(headers, "content-type: application/json");
-    // anthropic-beta: matching Claude Code v2.1.152 headers. web-search-2025-03-05
+    // anthropic-beta: matching Claude Code v2.1.220 headers (extracted from the
+    // installed binary via extract_claude_headers.bat). web-search-2025-03-05
     // is harmless when no web_search tool is present (server ignores unused betas)
     // and enables the server-side web_search_20250305 tool when WebSearchTool uses it.
+    // New in 2.1.220 vs 2.1.152: prompt-caching-evict (cache_control.evict_on_complete),
+    // task-budgets (task_budget param), per-turn-control (per-turn effort via
+    // role:"system" turns) — all inert unless the request uses the paired feature.
+    // Deliberately NOT sent: fast-mode/server-side-fallback/fallback-credit
+    // (billing & model-fallback semantics), afk-mode/auto-mode-classifier/
+    // advisor-tool/cache-diagnosis/context-hint (feature-gated aux betas).
     // When the model was requested with the "[1m]" suffix, append the 1M-context
     // beta (context-1m-2025-08-07) — same opt-in Claude Code uses. Only added on
     // request so non-[1m] models aren't forced into (and possibly rejected by) 1M.
     std::string betaHeader =
         "anthropic-beta: claude-code-20250219,interleaved-thinking-2025-05-14,"
-        "prompt-caching-scope-2026-01-05,extended-cache-ttl-2025-04-11,"
+        "prompt-caching-scope-2026-01-05,prompt-caching-evict-2026-05-12,"
+        "extended-cache-ttl-2025-04-11,"
         "context-management-2025-06-27,structured-outputs-2025-12-15,"
         "advanced-tool-use-2025-11-20,tool-search-tool-2025-10-19,"
         "redact-thinking-2026-02-12,thinking-token-count-2026-05-13,"
-        "mid-conversation-system-2026-04-07,"
+        "mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,"
+        "task-budgets-2026-03-13,"
         "mcp-servers-2025-12-04,web-search-2025-03-05,effort-2025-11-24";
     if (want1M) betaHeader += ",context-1m-2025-08-07";
     headers = curl_slist_append(headers, betaHeader.c_str());
     // Identity headers matching Claude Code SDK
-    headers = curl_slist_append(headers, "User-Agent: claude-cli/2.1.152 (external, cli)");
+    headers = curl_slist_append(headers, "User-Agent: claude-cli/2.1.220 (external, cli)");
     headers = curl_slist_append(headers, "x-app: cli");
     // Stable session ID for prompt cache affinity (NOT random - cache needs same session)
     static std::string sessionId = "X-Claude-Code-Session-Id: cc-" + std::to_string(
