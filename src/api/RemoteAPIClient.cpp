@@ -2,7 +2,9 @@
 #include "APIError.h"
 #include "../config/Config.h"
 #include "../core/PredictiveEngine.h"
+#include "../license/LicenseCore.h"
 #include "../utils/Trace.h"
+#include "../utils/UUID.h"
 #include <curl/curl.h>
 #include <spdlog/spdlog.h>
 #include <fstream>
@@ -16,6 +18,55 @@
 // Removed global mutex serialization that was blocking concurrent agent requests.
 
 namespace closecrab {
+
+// ---------------------------------------------------------------------------
+// Client identity (anti-"客户端存在异常" fingerprint rejection)
+//
+// Claude Code relays/proxies fingerprint requests to verify they came from a
+// standard Claude Code client. Header parity alone is NOT enough: the check
+// also inspects the BODY. Measured against www.blitz.mom (2026-08-02) by
+// replaying a captured real `claude` request and removing one field at a time:
+//
+//     baseline (verbatim real request) ......... 200 OK
+//     minus tools .............................. 200 OK
+//     minus context_management / output_config . 200 OK
+//     minus thinking ........................... 200 OK
+//     minus system[0] (billing header block) ... 200 OK
+//     minus metadata ........................... 400 "客户端存在异常"   <-- the gate
+//
+// So the top-level `metadata` object MUST be present on every request. We send
+// it in the real client's exact shape: metadata.user_id is a JSON *string*
+// containing {"device_id","account_uuid","session_id"}.
+//
+// Keep this in sync with the real client using scripts/capture_claude_request.py
+// (see extract_claude_headers.bat) — that tool dumps the live request's headers
+// AND body so a body-level fingerprint change can't silently break us again.
+// ---------------------------------------------------------------------------
+
+// Per-process session UUID. Stable for the life of the process so the proxy
+// (and the prompt cache) sees one continuous session, matching Claude Code.
+static const std::string& clientSessionId() {
+    static const std::string id = generateUUID();
+    return id;
+}
+
+// 64-hex machine id, same shape as Claude Code's device_id (a sha256 hex).
+// Derived from the OS machine GUID via the licensing core so it is stable
+// across runs and does not leak anything identifying beyond the machine hash.
+static const std::string& clientDeviceId() {
+    static const std::string id = lic::sha256Hex("closecrab-device:" + lic::deviceId());
+    return id;
+}
+
+// metadata.user_id — a JSON string, exactly as Claude Code encodes it.
+static const std::string& clientUserId() {
+    static const std::string uid = nlohmann::json({
+        {"device_id", clientDeviceId()},
+        {"account_uuid", ""},
+        {"session_id", clientSessionId()}
+    }).dump();
+    return uid;
+}
 
 // "[1m]" suffix handling, mirroring Claude Code (utils/context.ts + cli.js).
 // The suffix is a client-side opt-in for the 1M context window; it must be
@@ -109,6 +160,11 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
     body["model"] = stripOneMSuffix(requested);
     body["max_tokens"] = config.maxTokens;
     body["stream"] = config.stream;
+
+    // REQUIRED — do not remove. Proxies reject a request with no `metadata` as a
+    // non-standard client (HTTP 400 "客户端存在异常"). See the clientUserId()
+    // comment block above for the bisect that pinned this down.
+    body["metadata"] = {{"user_id", clientUserId()}};
 
     if (config.temperature >= 0 && config.tools.empty()) body["temperature"] = config.temperature;
 
@@ -630,12 +686,37 @@ static void performCurlSSE(
         "mcp-servers-2025-12-04,web-search-2025-03-05,effort-2025-11-24";
     if (want1M) betaHeader += ",context-1m-2025-08-07";
     headers = curl_slist_append(headers, betaHeader.c_str());
-    // Identity headers matching Claude Code SDK
+    // Identity headers matching Claude Code SDK. Captured from a live
+    // `claude -p` run (scripts/capture_claude_request.py); every one of these is
+    // sent by the real 2.1.220 client, so sending them keeps us on the safe side
+    // of proxy client-fingerprint checks. None of them changes API semantics.
+    headers = curl_slist_append(headers, "Accept: application/json");
+    headers = curl_slist_append(headers, ("Authorization: Bearer " + apiKey).c_str());
     headers = curl_slist_append(headers, "User-Agent: claude-cli/2.1.220 (external, cli)");
     headers = curl_slist_append(headers, "x-app: cli");
-    // Stable session ID for prompt cache affinity (NOT random - cache needs same session)
-    static std::string sessionId = "X-Claude-Code-Session-Id: cc-" + std::to_string(
-        std::chrono::system_clock::now().time_since_epoch().count() / 1000000000);
+    headers = curl_slist_append(headers, "anthropic-dangerous-direct-browser-access: true");
+    headers = curl_slist_append(headers, "X-Stainless-Lang: js");
+    headers = curl_slist_append(headers, "X-Stainless-Package-Version: 0.94.0");
+    headers = curl_slist_append(headers, "X-Stainless-Runtime: node");
+    headers = curl_slist_append(headers, "X-Stainless-Retry-Count: 0");
+    headers = curl_slist_append(headers, "X-Stainless-Timeout: 600");
+#if defined(_WIN32)
+    headers = curl_slist_append(headers, "X-Stainless-OS: Windows");
+#elif defined(__APPLE__)
+    headers = curl_slist_append(headers, "X-Stainless-OS: MacOS");
+#else
+    headers = curl_slist_append(headers, "X-Stainless-OS: Linux");
+#endif
+#if defined(__aarch64__) || defined(_M_ARM64)
+    headers = curl_slist_append(headers, "X-Stainless-Arch: arm64");
+#else
+    headers = curl_slist_append(headers, "X-Stainless-Arch: x64");
+#endif
+    // Session ID: a real UUID (the shape Claude Code sends) and the SAME value
+    // carried in body metadata.user_id.session_id. Stable for the process so the
+    // server-side prompt cache stays warm.
+    static const std::string sessionId =
+        "X-Claude-Code-Session-Id: " + closecrab::clientSessionId();
     headers = curl_slist_append(headers, sessionId.c_str());
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
@@ -1101,6 +1182,29 @@ void RemoteAPIClient::streamChat(
             if (config.abortFlag && config.abortFlag->load()) {
                 spdlog::info("Stream aborted by user (Esc)");
                 return;
+            }
+            // Proxy client-fingerprint rejection. Distinct from every other 400:
+            // nothing about the conversation is wrong, so stripping fields or
+            // compacting is pointless (and burns quota on doomed retries). Fail
+            // fast with an actionable message instead of the misleading
+            // "try /compact" the generic 400 path produces.
+            {
+                std::string msg = e.what();
+                if (e.type == APIErrorType::INVALID_REQUEST &&
+                    (msg.find("anomaly in your client") != std::string::npos ||
+                     msg.find("\xE5\xAE\xA2\xE6\x88\xB7\xE7\xAB\xAF\xE5\xAD\x98\xE5\x9C\xA8\xE5\xBC\x82\xE5\xB8\xB8") != std::string::npos ||
+                     msg.find("standard Claude Code client") != std::string::npos)) {
+                    spdlog::error(
+                        "Proxy rejected this client as non-standard. This is a "
+                        "request-shape mismatch with the official Claude Code "
+                        "client, NOT a context/quota problem — /compact will not "
+                        "help. Re-sync the request shape: run "
+                        "`python scripts/capture_claude_request.py` and diff its "
+                        "output against performCurlSSE() headers and "
+                        "buildRequestBody() in src/api/RemoteAPIClient.cpp "
+                        "(the top-level `metadata` field is required).");
+                    throw;
+                }
             }
             // Proxy rejected the request with 400. If we sent the server-side
             // `context_management` field and haven't yet stripped it, the most

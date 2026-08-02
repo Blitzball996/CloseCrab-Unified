@@ -3,6 +3,15 @@ REM ============================================================
 REM extract_claude_headers.bat
 REM 从本地安装的 Claude Code 二进制中提取 anthropic-beta headers
 REM 用法: 双击运行，或在命令行执行
+REM
+REM !! 注意 !! 本脚本只能看到 HEADER 层面的差异。
+REM 中转站的“标准客户端”检测同时会看 BODY —— 2026-08-02 的
+REM HTTP 400 "我们检测到您的客户端存在异常" 真因是请求体缺少顶层
+REM metadata 字段，光对 header 永远查不出来。
+REM 升级 Claude Code 之后请务必再跑一次抓真实请求的脚本:
+REM     python scripts\capture_claude_request.py
+REM 它会把官方客户端真正发出的 header + body 结构打印出来，
+REM 拿去和 src\api\RemoteAPIClient.cpp 对齐。
 REM ============================================================
 
 setlocal enabledelayedexpansion
@@ -168,6 +177,12 @@ echo   prompt-caching-2024-07-31        (被 prompt-caching-scope-2026-01-05 替
 echo   token-efficient-tools-2025-02-19 (已内置到 Claude 4+ 模型)
 echo   output-128k-2025-02-19           (已内置到 Claude 4+ 模型)
 echo   token-efficient-tools-2026-03-28 (不存在的日期，无效)
+echo.
+echo === 只对 header 是不够的 ===
+echo   请求体必须带顶层 metadata (metadata.user_id)，
+echo   否则中转站返回 400 "我们检测到您的客户端存在异常"。
+echo   抓官方客户端的真实请求(含 body):
+echo     python scripts\capture_claude_request.py
 echo.
 
 pause
