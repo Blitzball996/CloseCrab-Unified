@@ -7,6 +7,8 @@
 #include "../utils/UUID.h"
 #include <curl/curl.h>
 #include <spdlog/spdlog.h>
+#include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <cstdlib>
 #include <cctype>
@@ -482,7 +484,49 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
 struct CurlStreamCtx {
     closecrab::StreamParser* parser;
     std::string rawResponse;
+    // Stall diagnostics. Mirrors Claude Code's `tengu_streaming_stall` telemetry:
+    // it warns whenever the gap between two SSE events exceeds 30s, which is how
+    // a half-dead proxy becomes visible BEFORE the idle timeout fires. Purely
+    // local state, owned by the caller's stack frame, so there is nothing here
+    // that can outlive the transfer (unlike the removed idle watchdog below).
+    std::chrono::steady_clock::time_point lastChunkAt{};
+    int stallCount = 0;
 };
+
+// Captures `retry-after` / `retry-after-ms` from the response headers into a
+// long (milliseconds, -1 = absent). Claude Code prefers the server's own hint
+// over its computed backoff whenever it is present and sane (0..60s).
+static size_t curlHeaderCallback(char* buffer, size_t size, size_t nitems, void* userdata) {
+    size_t totalSize = size * nitems;
+    auto* out = static_cast<long*>(userdata);
+    if (!out) return totalSize;
+    try {
+        std::string line(buffer, totalSize);
+        size_t colon = line.find(':');
+        if (colon == std::string::npos) return totalSize;
+        std::string name = line.substr(0, colon);
+        std::string value = line.substr(colon + 1);
+        for (auto& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        auto trim = [](std::string& s) {
+            while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
+            while (!s.empty() && (s.back() == '\r' || s.back() == '\n' ||
+                                  s.back() == ' '  || s.back() == '\t')) s.pop_back();
+        };
+        trim(value);
+        if (value.empty()) return totalSize;
+        // Only plain numeric forms; an HTTP-date retry-after is ignored (as is
+        // a negative/garbage value) and we fall back to computed backoff.
+        if (name == "retry-after-ms") {
+            *out = std::stol(value);
+        } else if (name == "retry-after") {
+            *out = std::stol(value) * 1000;
+        }
+    } catch (...) {
+        // Malformed header — leave the hint untouched, never propagate out of a
+        // C callback.
+    }
+    return totalSize;
+}
 
 static size_t curlStreamCallback(char* ptr, size_t size, size_t nmemb, void* userdata) {
     auto* ctx = static_cast<CurlStreamCtx*>(userdata);
@@ -493,6 +537,19 @@ static size_t curlStreamCallback(char* ptr, size_t size, size_t nmemb, void* use
     // writing" bug — large streaming responses could trigger exceptions in
     // the parser or callback chain.
     try {
+        auto now = std::chrono::steady_clock::now();
+        if (ctx->lastChunkAt.time_since_epoch().count() != 0) {
+            auto gapMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - ctx->lastChunkAt).count();
+            if (gapMs > 30000) {
+                ctx->stallCount++;
+                spdlog::warn("Streaming stall detected: {:.1f}s gap between events "
+                             "(stall #{}) — upstream or proxy is buffering/half-dead",
+                             gapMs / 1000.0, ctx->stallCount);
+            }
+        }
+        ctx->lastChunkAt = now;
+
         std::string chunk(ptr, totalSize);
         ctx->parser->feed(chunk);
         // Cap raw response accumulation to prevent OOM on huge streams
@@ -509,16 +566,51 @@ static size_t curlStreamCallback(char* ptr, size_t size, size_t nmemb, void* use
 
 // idle watchdog removed — was causing ACCESS_VIOLATION (0xC0000005).
 // CURL progress callbacks are unreliable with some CURL/proxy combinations.
-// Rely on CURLOPT_TIMEOUT=600 as the safety net instead.
+//
+// REPLACED by CURLOPT_LOW_SPEED_LIMIT/TIME (see performCurlSSE). That is the
+// same policy Claude Code implements in JS as its stream idle timeout
+// (CLAUDE_STREAM_IDLE_TIMEOUT_MS, default 90000), but enforced inside libcurl's
+// own transfer loop instead of a user callback that touches shared state — so
+// it cannot reintroduce the 0xC0000005. The old crash came from a callback doing
+// timing work on possibly-freed state, not from having an idle policy at all.
 
-namespace closecrab { // reopen
+namespace closecrab {
+
+// Stream idle timeout, in seconds. A streaming Anthropic response emits SSE
+// events (including `ping`) continuously; if nothing arrives for this long the
+// connection is dead or the proxy is black-holing it, and waiting out the full
+// CURLOPT_TIMEOUT=600 is what made CloseCrab look frozen for ten minutes at a
+// time. Claude Code's default is 90s (CLAUDE_STREAM_IDLE_TIMEOUT_MS); we use the
+// same value and honour the same env var so the two can be tuned identically.
+// Generous vs. real thinking pauses: extended thinking still pings well inside 90s.
+static long streamIdleTimeoutSeconds() {
+    // Parenthesised std::max/std::min throughout this file: <windows.h> arrives
+    // via a transitive include without NOMINMAX, so bare std::max(...) is eaten
+    // by the max() macro.
+    if (const char* env = std::getenv("CLAUDE_STREAM_IDLE_TIMEOUT_MS")) {
+        try {
+            long ms = std::stol(env);
+            if (ms > 0) return (std::max)(10L, ms / 1000);
+        } catch (...) { /* fall through to default */ }
+    }
+    if (const char* env = std::getenv("CLOSECRAB_STREAM_IDLE_TIMEOUT_MS")) {
+        try {
+            long ms = std::stol(env);
+            if (ms > 0) return (std::max)(10L, ms / 1000);
+        } catch (...) { /* fall through to default */ }
+    }
+    return 90;
+}
+
+
 
 void RemoteAPIClient::handleSSEEvent(
     const StreamParser::SSEEvent& event,
     StreamCallback& callback,
     std::string& currentToolName,
     std::string& currentToolId,
-    std::string& currentToolJson
+    std::string& currentToolJson,
+    bool* streamedAnything
 ) const {
     if (event.data == "[DONE]") return;
 
@@ -559,7 +651,9 @@ void RemoteAPIClient::handleSSEEvent(
             std::string deltaType = delta.value("type", "");
 
             if (deltaType == "text_delta") {
-                callback({StreamEvent::EVT_TEXT, delta.value("text", "")});
+                std::string text = delta.value("text", "");
+                if (!text.empty() && streamedAnything) *streamedAnything = true;
+                callback({StreamEvent::EVT_TEXT, text});
             } else if (deltaType == "thinking_delta") {
                 callback({StreamEvent::EVT_THINKING, delta.value("thinking", "")});
             } else if (deltaType == "input_json_delta") {
@@ -583,6 +677,7 @@ void RemoteAPIClient::handleSSEEvent(
                     toolEvent.toolInput = nlohmann::json::object();
                 }
                 callback(toolEvent);
+                if (streamedAnything) *streamedAnything = true;
                 currentToolName.clear();
                 currentToolId.clear();
                 currentToolJson.clear();
@@ -650,7 +745,8 @@ static void performCurlSSE(
     const std::string& apiKey,
     CurlStreamCtx& curlCtx,
     const std::atomic<bool>* abortFlag = nullptr,
-    bool want1M = false
+    bool want1M = false,
+    long* retryAfterMsOut = nullptr
 ) {
     CURL* curl = curl_easy_init();
     if (!curl) {
@@ -727,6 +823,14 @@ static void performCurlSSE(
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curlStreamCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &curlCtx);
 
+    // Capture retry-after / retry-after-ms so the retry loop can obey the
+    // server's own pacing hint instead of its computed backoff (what the real
+    // client does: "if (retryAfter is present and 0 <= it < 60s) use it").
+    if (retryAfterMsOut) {
+        curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, curlHeaderCallback);
+        curl_easy_setopt(curl, CURLOPT_HEADERDATA, retryAfterMsOut);
+    }
+
     // Proxy support
     // Escape hatch: CLOSECRAB_NO_PROXY=1 forces a DIRECT connection, ignoring any
     // inherited https_proxy/http_proxy env vars (the common "browser works but app
@@ -762,9 +866,29 @@ static void performCurlSSE(
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
     curl_easy_setopt(curl, CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
 
-    // Timeouts: 600s overall, 30s connect. No LOW_SPEED (kills thinking pauses).
+    // Timeouts: 600s overall, 30s connect.
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+
+    // Stream idle timeout. THE fix for "动不动就卡住": without this, a proxy that
+    // accepts the POST and then stops sending holds the transfer open for the
+    // full 600s CURLOPT_TIMEOUT — and because that error is retryable, the retry
+    // loop repeats it, so a single stuck turn could sit there for over an hour
+    // before surfacing anything. LOW_SPEED_LIMIT=1 byte / LOW_SPEED_TIME=90s
+    // means "abort if under 1 B/s for 90s", i.e. abort only on a genuinely silent
+    // connection. Anthropic streams send `ping` events during long thinking
+    // pauses, so real work never trips this; only dead connections do. Fails as
+    // CURLE_OPERATION_TIMEDOUT → NETWORK_ERROR → normal retry, but in 90s
+    // instead of 600s. (The earlier "No LOW_SPEED (kills thinking pauses)" note
+    // was written when the threshold under consideration was seconds, not 90s.)
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, closecrab::streamIdleTimeoutSeconds());
+
+    // Detect a silently-dropped TCP connection rather than blocking on a socket
+    // that will never deliver again (common with tunnels/NAT in the middle).
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPIDLE, 30L);
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPINTVL, 15L);
 
     // Esc/abort: a MINIMAL progress callback that only reads the atomic abort
     // flag and returns 1 to abort. (The historical ACCESS_VIOLATION was from a
@@ -1007,6 +1131,18 @@ void RemoteAPIClient::streamChat(
     int consecutive503 = 0;
     std::string activeModel = model_;
 
+    // Total retry budget. MAX_RETRIES alone is not a bound on wall-clock time:
+    // with 500ms*2^n backoff the last few attempts are ~30s each, and every
+    // attempt can itself sit in the network for up to CURLOPT_TIMEOUT. In the
+    // 2026-08-02 log that combination kept one turn retrying from 20:33 to
+    // 20:42 (9 min) and then again 20:53+ with nothing shown but a spinner.
+    // The real client bounds the whole thing too; we cap at 3 minutes of retry
+    // wall-clock and stop with whatever we have.
+    const auto retryDeadline = std::chrono::steady_clock::now() + std::chrono::minutes(3);
+
+    // Server-supplied retry pacing from the last failed attempt (-1 = none).
+    long lastRetryAfterMs = -1;
+
     // Retry-time compaction level. buildRequestBody() rebuilds `body` from the
     // original `messages` on every attempt, so any in-place edit to `body` would
     // be discarded next loop. Instead we carry a level here and RE-APPLY the
@@ -1157,19 +1293,44 @@ void RemoteAPIClient::streamChat(
             }
         }
 
+        // Set when this attempt failed *after* already emitting visible output.
+        // Checked in the attempt's catch block, which is what actually decides
+        // whether to retry — an inner `throw` alone would just land there and be
+        // retried like any other error.
+        bool partialOutputDelivered = false;
+
         try {
             std::string currentToolName, currentToolId, currentToolJson;
+            // Did this attempt deliver any user-visible content before failing?
+            // If it did, retrying the whole request would re-emit that text and
+            // the user sees the answer twice. The real client does not restart a
+            // stream that has already produced output; neither do we.
+            bool streamedAnything = false;
             StreamParser parser([&](const StreamParser::SSEEvent& event) {
-                handleSSEEvent(event, callback, currentToolName, currentToolId, currentToolJson);
+                handleSSEEvent(event, callback, currentToolName, currentToolId, currentToolJson,
+                               &streamedAnything);
             });
-            CurlStreamCtx curlCtx{&parser, ""};
+            CurlStreamCtx curlCtx{&parser, "", {}, 0};
+            long retryAfterMs = -1;
             // Crash trace: log before/after CURL call to narrow down segfault location
             {
                 FILE* trace = closecrab::traceOpen();
                 if (trace) { fprintf(trace, "[%d] pre-curl bodySize=%zu\n", attempt, bodyStr.size()); fclose(trace); }
             }
-            performCurlSSE(url, bodyStr, apiKey_, curlCtx, config.abortFlag,
-                           wants1MContext(activeModel));
+            try {
+                performCurlSSE(url, bodyStr, apiKey_, curlCtx, config.abortFlag,
+                               wants1MContext(activeModel), &retryAfterMs);
+            } catch (const APIError&) {
+                lastRetryAfterMs = retryAfterMs;
+                // Partial output already shown → surface the failure now rather
+                // than replaying the turn. Without this, every retry after a
+                // mid-stream drop appends a second copy of the same answer.
+                if (streamedAnything) {
+                    partialOutputDelivered = true;
+                    parser.finish();
+                }
+                throw;
+            }
             {
                 FILE* trace = closecrab::traceOpen();
                 if (trace) { fprintf(trace, "[%d] post-curl OK\n", attempt); fclose(trace); }
@@ -1182,6 +1343,15 @@ void RemoteAPIClient::streamChat(
             if (config.abortFlag && config.abortFlag->load()) {
                 spdlog::info("Stream aborted by user (Esc)");
                 return;
+            }
+            // Already showed the user part of the answer. Retrying would re-run
+            // the whole turn and duplicate that text (and re-run tool calls), so
+            // stop here and let them continue with a new message.
+            if (partialOutputDelivered) {
+                spdlog::warn("Stream failed after partial output was already delivered "
+                             "— not retrying (a retry would duplicate the visible text "
+                             "and re-run tool calls). Reason: {}", e.what());
+                throw;
             }
             // Proxy client-fingerprint rejection. Distinct from every other 400:
             // nothing about the conversation is wrong, so stripping fields or
@@ -1244,6 +1414,15 @@ void RemoteAPIClient::streamChat(
 
             if (attempt >= MAX_RETRIES) throw;
 
+            // Wall-clock budget check. Without this, MAX_RETRIES x (up to 600s in
+            // the network + up to ~30s backoff) is an unbounded-feeling freeze.
+            if (std::chrono::steady_clock::now() >= retryDeadline) {
+                spdlog::error("Retry budget exhausted after {} attempts (3 min wall clock) "
+                              "— giving up so the turn does not hang indefinitely. "
+                              "Last error: {}", attempt, e.what());
+                throw;
+            }
+
             // Decide whether this error means "request too big" (→ compact harder
             // before retry) or "provider temporarily down" (→ just wait & retry,
             // do NOT touch context). The OLD code treated EVERY 503/504/timeout on
@@ -1288,11 +1467,27 @@ void RemoteAPIClient::streamChat(
                              apiErrorTypeName(e.type), bodyStr.size() / 1024);
             }
 
-            // Exponential backoff: 500ms base, cap 30s
-            int baseDelay = 500 * (1 << (attempt - 1));
-            if (baseDelay > 30000) baseDelay = 30000;
-            int jitter = rand() % (baseDelay / 4 + 1);
-            int delayMs = baseDelay + jitter;
+            // Backoff, matching the real client's calculateDefaultRetryTimeoutMillis:
+            //     min(0.5 * 2^n, 8) seconds, times (1 - random()*0.25)
+            // i.e. 0.5s, 1s, 2s, 4s, 8s, 8s... capped at 8 SECONDS, not 30.
+            // The old 500ms*2^n with a 30s cap produced 16s/30s/30s tail delays
+            // (visible in the 2026-08-02 log as "Retrying in 32460ms"), which is
+            // what turned a transient blip into a multi-minute stall for no gain:
+            // if a provider is down, waiting 30s instead of 8s does not help.
+            double baseSec = (std::min)(0.5 * std::pow(2.0, attempt - 1), 8.0);
+            double factor = 1.0 - (static_cast<double>(rand()) / RAND_MAX) * 0.25;
+            int delayMs = static_cast<int>(baseSec * factor * 1000.0);
+
+            // Prefer the server's own pacing hint when it is present and sane
+            // (0..60s) — same rule the real client applies before falling back to
+            // its computed backoff. Matters most for 429, where the server knows
+            // exactly when the window reopens.
+            if (lastRetryAfterMs >= 0 && lastRetryAfterMs < 60000) {
+                spdlog::info("Honouring server retry-after: {}ms (computed backoff was {}ms)",
+                             lastRetryAfterMs, delayMs);
+                delayMs = static_cast<int>(lastRetryAfterMs);
+            }
+            lastRetryAfterMs = -1;
 
             // Show retry progress to user (JackProAi: "Retrying in Xs... (attempt N/M)")
             // CRITICAL: include e.what() so the ACTUAL cause is visible in the log.

@@ -50,9 +50,13 @@ private:
                                      const std::string& systemPrompt,
                                      const ModelConfig& config,
                                      const std::string& modelOverride = "") const;
+    // `streamedAnything` (optional) is set to true as soon as this stream has
+    // emitted user-visible content, so the retry loop can avoid replaying a turn
+    // whose output is already on screen.
     void handleSSEEvent(const StreamParser::SSEEvent& event, StreamCallback& callback,
                         std::string& currentToolName, std::string& currentToolId,
-                        std::string& currentToolJson) const;
+                        std::string& currentToolJson,
+                        bool* streamedAnything = nullptr) const;
 
     std::string apiKey_;
     std::string baseUrl_;
