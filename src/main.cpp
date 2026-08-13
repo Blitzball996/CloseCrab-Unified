@@ -870,6 +870,11 @@ int main(int argc, char* argv[]) {
     app.add_option("--api-key", apiKey, "API key");
     app.add_option("--api-url", apiBaseUrl, "API base URL");
     app.add_option("--api-model", apiModel, "API model name (per-session override)");
+    // Reasoning effort for this run. config.yaml `api.effort` is the persistent
+    // default; this flag overrides it for one session (headless/-p runs too).
+    std::string effortOverride;
+    app.add_option("--effort", effortOverride,
+                   "Reasoning effort: low|medium|high|xhigh|max (alias: ultra)");
     app.add_option("--provider", provider, "Provider: local, anthropic, openai");
     // --set-model: persist a new model name into config.yaml and exit.
     // Simpler than editing the YAML by hand, works on all platforms.
@@ -1050,6 +1055,30 @@ int main(int argc, char* argv[]) {
     appState.verbose = verbose;
     appState.configPath = configPath;   // so /api and the banner show the real path
     appState.claudeMdContent = loadClaudeMd(cwd);
+
+    // ---- Reasoning effort ----
+    // Priority: --effort > config.yaml api.effort > env CLOSECRAB_EFFORT >
+    // the ThinkingConfig default (xhigh). Without this the level was set only by
+    // /effort inside a session, so every restart silently fell back to xhigh and
+    // there was no way to configure it from outside the REPL at all.
+    {
+        std::string effortSetting;
+        if (const char* envEffort = std::getenv("CLOSECRAB_EFFORT")) effortSetting = envEffort;
+        std::string cfgEffort = config.getString("api.effort", "");
+        if (!cfgEffort.empty()) effortSetting = cfgEffort;      // config beats env (same as api.model)
+        if (!effortOverride.empty()) effortSetting = effortOverride;  // CLI beats both
+
+        if (!effortSetting.empty()) {
+            std::string level = normalizeEffortLevel(effortSetting);
+            if (level.empty()) {
+                std::cerr << "Unknown effort '" << effortSetting << "' — keeping "
+                          << appState.thinkingConfig.effort
+                          << ". Valid: low, medium, high, xhigh, max (alias ultra).\n";
+            } else {
+                applyEffortLevel(appState.thinkingConfig, level);
+            }
+        }
+    }
 
     // ---- Initialize components ----
     SessionManager sessionMgr(config.getString("database.path", "data/closecrab.db"));

@@ -7,8 +7,8 @@ IDI_ICON1               ICON    "..\\icons\\closecrab.ico"
 
 // Version Information
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,4,7,0
- PRODUCTVERSION 0,4,7,0
+ FILEVERSION 0,4,8,0
+ PRODUCTVERSION 0,4,8,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS 0x40004L
@@ -21,12 +21,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Blitzball Labs"
             VALUE "FileDescription", "CloseCrab - Claude Code CLI"
-            VALUE "FileVersion", "0.4.7.0"
+            VALUE "FileVersion", "0.4.8.0"
             VALUE "InternalName", "closecrab"
             VALUE "LegalCopyright", "Copyright (C) 2026"
             VALUE "OriginalFilename", "closecrab.exe"
             VALUE "ProductName", "CloseCrab-Unified"
-            VALUE "ProductVersion", "0.4.7.0"
+            VALUE "ProductVersion", "0.4.8.0"
         END
     END
     BLOCK "VarFileInfo"

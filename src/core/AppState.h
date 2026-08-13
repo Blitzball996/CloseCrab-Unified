@@ -6,6 +6,7 @@
 #include <atomic>
 #include <mutex>
 #include <cstdint>
+#include <cctype>
 #include "../permissions/PermissionEngine.h"
 #include "CostTracker.h"
 
@@ -36,6 +37,31 @@ struct ThinkingConfig {
     // output_config.effort on effort-capable models (opus-4-6+, opus-4-8...).
     std::string effort = "xhigh";
 };
+
+// Normalize a user-supplied effort string. Accepts any case plus the
+// "ultra"/"ultracode" aliases (Claude Code's ultracode runs at xhigh).
+// Returns "" when the level isn't one of low/medium/high/xhigh/max.
+inline std::string normalizeEffortLevel(std::string level) {
+    for (auto& c : level) c = (char)std::tolower((unsigned char)c);
+    if (level == "ultra" || level == "ultracode") level = "xhigh";
+    if (level == "low" || level == "medium" || level == "high" ||
+        level == "xhigh" || level == "max") return level;
+    return "";
+}
+
+// Apply an already-normalized level. Native effort drives reasoning depth on
+// capable models and the legacy thinking block is NOT sent alongside it (the
+// two conflict), so budgetTokens here is only the fallback for models without
+// native effort support. Shared by /effort, config.yaml and --effort so all
+// three paths set exactly the same state.
+inline void applyEffortLevel(ThinkingConfig& tc, const std::string& level) {
+    tc.effort = level;
+    if (level == "low")         tc.budgetTokens = 5000;
+    else if (level == "medium") tc.budgetTokens = 10000;
+    else if (level == "high")   tc.budgetTokens = 20000;
+    else                        tc.budgetTokens = 32000;  // xhigh / max
+    tc.enabled = (level != "low");
+}
 
 // ============================================================
 // AppState — 全局应用状态

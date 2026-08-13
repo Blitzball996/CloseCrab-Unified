@@ -112,7 +112,7 @@ std::string CommandRegistry::getHelpText() const {
     std::vector<Category> categories = {
         {"Session",  {"help", "quit", "exit", "clear", "new", "session", "history", "export",
                       "compact", "context", "status", "version", "env"}},
-        {"Model",    {"model", "cost", "fast", "thinking", "brief", "permissions", "provider", "api"}},
+        {"Model",    {"model", "cost", "fast", "thinking", "effort", "brief", "permissions", "provider", "api"}},
         {"Git",      {"commit", "diff", "branch", "log", "push", "pull", "stash", "pr", "review"}},
         {"Tools",    {"tools", "skills", "plugin", "mcp", "hooks", "agents", "tasks", "audit"}},
         {"Advanced", {"rag", "ssd", "sandbox", "plan", "doctor", "coordinator", "vim",

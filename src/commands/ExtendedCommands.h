@@ -3,6 +3,7 @@
 #include "Command.h"
 #include "../api/RemoteAPIClient.h"
 #include "../config/Config.h"
+#include "../core/AppState.h"
 #include "../hooks/HookManager.h"
 #include "../memory/FileMemoryManager.h"
 #include "../agents/AgentManager.h"
@@ -635,36 +636,25 @@ public:
             ctx.print("Current effort: " + ctx.appState->thinkingConfig.effort + "\n");
             ctx.print("Usage: /effort [low|medium|high|xhigh|max]\n");
             ctx.print("  xhigh = \"ultra\" (Claude Code ultracode runs here); max is Opus/Fable only.\n");
+            ctx.print("  Saved to config.yaml (api.effort) so it survives restart.\n");
             return CommandResult::ok();
         }
-        // Normalize input: lower-case + accept "ultra"/"ultracode" as xhigh aliases.
-        std::string level = args;
-        for (auto& c : level) c = (char)std::tolower((unsigned char)c);
-        if (level == "ultra" || level == "ultracode") level = "xhigh";
-
-        if (level == "low" || level == "medium" || level == "high" ||
-            level == "xhigh" || level == "max") {
-            ctx.appState->thinkingConfig.effort = level;
-            // Native effort drives reasoning depth on capable models; the legacy
-            // thinking block is NOT sent when effort is active (they conflict).
-            // Keep the budget mirrored as a sensible fallback for models that
-            // don't support native effort.
-            if (level == "low") {
-                ctx.appState->thinkingConfig.budgetTokens = 5000;
-            } else if (level == "medium") {
-                ctx.appState->thinkingConfig.budgetTokens = 10000;
-            } else if (level == "high") {
-                ctx.appState->thinkingConfig.budgetTokens = 20000;
-            } else { // xhigh / max
-                ctx.appState->thinkingConfig.budgetTokens = 32000;
-            }
-            ctx.appState->thinkingConfig.enabled = (level != "low");
-            ctx.print("Effort set to: " + level +
-                      (level == "xhigh" ? " (ultra)\n" : "\n"));
-        } else {
+        // Accepts any case + "ultra"/"ultracode"; "" means not a valid level.
+        std::string level = normalizeEffortLevel(args);
+        if (level.empty()) {
             ctx.print("Unknown effort level '" + args + "'. "
                       "Use: low, medium, high, xhigh, max (or ultra).\n");
+            return CommandResult::ok();
         }
+
+        applyEffortLevel(ctx.appState->thinkingConfig, level);
+
+        // Persist to config.yaml (same as /model) — otherwise the level reset to
+        // the xhigh default on every restart and looked like it wasn't settable.
+        bool saved = Config::getInstance().setString("api.effort", level);
+        ctx.print("Effort set to: " + level +
+                  (level == "xhigh" ? " (ultra)" : "") +
+                  (saved ? " (saved to config)\n" : " (session only -- config not writable)\n"));
         return CommandResult::ok();
     }
 };
