@@ -409,9 +409,14 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
 
     if (!effortToSend.empty()) {
         body["output_config"]["effort"] = effortToSend;
+        // 2.1.258: thinking.type="adaptive" + display="omitted" is sent TOGETHER
+        // with output_config.effort on effort-capable models. They no longer conflict;
+        // the server treats "adaptive" as "let the model self-allocate" and
+        // display="omitted" strips reasoning tokens from the response stream.
+        body["thinking"] = {{"type", "adaptive"}, {"display", "omitted"}};
     } else if (config.thinkingEnabled) {
-        // Fallback path: model doesn't support native effort (or none set) —
-        // use the legacy extended-thinking budget mechanism.
+        // Fallback: model doesn't support native effort — use the legacy
+        // extended-thinking budget mechanism.
         body["thinking"]["type"] = "enabled";
         body["thinking"]["budget_tokens"] = config.thinkingBudgetTokens;
     }
@@ -470,6 +475,18 @@ nlohmann::json RemoteAPIClient::buildRequestBody(
                     {"trigger", {{"type", "input_tokens"}, {"value", kTrigger}}},
                     {"clear_at_least", {{"type", "input_tokens"}, {"value", kTrigger - kTarget}}},
                     {"exclude_tools", {"Edit", "Write", "NotebookEdit"}}
+                });
+            }
+            // Strategy 3 (clear_thinking_20251015): new in 2.1.258. Clears thinking
+            // blocks from old assistant turns once input crosses the trigger. Thinking
+            // blocks are large and purely retrospective — the model never needs to
+            // re-read them — so clearing them is safe and significantly shrinks context
+            // on long reasoning-heavy sessions. Always enabled alongside strategy 1.
+            if (enableServerClear) {
+                edits.push_back({
+                    {"type", "clear_thinking_20251015"},
+                    {"trigger", {{"type", "input_tokens"}, {"value", kTrigger}}},
+                    {"clear_at_least", {{"type", "input_tokens"}, {"value", kTrigger - kTarget}}}
                 });
             }
             body["context_management"] = {{"edits", std::move(edits)}};
@@ -757,43 +774,38 @@ static void performCurlSSE(
     headers = curl_slist_append(headers, ("x-api-key: " + apiKey).c_str());
     headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
     headers = curl_slist_append(headers, "content-type: application/json");
-    // anthropic-beta: matching Claude Code v2.1.220 headers (extracted from the
-    // installed binary via extract_claude_headers.bat). web-search-2025-03-05
-    // is harmless when no web_search tool is present (server ignores unused betas)
-    // and enables the server-side web_search_20250305 tool when WebSearchTool uses it.
-    // New in 2.1.220 vs 2.1.152: prompt-caching-evict (cache_control.evict_on_complete),
-    // task-budgets (task_budget param), per-turn-control (per-turn effort via
-    // role:"system" turns) — all inert unless the request uses the paired feature.
-    // Deliberately NOT sent: fast-mode/server-side-fallback/fallback-credit
-    // (billing & model-fallback semantics), afk-mode/auto-mode-classifier/
-    // advisor-tool/cache-diagnosis/context-hint (feature-gated aux betas).
-    // When the model was requested with the "[1m]" suffix, append the 1M-context
-    // beta (context-1m-2025-08-07) — same opt-in Claude Code uses. Only added on
-    // request so non-[1m] models aren't forced into (and possibly rejected by) 1M.
+    // anthropic-beta: matching Claude Code v2.1.258 headers (captured via
+    // scripts/capture_claude_request.py against a live 2.1.258 binary).
+    // Changes vs 2.1.220: context-1m-2025-08-07 is now unconditional (no longer
+    // opt-in for [1m] suffix only); added fallback-credit-2026-06-01; removed
+    // prompt-caching-evict, extended-cache-ttl, structured-outputs,
+    // advanced-tool-use, tool-search-tool, redact-thinking, per-turn-control,
+    // task-budgets, mcp-servers (no longer in 2.1.258 base set).
+    // web-search-2025-03-05 kept: harmless when unused, enables server-side
+    // web_search_20250305 tool for WebSearchTool without a separate header add.
     std::string betaHeader =
-        "anthropic-beta: claude-code-20250219,interleaved-thinking-2025-05-14,"
-        "prompt-caching-scope-2026-01-05,prompt-caching-evict-2026-05-12,"
-        "extended-cache-ttl-2025-04-11,"
-        "context-management-2025-06-27,structured-outputs-2025-12-15,"
-        "advanced-tool-use-2025-11-20,tool-search-tool-2025-10-19,"
-        "redact-thinking-2026-02-12,thinking-token-count-2026-05-13,"
-        "mid-conversation-system-2026-04-07,per-turn-control-2026-07-01,"
-        "task-budgets-2026-03-13,"
-        "mcp-servers-2025-12-04,web-search-2025-03-05,effort-2025-11-24";
-    if (want1M) betaHeader += ",context-1m-2025-08-07";
+        "anthropic-beta: claude-code-20250219,context-1m-2025-08-07,"
+        "interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,"
+        "context-management-2025-06-27,prompt-caching-scope-2026-01-05,"
+        "mid-conversation-system-2026-04-07,effort-2025-11-24,"
+        "fallback-credit-2026-06-01,web-search-2025-03-05";
+    (void)want1M; // context-1m is now unconditional in 2.1.258
     headers = curl_slist_append(headers, betaHeader.c_str());
     // Identity headers matching Claude Code SDK. Captured from a live
     // `claude -p` run (scripts/capture_claude_request.py); every one of these is
-    // sent by the real 2.1.220 client, so sending them keeps us on the safe side
+    // sent by the real 2.1.258 client, so sending them keeps us on the safe side
     // of proxy client-fingerprint checks. None of them changes API semantics.
+    // 2.1.258 changes: User-Agent "cli" → "sdk-cli"; package 0.94.0 → 0.112.1;
+    // new X-Stainless-Runtime-Version: v26.3.0.
     headers = curl_slist_append(headers, "Accept: application/json");
     headers = curl_slist_append(headers, ("Authorization: Bearer " + apiKey).c_str());
-    headers = curl_slist_append(headers, "User-Agent: claude-cli/2.1.220 (external, cli)");
+    headers = curl_slist_append(headers, "User-Agent: claude-cli/2.1.258 (external, sdk-cli)");
     headers = curl_slist_append(headers, "x-app: cli");
     headers = curl_slist_append(headers, "anthropic-dangerous-direct-browser-access: true");
     headers = curl_slist_append(headers, "X-Stainless-Lang: js");
-    headers = curl_slist_append(headers, "X-Stainless-Package-Version: 0.94.0");
+    headers = curl_slist_append(headers, "X-Stainless-Package-Version: 0.112.1");
     headers = curl_slist_append(headers, "X-Stainless-Runtime: node");
+    headers = curl_slist_append(headers, "X-Stainless-Runtime-Version: v26.3.0");
     headers = curl_slist_append(headers, "X-Stainless-Retry-Count: 0");
     headers = curl_slist_append(headers, "X-Stainless-Timeout: 600");
 #if defined(_WIN32)
