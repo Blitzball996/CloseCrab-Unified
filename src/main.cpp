@@ -58,7 +58,7 @@
 #include "api/LocalLLMClient.h"
 #include "api/RemoteAPIClient.h"
 #include "api/OpenAICompatClient.h"
-#include "strata/StrataManager.h"
+#include "moe/MoELLMClient.h"
 
 // Tools
 // FileReadTool: when built with USE_ENHANCED_FILE_READ (default ON), the
@@ -1144,90 +1144,54 @@ int main(int argc, char* argv[]) {
         appState.currentModel = apiModel;
         spdlog::info("Using OpenAI-compatible API: {} ({})", apiBaseUrl, apiModel);
         apiClient = std::move(oai);
-    } else if (provider == "strata") {
-        // Strata MoE inference engine (github.com/Niko1221/Strata, MIT).
-        // 1. Run strata_probe.py to detect GPU/RAM and list runnable models.
-        // 2. Start the Strata Python server on a free local port.
-        // 3. Point RemoteAPIClient at http://127.0.0.1:<port> (Anthropic-compat).
-        // All CloseCrab tools, agent loop, hooks, MCP etc. are unchanged —
-        // Strata is just the model backend, same as Claude API.
-        auto& strataMgr = closecrab::StrataManager::getInstance();
-        std::string strataRoot = config.getString("strata.root", "");
+    } else if (provider == "local-moe") {
+        // Local MoE engine: runs 125B+ models on consumer GPUs via VRAM+RAM+NVMe
+        // expert tiering. closecrab-moe-engine is spawned invisibly as a subprocess;
+        // all CloseCrab tools, agent loop, hooks, and MCP work identically.
+        //
+        // How 125B fits on 12 GB VRAM:
+        //   GPU VRAM   → dense weights + KV cache + hot expert cache (~4000 slots)
+        //   System RAM → all 24576 experts pinned (CPU computes misses in parallel)
+        //   NVMe       → n-gram lookup table (~28 GB, read via OS page cache)
+        // The engine predicts 1-2 tokens ahead which experts will fire and queues
+        // PCIe DMA transfers so the GPU never stalls waiting for expert weights.
+        [&]() {
+            std::string modelPath = config.getString("moe.model_path", "");
+            std::string modelId   = apiModel.empty()
+                                  ? config.getString("moe.model_id", "")
+                                  : apiModel;
 
-        // --- probe hardware + model list ---
-        auto probe = strataMgr.probe(strataRoot);
-        if (!probe.ok) {
-            spdlog::error("Strata probe failed: {}", probe.error);
-            spdlog::error("Install Strata (https://github.com/Niko1221/Strata) "
-                          "or set strata.root in config.yaml to the source tree.");
-            // Fall through to error client so the session fails cleanly
-            apiClient = std::make_unique<RemoteAPIClient>("", "http://localhost", "none");
-            appState.currentModel = "none";
-        } else {
-            // Log hardware summary
-            spdlog::info("Strata hardware: {}", probe.hardware.summary.empty()
-                         ? probe.hardware.gpuName + " " +
-                           std::to_string((int)probe.hardware.vramGb) + " GB VRAM, " +
-                           std::to_string((int)probe.hardware.ramGb) + " GB RAM"
-                         : probe.hardware.summary);
-
-            // Determine which model to run:
-            //   1. api.model from config / CLI  (user's explicit choice)
-            //   2. Strata's own recommendation  (based on hw fit)
-            //   3. First "fits" model in the list
-            std::string chosenId;
-            if (!apiModel.empty()) {
-                // User specified a model id directly — trust them
-                chosenId = apiModel;
-                spdlog::info("Strata: using user-specified model id: {}", chosenId);
-            } else if (probe.recommended.has_value()) {
-                chosenId = probe.recommended->id;
-                spdlog::info("Strata: recommended model: {} ({}) — {}",
-                             probe.recommended->familyTitle,
-                             probe.recommended->model,
-                             probe.recommended->words);
-            } else if (!probe.models.empty()) {
-                chosenId = probe.models[0].id;
-                spdlog::warn("Strata: no recommendation; using first model: {}", chosenId);
-            }
-
-            if (chosenId.empty()) {
-                spdlog::error("Strata: no runnable model found for this hardware.");
-                apiClient = std::make_unique<RemoteAPIClient>("", "http://localhost", "none");
-                appState.currentModel = "none";
-            } else {
-                // Start Strata server (picks a free port, polls /health)
-                int startTimeoutSec = config.getInt("strata.start_timeout_sec", 120);
-                bool started = strataMgr.start(chosenId, strataRoot, startTimeoutSec);
-                if (!started) {
-                    spdlog::error("Strata: server failed to start for model '{}'. "
-                                  "Check that Python + Strata deps are installed in "
-                                  "external/strata/.venv or on PATH.", chosenId);
+            if (modelPath.empty()) {
+                auto hw      = closecrab::moe::detectHardware();
+                auto catalog = closecrab::moe::modelCatalog(hw);
+                auto* rec    = closecrab::moe::recommendModel(catalog);
+                spdlog::info("MoE hardware: {}", hw.summary);
+                if (!hw.gpus.empty())
+                    spdlog::info("MoE GPU: {} {:.0f} GB VRAM",
+                                 hw.gpus[0].name, hw.gpus[0].vramGb);
+                for (auto& m : catalog)
+                    spdlog::info("  [{}] {} {} — {} ({:.0f} GB download)",
+                        m.verdict, m.family, m.quant, m.verdictWords, m.downloadGb);
+                if (rec) {
+                    spdlog::info("MoE: recommended {} {} ({})",
+                        rec->family, rec->quant, rec->verdictWords);
+                    modelId   = rec->id;
+                    modelPath = config.getString("moe.models_dir", "models/moe")
+                              + "/" + rec->id;
+                } else {
+                    spdlog::error("MoE: no suitable model for this hardware. "
+                        "Set moe.model_path in config.yaml or use /local to download one.");
                     apiClient = std::make_unique<RemoteAPIClient>("", "http://localhost", "none");
                     appState.currentModel = "none";
-                } else {
-                    // Server up — point RemoteAPIClient at its Anthropic-compat endpoint.
-                    // Strata ignores auth by default; use a placeholder key.
-                    std::string strataBaseUrl = strataMgr.baseUrl();
-                    std::string strataKey     = config.getString("strata.api_key", "strata-local");
-                    auto remote = std::make_unique<RemoteAPIClient>(strataKey, strataBaseUrl, chosenId);
-                    appState.currentModel = "strata:" + chosenId;
-                    spdlog::info("Strata: ready — provider={} model={}",
-                                 strataBaseUrl, chosenId);
-                    // Log fits/tight models as info for the user
-                    for (auto& m : probe.models) {
-                        if (m.verdict == "fits" || m.verdict == "tight") {
-                            spdlog::debug("  {} {} — {} ({:.0f} GB VRAM, {:.0f} GB RAM{})",
-                                m.familyTitle, m.model, m.words,
-                                m.needVramGb, m.needRamGb,
-                                m.recommended ? ", recommended" : "");
-                        }
-                    }
-                    apiClient = std::move(remote);
+                    return;
                 }
             }
-        }
-    } else {
+
+            auto moeClient = std::make_unique<MoELLMClient>(modelId, modelPath);
+            appState.currentModel = moeClient->getModelName();
+            spdlog::info("MoE engine started: {}", appState.currentModel);
+            apiClient = std::move(moeClient);
+        }();
         // Local LLM
         std::string mpath = modelPath.empty()
             ? config.getString("llm.model_path", "")

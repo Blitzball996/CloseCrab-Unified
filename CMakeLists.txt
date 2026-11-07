@@ -17,7 +17,7 @@ project(CloseCrab-Unified VERSION 0.4.9 LANGUAGES C CXX)
 
 option(USE_CUDA "Enable CUDA GPU acceleration (Windows/Linux with NVIDIA)" ON)
 option(USE_LOCAL_LLM "Enable local LLM inference via llama.cpp" ON)
-option(USE_STRATA "Enable Strata MoE inference engine integration (external/strata)" OFF)
+option(USE_MOE_ENGINE "Enable MoE engine for 125B+ local models (external/moe, full C++)" OFF)
 option(USE_FAISS "Enable FAISS vector search for RAG" ON)
 option(USE_ONNX "Enable ONNX Runtime for embeddings" ON)
 option(BUILD_TESTS "Build unit tests" OFF)
@@ -301,52 +301,51 @@ if(USE_LOCAL_LLM)
 endif()
 
 # ============================================
-# Strata MoE inference engine (optional)
-# Source vendored at external/strata (MIT, github.com/Niko1221/Strata).
-# Strata exposes an Anthropic-compatible /v1/messages endpoint on
-# http://127.0.0.1:8080, so at runtime CloseCrab points its existing
-# RemoteAPIClient at that base URL (provider == "strata"). The C++ engine
-# and Python HTTP server are built here as an isolated ExternalProject so
-# the CUDA/SYCL/HIP option matrix in Strata's own CMakeLists never bleeds
-# into CloseCrab's build graph. Default OFF: nothing changes for users who
-# do not opt in.
+# MoE engine — 125B local models on consumer GPUs
+# Vendored source at external/moe (MIT, rebranded from Niko1221/Strata).
+# The engine binary (closecrab-moe-engine.exe) is built as an ExternalProject
+# (CUDA/HIP optional, CPU-only by default) and placed beside closecrab.exe.
+# CloseCrab spawns it invisibly; users see only "Local" mode.
+# Default OFF — existing builds unchanged.
 # ============================================
 
-if(USE_STRATA)
-    set(STRATA_PATH "${CMAKE_CURRENT_SOURCE_DIR}/external/strata")
-    if(EXISTS "${STRATA_PATH}/CMakeLists.txt")
+set(MOE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/external/moe")
+
+if(USE_MOE_ENGINE)
+    if(EXISTS "${MOE_PATH}/CMakeLists.txt")
         include(ExternalProject)
-        # Build only the CPU path (STRATA_ENABLE_CUDA/HIP/SYCL all OFF).
-        # Outputs go to <build>/strata-prefix; CloseCrab does not link the
-        # engine in-process — the Python `serve.server` loads it at runtime.
-        ExternalProject_Add(strata_build
-            SOURCE_DIR        "${STRATA_PATH}"
-            BINARY_DIR        "${CMAKE_BINARY_DIR}/strata-build"
-            INSTALL_DIR       "${CMAKE_BINARY_DIR}/strata-prefix"
+        set(MOE_BINARY_DIR "${CMAKE_BINARY_DIR}/moe-engine-build")
+        set(MOE_OUTPUT_DIR "$<TARGET_FILE_DIR:closecrab-unified>")
+
+        ExternalProject_Add(moe_engine_build
+            SOURCE_DIR   "${MOE_PATH}"
+            BINARY_DIR   "${MOE_BINARY_DIR}"
             CMAKE_ARGS
                 -DCMAKE_BUILD_TYPE=Release
-                -DSTRATA_ENABLE_CUDA=OFF
-                -DSTRATA_ENABLE_HIP=OFF
-                -DSTRATA_HIP_GFX906=OFF
-                -DSTRATA_ENABLE_SYCL=OFF
-                -DSTRATA_BUILD_TESTS=OFF
-                -DSTRATA_PORTABLE=OFF
-                -DCMAKE_INSTALL_PREFIX=${CMAKE_BINARY_DIR}/strata-prefix
-            BUILD_BYPRODUCTS  "${CMAKE_BINARY_DIR}/strata-prefix/bin/strata-gguf"
-            BUILD_COMMAND     ${CMAKE_COMMAND} --build <BINARY_DIR> --config Release --target strata-gguf strata-dequant
-            INSTALL_COMMAND   ${CMAKE_COMMAND} --install <BINARY_DIR> --config Release --prefix ${CMAKE_BINARY_DIR}/strata-prefix
-            STEP_TARGETS      configure build install
+                -DCC_MOE_ENABLE_CUDA=${USE_CUDA}
+                -DCC_MOE_ENABLE_HIP=OFF
+                -DCC_MOE_ENABLE_SYCL=OFF
+                -DCC_MOE_BUILD_TESTS=OFF
+                -DCC_MOE_PORTABLE=OFF
+                -DCMAKE_INSTALL_PREFIX=${CMAKE_BINARY_DIR}/moe-prefix
+            BUILD_COMMAND
+                ${CMAKE_COMMAND} --build <BINARY_DIR> --config Release
+                --target closecrab-moe-engine moe-gguf moe-dequant
+            INSTALL_COMMAND ""
         )
-        # Phony target so the main build depends on Strata without linking it.
-        add_custom_target(strata_engine ALL
-            DEPENDS strata_build
-            COMMENT "Strata engine available at ${CMAKE_BINARY_DIR}/strata-prefix"
+        # Copy engine binary beside closecrab.exe after build
+        ExternalProject_Add_Step(moe_engine_build copy_engine
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MOE_BINARY_DIR}/Release/closecrab-moe-engine.exe"
+                "${CMAKE_BINARY_DIR}/Release/closecrab-moe-engine.exe"
+            DEPENDEES build
+            COMMENT "Copying closecrab-moe-engine.exe beside closecrab.exe"
         )
-        add_definitions(-DCLOSECRAB_HAS_STRATA)
-        message(STATUS "Strata: ENABLED (external/strata, Anthropic API on 127.0.0.1:8080)")
+        add_compile_definitions(CLOSECRAB_HAS_MOE_ENGINE)
+        message(STATUS "MoE engine: ENABLED (${MOE_PATH}, CUDA=${USE_CUDA})")
     else()
-        message(WARNING "Strata source not found at ${STRATA_PATH} - disabling Strata integration")
-        set(USE_STRATA OFF)
+        message(WARNING "MoE source not found at ${MOE_PATH} - disabling USE_MOE_ENGINE")
+        set(USE_MOE_ENGINE OFF)
     endif()
 endif()
 
@@ -432,7 +431,9 @@ add_executable(closecrab-unified
     src/api/RemoteAPIClient.cpp
     src/api/OpenAICompatClient.cpp
     src/api/StreamParser.cpp
-    src/strata/StrataManager.cpp
+    src/moe/MoEHardwareProbe.cpp
+    src/moe/MoEEngine.cpp
+    src/moe/MoELLMClient.cpp
     src/tools/ToolRegistry.cpp
     src/commands/CommandRegistry.cpp
     src/permissions/PermissionEngine.cpp
@@ -610,7 +611,7 @@ message(STATUS "CloseCrab-Unified v${PROJECT_VERSION}")
 message(STATUS "  Platform:    ${CMAKE_SYSTEM_NAME}")
 message(STATUS "  CUDA:        ${USE_CUDA}")
 message(STATUS "  Local LLM:   ${USE_LOCAL_LLM}")
-message(STATUS "  Strata:      ${USE_STRATA}")
+message(STATUS "  MoE engine:  ${USE_MOE_ENGINE}")
 message(STATUS "  FAISS:       ${USE_FAISS}")
 message(STATUS "  ONNX:        ${USE_ONNX}")
 if(APPLE AND USE_LOCAL_LLM)
