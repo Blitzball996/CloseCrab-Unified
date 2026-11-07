@@ -8,6 +8,7 @@
 #include "../security/Sandbox.h"
 #include "../permissions/PermissionEngine.h"
 #include "../utils/SafePopen.h"
+#include "../moe/MoEHardwareProbe.h"
 #include <sstream>
 #include <iomanip>
 #include <filesystem>
@@ -461,6 +462,123 @@ public:
         std::ofstream f(crabMd.string());
         if (f.is_open()) { f << content; f.close(); }
         ctx.print("Created " + crabMd.string() + "\n");
+        return CommandResult::ok();
+    }
+};
+
+// /local — local MoE model management: detect hardware, list models, download.
+class LocalCommand : public Command {
+public:
+    std::string getName() const override { return "local"; }
+    std::string getDescription() const override {
+        return "Local MoE model: detect hardware, list runnable models, download one";
+    }
+
+    CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        namespace moe = closecrab::moe;
+        if (args == "detect" || args.empty()) {
+            auto hw = moe::detectHardware();
+            ctx.print("=== Hardware Detection ===\n");
+            ctx.print("OS:     " + hw.os + "\n");
+            ctx.print("RAM:    " + std::to_string((int)hw.ramGb) + " GB\n");
+            ctx.print("Disk:   " + std::to_string((int)hw.diskFreeGb) + " GB free\n");
+            ctx.print("AVX2:   " + std::string(hw.hasAvx2 ? "yes" : "no") + "\n");
+            ctx.print("AVX512: " + std::string(hw.hasAvx512 ? "yes" : "no") + "\n");
+            if (hw.gpus.empty()) {
+                ctx.print("GPU:    (none detected)\n");
+            } else {
+                for (size_t i = 0; i < hw.gpus.size(); ++i) {
+                    auto& g = hw.gpus[i];
+                    ctx.print("GPU[" + std::to_string(i) + "]: " + g.name +
+                              "  " + std::to_string((int)g.vramGb) + " GB VRAM" +
+                              "  arch sm_" + g.arch + "\n");
+                }
+            }
+            if (!hw.summary.empty()) ctx.print("Summary: " + hw.summary + "\n");
+            ctx.print("\nUse /local list to see runnable models.\n");
+            ctx.print("Use /local download <id> to fetch a model.\n");
+            return CommandResult::ok();
+        }
+        if (args == "list") {
+            auto hw = moe::detectHardware();
+            auto cats = moe::modelCatalog(hw);
+            ctx.print("=== Local Models (Qwen3.8-Flash-Next family) ===\n");
+            ctx.print("Hardware: " + (hw.summary.empty() ? hw.os : hw.summary) + "\n\n");
+            if (cats.empty()) { ctx.print("(no models in catalog)\n"); return CommandResult::ok(); }
+            // Header
+            ctx.print(std::string(8,' ') + std::string(12,' ') + "  download  memory  verdict\n");
+            for (auto& m : cats) {
+                std::string mark = m.recommended ? "*" : " ";
+                std::string verdictWord = m.verdict;
+                if (m.verdict == "fits")       verdictWord = "OK";
+                else if (m.verdict == "tight") verdictWord = "tight";
+                else                            verdictWord = "no";
+                std::ostringstream line;
+                line << mark << " " << std::left << std::setw(14)
+                     << (m.family + " " + m.quant)
+                     << "  " << std::right << std::setw(6) << (int)m.downloadGb << " GB"
+                     << "  " << std::setw(5) << (int)m.memoryGb << " GB"
+                     << "  " << verdictWord;
+                if (m.recommended) line << "  <- recommended";
+                line << "\n";
+                line << "    " << m.description << "\n";
+                line << "    " << m.verdictWords << "\n";
+                ctx.print(line.str());
+            }
+            ctx.print("\n* = recommended for your hardware.\n");
+            ctx.print("Use /local download <model-id> to download.\n");
+            ctx.print("Example: /local download qwen-iq3_xxs\n");
+            return CommandResult::ok();
+        }
+        // /local download <id>
+        if (args.rfind("download ", 0) == 0) {
+            std::string id = args.substr(9);
+            // Trim
+            while (!id.empty() && (id.back()==' '||id.back()=='\r'||id.back()=='\n')) id.pop_back();
+            while (!id.empty() && (id.front()==' ')) id.erase(0,1);
+            auto hw = moe::detectHardware();
+            auto cats = moe::modelCatalog(hw);
+            auto it = std::find_if(cats.begin(), cats.end(),
+                [&](const moe::ModelEntry& m){ return m.id == id; });
+            if (it == cats.end()) {
+                ctx.print("Unknown model id: " + id + "\n");
+                ctx.print("Use /local list to see available ids.\n");
+                return CommandResult::ok();
+            }
+            auto& m = *it;
+            ctx.print("Model: " + m.family + " " + m.quant + "\n");
+            ctx.print("Download: " + std::to_string((int)m.downloadGb) + " GB from HuggingFace\n");
+            ctx.print("Memory needed: " + std::to_string((int)m.memoryGb) + " GB (VRAM+RAM)\n");
+            ctx.print("Fit: " + m.verdict + " — " + m.verdictWords + "\n");
+            ctx.print("\nDownloading from " + m.hfRepo + "/" + m.hfFile + "\n");
+            // Spawn a curl download into models/moe/<id>/
+            std::string dir = "models/moe/" + id;
+            std::error_code ec;
+            std::filesystem::create_directories(dir, ec);
+            std::string url = "https://huggingface.co/" + m.hfRepo + "/resolve/main/" + m.hfFile;
+            std::string outPath = dir + "/" + m.hfFile.substr(m.hfFile.find_last_of('/')+1);
+            ctx.print("Saving to: " + outPath + "\n");
+            std::string cmd = "curl -L --progress-bar -o \"" + outPath + "\" \"" + url + "\"";
+            ctx.print("Running: " + cmd + "\n");
+            int rc = std::system(cmd.c_str());
+            if (rc != 0) {
+                ctx.print("Download failed (rc=" + std::to_string(rc) + ").\n");
+                ctx.print("Check your network / proxy, or download manually.\n");
+                return CommandResult::ok();
+            }
+            ctx.print("\nDownload complete.\n");
+            ctx.print("Set provider in config.yaml:\n");
+            ctx.print("  provider: \"local-moe\"\n");
+            ctx.print("  moe:\n");
+            ctx.print("    model_path: \"" + dir + "\"\n");
+            ctx.print("    model_id: \"" + id + "\"\n");
+            ctx.print("Then restart CloseCrab to use the local model.\n");
+            return CommandResult::ok();
+        }
+        ctx.print("Usage: /local detect | list | download <model-id>\n");
+        ctx.print("  /local detect              — detect GPU/RAM/disk\n");
+        ctx.print("  /local list                — list runnable models with fit verdicts\n");
+        ctx.print("  /local download <id>       — download a model (e.g. qwen-iq3_xxs)\n");
         return CommandResult::ok();
     }
 };

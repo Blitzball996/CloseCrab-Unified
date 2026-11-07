@@ -1254,6 +1254,7 @@ int main(int argc, char* argv[]) {
     cmdRegistry.registerCommand(std::make_unique<PlanCommand>());
     cmdRegistry.registerCommand(std::make_unique<DoctorCommand>());
     cmdRegistry.registerCommand(std::make_unique<InitCommand>());
+    cmdRegistry.registerCommand(std::make_unique<LocalCommand>());
     cmdRegistry.registerCommand(std::make_unique<AddDirCommand>());
     cmdRegistry.registerCommand(std::make_unique<FilesCommand>());
     cmdRegistry.registerCommand(std::make_unique<ProviderCommand>());
