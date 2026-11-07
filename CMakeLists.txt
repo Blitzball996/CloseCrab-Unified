@@ -327,6 +327,7 @@ if(USE_MOE_ENGINE)
                 -DCC_MOE_ENABLE_SYCL=OFF
                 -DCC_MOE_BUILD_TESTS=OFF
                 -DCC_MOE_PORTABLE=OFF
+                -DCMAKE_CUDA_ARCHITECTURES=89
                 -DCMAKE_INSTALL_PREFIX=${CMAKE_BINARY_DIR}/moe-prefix
             BUILD_COMMAND
                 ${CMAKE_COMMAND} --build <BINARY_DIR> --config Release
