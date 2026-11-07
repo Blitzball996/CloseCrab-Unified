@@ -432,6 +432,7 @@ add_executable(closecrab-unified
     src/api/RemoteAPIClient.cpp
     src/api/OpenAICompatClient.cpp
     src/api/StreamParser.cpp
+    src/strata/StrataManager.cpp
     src/tools/ToolRegistry.cpp
     src/commands/CommandRegistry.cpp
     src/permissions/PermissionEngine.cpp

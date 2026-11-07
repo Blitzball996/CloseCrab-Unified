@@ -58,6 +58,7 @@
 #include "api/LocalLLMClient.h"
 #include "api/RemoteAPIClient.h"
 #include "api/OpenAICompatClient.h"
+#include "strata/StrataManager.h"
 
 // Tools
 // FileReadTool: when built with USE_ENHANCED_FILE_READ (default ON), the
@@ -1145,27 +1146,87 @@ int main(int argc, char* argv[]) {
         apiClient = std::move(oai);
     } else if (provider == "strata") {
         // Strata MoE inference engine (github.com/Niko1221/Strata, MIT).
-        // Strata exposes an Anthropic-compatible /v1/messages endpoint on
-        // http://127.0.0.1:8080 by default. CloseCrab's RemoteAPIClient speaks
-        // this protocol natively — Strata acts as a local Anthropic-compatible
-        // API server backed by a 125B+ MoE model on consumer hardware.
-        //
-        // Requirements: Strata must be running before CloseCrab starts.
-        //   Windows: run Strata-*.exe or `python -m serve.server --engine strata --port 8080`
-        //   Linux:   run the Strata AppImage or `strata launch`
-        //
-        // Override the port with: api.base_url: http://127.0.0.1:<port>
-        // Override the model name with: api.model: <strata-model-id>
-        if (apiBaseUrl.empty()) apiBaseUrl = "http://127.0.0.1:8080";
-        if (apiKey.empty())     apiKey     = "strata-local";   // Strata ignores auth by default
-        if (apiModel.empty())   apiModel   = "strata";
-        auto remote = std::make_unique<RemoteAPIClient>(apiKey, apiBaseUrl, apiModel);
-        // Strata does not understand Claude-specific beta headers that it 400s on;
-        // the existing stripEffort / retry-compaction logic in RemoteAPIClient
-        // handles that transparently (strips output_config, retries once).
-        appState.currentModel = "strata:" + apiModel;
-        spdlog::info("Using Strata local engine: {} ({})", apiBaseUrl, apiModel);
-        apiClient = std::move(remote);
+        // 1. Run strata_probe.py to detect GPU/RAM and list runnable models.
+        // 2. Start the Strata Python server on a free local port.
+        // 3. Point RemoteAPIClient at http://127.0.0.1:<port> (Anthropic-compat).
+        // All CloseCrab tools, agent loop, hooks, MCP etc. are unchanged —
+        // Strata is just the model backend, same as Claude API.
+        auto& strataMgr = closecrab::StrataManager::getInstance();
+        std::string strataRoot = config.getString("strata.root", "");
+
+        // --- probe hardware + model list ---
+        auto probe = strataMgr.probe(strataRoot);
+        if (!probe.ok) {
+            spdlog::error("Strata probe failed: {}", probe.error);
+            spdlog::error("Install Strata (https://github.com/Niko1221/Strata) "
+                          "or set strata.root in config.yaml to the source tree.");
+            // Fall through to error client so the session fails cleanly
+            apiClient = std::make_unique<RemoteAPIClient>("", "http://localhost", "none");
+            appState.currentModel = "none";
+        } else {
+            // Log hardware summary
+            spdlog::info("Strata hardware: {}", probe.hardware.summary.empty()
+                         ? probe.hardware.gpuName + " " +
+                           std::to_string((int)probe.hardware.vramGb) + " GB VRAM, " +
+                           std::to_string((int)probe.hardware.ramGb) + " GB RAM"
+                         : probe.hardware.summary);
+
+            // Determine which model to run:
+            //   1. api.model from config / CLI  (user's explicit choice)
+            //   2. Strata's own recommendation  (based on hw fit)
+            //   3. First "fits" model in the list
+            std::string chosenId;
+            if (!apiModel.empty()) {
+                // User specified a model id directly — trust them
+                chosenId = apiModel;
+                spdlog::info("Strata: using user-specified model id: {}", chosenId);
+            } else if (probe.recommended.has_value()) {
+                chosenId = probe.recommended->id;
+                spdlog::info("Strata: recommended model: {} ({}) — {}",
+                             probe.recommended->familyTitle,
+                             probe.recommended->model,
+                             probe.recommended->words);
+            } else if (!probe.models.empty()) {
+                chosenId = probe.models[0].id;
+                spdlog::warn("Strata: no recommendation; using first model: {}", chosenId);
+            }
+
+            if (chosenId.empty()) {
+                spdlog::error("Strata: no runnable model found for this hardware.");
+                apiClient = std::make_unique<RemoteAPIClient>("", "http://localhost", "none");
+                appState.currentModel = "none";
+            } else {
+                // Start Strata server (picks a free port, polls /health)
+                int startTimeoutSec = config.getInt("strata.start_timeout_sec", 120);
+                bool started = strataMgr.start(chosenId, strataRoot, startTimeoutSec);
+                if (!started) {
+                    spdlog::error("Strata: server failed to start for model '{}'. "
+                                  "Check that Python + Strata deps are installed in "
+                                  "external/strata/.venv or on PATH.", chosenId);
+                    apiClient = std::make_unique<RemoteAPIClient>("", "http://localhost", "none");
+                    appState.currentModel = "none";
+                } else {
+                    // Server up — point RemoteAPIClient at its Anthropic-compat endpoint.
+                    // Strata ignores auth by default; use a placeholder key.
+                    std::string strataBaseUrl = strataMgr.baseUrl();
+                    std::string strataKey     = config.getString("strata.api_key", "strata-local");
+                    auto remote = std::make_unique<RemoteAPIClient>(strataKey, strataBaseUrl, chosenId);
+                    appState.currentModel = "strata:" + chosenId;
+                    spdlog::info("Strata: ready — provider={} model={}",
+                                 strataBaseUrl, chosenId);
+                    // Log fits/tight models as info for the user
+                    for (auto& m : probe.models) {
+                        if (m.verdict == "fits" || m.verdict == "tight") {
+                            spdlog::debug("  {} {} — {} ({:.0f} GB VRAM, {:.0f} GB RAM{})",
+                                m.familyTitle, m.model, m.words,
+                                m.needVramGb, m.needRamGb,
+                                m.recommended ? ", recommended" : "");
+                        }
+                    }
+                    apiClient = std::move(remote);
+                }
+            }
+        }
     } else {
         // Local LLM
         std::string mpath = modelPath.empty()
