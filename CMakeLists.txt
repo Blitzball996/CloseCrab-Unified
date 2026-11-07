@@ -329,6 +329,10 @@ if(USE_MOE_ENGINE)
                 -DCC_MOE_PORTABLE=OFF
                 -DCMAKE_CUDA_ARCHITECTURES=89
                 -DSTRATA_GGML_DIR=${CMAKE_CURRENT_SOURCE_DIR}/external/llama.cpp
+                -DCC_MOE_GGML_DIR=${CMAKE_CURRENT_SOURCE_DIR}/external/llama.cpp
+                -DCC_MOE_MMQ_KQUANTS=OFF
+                -DCC_MOE_NATIVE_EXPERTS=OFF
+                -DCC_MOE_MMQ_TQ_OVERLAY=OFF
                 -DFETCHCONTENT_SOURCE_DIR_STRATA_LLAMACPP=${CMAKE_CURRENT_SOURCE_DIR}/external/llama.cpp
                 -DFETCHCONTENT_UPDATES_DISCONNECTED=ON
                 -DCMAKE_INSTALL_PREFIX=${CMAKE_BINARY_DIR}/moe-prefix
