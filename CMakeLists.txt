@@ -17,6 +17,7 @@ project(CloseCrab-Unified VERSION 0.4.9 LANGUAGES C CXX)
 
 option(USE_CUDA "Enable CUDA GPU acceleration (Windows/Linux with NVIDIA)" ON)
 option(USE_LOCAL_LLM "Enable local LLM inference via llama.cpp" ON)
+option(USE_STRATA "Enable Strata MoE inference engine integration (external/strata)" OFF)
 option(USE_FAISS "Enable FAISS vector search for RAG" ON)
 option(USE_ONNX "Enable ONNX Runtime for embeddings" ON)
 option(BUILD_TESTS "Build unit tests" OFF)
@@ -299,6 +300,56 @@ if(USE_LOCAL_LLM)
     endif()
 endif()
 
+# ============================================
+# Strata MoE inference engine (optional)
+# Source vendored at external/strata (MIT, github.com/Niko1221/Strata).
+# Strata exposes an Anthropic-compatible /v1/messages endpoint on
+# http://127.0.0.1:8080, so at runtime CloseCrab points its existing
+# RemoteAPIClient at that base URL (provider == "strata"). The C++ engine
+# and Python HTTP server are built here as an isolated ExternalProject so
+# the CUDA/SYCL/HIP option matrix in Strata's own CMakeLists never bleeds
+# into CloseCrab's build graph. Default OFF: nothing changes for users who
+# do not opt in.
+# ============================================
+
+if(USE_STRATA)
+    set(STRATA_PATH "${CMAKE_CURRENT_SOURCE_DIR}/external/strata")
+    if(EXISTS "${STRATA_PATH}/CMakeLists.txt")
+        include(ExternalProject)
+        # Build only the CPU path (STRATA_ENABLE_CUDA/HIP/SYCL all OFF).
+        # Outputs go to <build>/strata-prefix; CloseCrab does not link the
+        # engine in-process — the Python `serve.server` loads it at runtime.
+        ExternalProject_Add(strata_build
+            SOURCE_DIR        "${STRATA_PATH}"
+            BINARY_DIR        "${CMAKE_BINARY_DIR}/strata-build"
+            INSTALL_DIR       "${CMAKE_BINARY_DIR}/strata-prefix"
+            CMAKE_ARGS
+                -DCMAKE_BUILD_TYPE=Release
+                -DSTRATA_ENABLE_CUDA=OFF
+                -DSTRATA_ENABLE_HIP=OFF
+                -DSTRATA_HIP_GFX906=OFF
+                -DSTRATA_ENABLE_SYCL=OFF
+                -DSTRATA_BUILD_TESTS=OFF
+                -DSTRATA_PORTABLE=OFF
+                -DCMAKE_INSTALL_PREFIX=${CMAKE_BINARY_DIR}/strata-prefix
+            BUILD_BYPRODUCTS  "${CMAKE_BINARY_DIR}/strata-prefix/bin/strata-gguf"
+            BUILD_COMMAND     ${CMAKE_COMMAND} --build <BINARY_DIR> --config Release --target strata-gguf strata-dequant
+            INSTALL_COMMAND   ${CMAKE_COMMAND} --install <BINARY_DIR> --config Release --prefix ${CMAKE_BINARY_DIR}/strata-prefix
+            STEP_TARGETS      configure build install
+        )
+        # Phony target so the main build depends on Strata without linking it.
+        add_custom_target(strata_engine ALL
+            DEPENDS strata_build
+            COMMENT "Strata engine available at ${CMAKE_BINARY_DIR}/strata-prefix"
+        )
+        add_definitions(-DCLOSECRAB_HAS_STRATA)
+        message(STATUS "Strata: ENABLED (external/strata, Anthropic API on 127.0.0.1:8080)")
+    else()
+        message(WARNING "Strata source not found at ${STRATA_PATH} - disabling Strata integration")
+        set(USE_STRATA OFF)
+    endif()
+endif()
+
 # ============================
 # Enhanced FileReadTool (JackProAi alignment, 95% parity)
 # ================================
@@ -558,6 +609,7 @@ message(STATUS "CloseCrab-Unified v${PROJECT_VERSION}")
 message(STATUS "  Platform:    ${CMAKE_SYSTEM_NAME}")
 message(STATUS "  CUDA:        ${USE_CUDA}")
 message(STATUS "  Local LLM:   ${USE_LOCAL_LLM}")
+message(STATUS "  Strata:      ${USE_STRATA}")
 message(STATUS "  FAISS:       ${USE_FAISS}")
 message(STATUS "  ONNX:        ${USE_ONNX}")
 if(APPLE AND USE_LOCAL_LLM)

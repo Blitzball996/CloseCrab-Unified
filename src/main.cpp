@@ -1143,6 +1143,29 @@ int main(int argc, char* argv[]) {
         appState.currentModel = apiModel;
         spdlog::info("Using OpenAI-compatible API: {} ({})", apiBaseUrl, apiModel);
         apiClient = std::move(oai);
+    } else if (provider == "strata") {
+        // Strata MoE inference engine (github.com/Niko1221/Strata, MIT).
+        // Strata exposes an Anthropic-compatible /v1/messages endpoint on
+        // http://127.0.0.1:8080 by default. CloseCrab's RemoteAPIClient speaks
+        // this protocol natively — Strata acts as a local Anthropic-compatible
+        // API server backed by a 125B+ MoE model on consumer hardware.
+        //
+        // Requirements: Strata must be running before CloseCrab starts.
+        //   Windows: run Strata-*.exe or `python -m serve.server --engine strata --port 8080`
+        //   Linux:   run the Strata AppImage or `strata launch`
+        //
+        // Override the port with: api.base_url: http://127.0.0.1:<port>
+        // Override the model name with: api.model: <strata-model-id>
+        if (apiBaseUrl.empty()) apiBaseUrl = "http://127.0.0.1:8080";
+        if (apiKey.empty())     apiKey     = "strata-local";   // Strata ignores auth by default
+        if (apiModel.empty())   apiModel   = "strata";
+        auto remote = std::make_unique<RemoteAPIClient>(apiKey, apiBaseUrl, apiModel);
+        // Strata does not understand Claude-specific beta headers that it 400s on;
+        // the existing stripEffort / retry-compaction logic in RemoteAPIClient
+        // handles that transparently (strips output_config, retries once).
+        appState.currentModel = "strata:" + apiModel;
+        spdlog::info("Using Strata local engine: {} ({})", apiBaseUrl, apiModel);
+        apiClient = std::move(remote);
     } else {
         // Local LLM
         std::string mpath = modelPath.empty()

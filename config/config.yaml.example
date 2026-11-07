@@ -11,9 +11,14 @@ logging:
   level: "info"
 
 # ============================================
-# Provider: local, anthropic, openai
+# Provider: local, anthropic, openai, strata
 # Defaults to anthropic so a fresh install works out of the box
 # (a brand-new machine has no local .gguf model).
+#
+# strata: uses the Strata MoE engine (github.com/Niko1221/Strata).
+#   Start Strata first (Strata-*.exe / AppImage), then launch CloseCrab
+#   with provider: "strata". CloseCrab connects to Strata's built-in
+#   Anthropic-compatible API on http://127.0.0.1:8080.
 # ============================================
 provider: "anthropic"
 
