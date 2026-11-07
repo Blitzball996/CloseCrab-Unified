@@ -146,37 +146,41 @@ echo ============================================================
 echo.
 
 REM --- 显示推荐的 anthropic-beta header 值 ---
+REM 下方列表来自 2026-11-07 对 v2.1.319 二进制的 capture_claude_request.py 真实抓包
 echo.
-echo === 推荐用于 API 调用的 anthropic-beta header ===
+echo === 推荐用于 API 调用的 anthropic-beta header (v2.1.319, 2026-11-07) ===
 echo.
 echo 基础 (必须):
 echo   claude-code-20250219
 echo.
-echo 缓存相关:
-echo   prompt-caching-scope-2026-01-05
-echo   extended-cache-ttl-2025-04-11
-echo.
 echo Thinking:
 echo   interleaved-thinking-2025-05-14
-echo   redact-thinking-2026-02-12
 echo   thinking-token-count-2026-05-13
 echo.
 echo 工具增强:
 echo   advanced-tool-use-2025-11-20
-echo   tool-search-tool-2025-10-19
 echo.
-echo 其他:
+echo 会话控制:
 echo   context-management-2025-06-27
-echo   structured-outputs-2025-12-15
-echo   web-search-2025-03-05
-echo   mcp-servers-2025-12-04
-echo   mid-conversation-system-2026-04-07
+echo   per-turn-control-2026-07-01
+echo   mid-conversation-tool-changes-2026-07-01
 echo.
-echo === 已废弃 (不要使用) ===
-echo   prompt-caching-2024-07-31        (被 prompt-caching-scope-2026-01-05 替代)
+echo Effort:
+echo   effort-2025-11-24
+echo.
+echo === 已废弃 / 已移除 (不要使用) ===
+echo   prompt-caching-2024-07-31        (早期缓存，已废弃)
+echo   prompt-caching-scope-2026-01-05  (2.1.319 不再发送)
+echo   extended-cache-ttl-2025-04-11    (2.1.319 不再发送)
+echo   mid-conversation-system-2026-04-07 (被 mid-conversation-tool-changes-2026-07-01 替代)
+echo   structured-outputs-2025-12-15    (2.1.319 不再发送)
+echo   tool-search-tool-2025-10-19      (2.1.319 不再发送)
+echo   redact-thinking-2026-02-12       (2.1.319 不再发送)
+echo   web-search-2025-03-05            (2.1.319 不再发送)
+echo   mcp-servers-2025-12-04           (2.1.319 不再发送)
+echo   server-side-fallback-2026-07-01  (2.1.319 不再发送)
 echo   token-efficient-tools-2025-02-19 (已内置到 Claude 4+ 模型)
 echo   output-128k-2025-02-19           (已内置到 Claude 4+ 模型)
-echo   token-efficient-tools-2026-03-28 (不存在的日期，无效)
 echo.
 echo === 只对 header 是不够的 ===
 echo   请求体必须带顶层 metadata (metadata.user_id)，

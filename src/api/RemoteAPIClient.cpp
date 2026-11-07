@@ -774,38 +774,44 @@ static void performCurlSSE(
     headers = curl_slist_append(headers, ("x-api-key: " + apiKey).c_str());
     headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
     headers = curl_slist_append(headers, "content-type: application/json");
-    // anthropic-beta: matching Claude Code v2.1.258 headers (captured via
-    // scripts/capture_claude_request.py against a live 2.1.258 binary).
-    // Changes vs 2.1.220: context-1m-2025-08-07 is now unconditional (no longer
-    // opt-in for [1m] suffix only); added fallback-credit-2026-06-01; removed
-    // prompt-caching-evict, extended-cache-ttl, structured-outputs,
-    // advanced-tool-use, tool-search-tool, redact-thinking, per-turn-control,
-    // task-budgets, mcp-servers (no longer in 2.1.258 base set).
-    // web-search-2025-03-05 kept: harmless when unused, enables server-side
-    // web_search_20250305 tool for WebSearchTool without a separate header add.
+    // anthropic-beta: matching Claude Code v2.1.319 headers (captured via
+    // scripts/capture_claude_request.py against a live 2.1.319 binary, 2026-11-07).
+    // Exact set sent by the official client on a normal -p run:
+    //   - claude-code-20250219       (base client identifier)
+    //   - interleaved-thinking-2025-05-14, thinking-token-count-2026-05-13 (thinking)
+    //   - context-management-2025-06-27 (context window control)
+    //   - per-turn-control-2026-07-01 (per-turn config)
+    //   - mid-conversation-tool-changes-2026-07-01 (replaces mid-conversation-system-2026-04-07)
+    //   - advanced-tool-use-2025-11-20 (tool enhancements)
+    //   - effort-2025-11-24          (output_config.effort support)
+    // Removed vs 2.1.260: prompt-caching-scope-2026-01-05, extended-cache-ttl-2025-04-11,
+    //   structured-outputs-2025-12-15, tool-search-tool-2025-10-19, redact-thinking-2026-02-12,
+    //   web-search-2025-03-05, mcp-servers-2025-12-04, server-side-fallback-2026-07-01,
+    //   mid-conversation-system-2026-04-07
     std::string betaHeader =
-        "anthropic-beta: claude-code-20250219,context-1m-2025-08-07,"
-        "interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,"
-        "context-management-2025-06-27,prompt-caching-scope-2026-01-05,"
-        "mid-conversation-system-2026-04-07,effort-2025-11-24,"
-        "fallback-credit-2026-06-01,web-search-2025-03-05";
-    (void)want1M; // context-1m is now unconditional in 2.1.258
+        "anthropic-beta: claude-code-20250219,"
+        "interleaved-thinking-2025-05-14,context-management-2025-06-27,"
+        "per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,"
+        "thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,"
+        "effort-2025-11-24";
+    (void)want1M; // 1M context now handled via system messages
     headers = curl_slist_append(headers, betaHeader.c_str());
     // Identity headers matching Claude Code SDK. Captured from a live
     // `claude -p` run (scripts/capture_claude_request.py); every one of these is
-    // sent by the real 2.1.258 client, so sending them keeps us on the safe side
+    // sent by the real 2.1.319 client, so sending them keeps us on the safe side
     // of proxy client-fingerprint checks. None of them changes API semantics.
-    // 2.1.258 changes: User-Agent "cli" → "sdk-cli"; package 0.94.0 → 0.112.1;
-    // new X-Stainless-Runtime-Version: v26.3.0.
+    // 2.1.319 changes vs 2.1.258: User-Agent 2.1.258 → 2.1.319;
+    // X-Stainless-Package-Version 0.112.1 → 0.128.0;
+    // X-Stainless-Runtime-Version v26.3.0 → v26.12.1.
     headers = curl_slist_append(headers, "Accept: application/json");
     headers = curl_slist_append(headers, ("Authorization: Bearer " + apiKey).c_str());
-    headers = curl_slist_append(headers, "User-Agent: claude-cli/2.1.258 (external, sdk-cli)");
+    headers = curl_slist_append(headers, "User-Agent: claude-cli/2.1.319 (external, sdk-cli)");
     headers = curl_slist_append(headers, "x-app: cli");
     headers = curl_slist_append(headers, "anthropic-dangerous-direct-browser-access: true");
     headers = curl_slist_append(headers, "X-Stainless-Lang: js");
-    headers = curl_slist_append(headers, "X-Stainless-Package-Version: 0.112.1");
+    headers = curl_slist_append(headers, "X-Stainless-Package-Version: 0.128.0");
     headers = curl_slist_append(headers, "X-Stainless-Runtime: node");
-    headers = curl_slist_append(headers, "X-Stainless-Runtime-Version: v26.3.0");
+    headers = curl_slist_append(headers, "X-Stainless-Runtime-Version: v26.12.1");
     headers = curl_slist_append(headers, "X-Stainless-Retry-Count: 0");
     headers = curl_slist_append(headers, "X-Stainless-Timeout: 600");
 #if defined(_WIN32)
