@@ -301,35 +301,58 @@ ModelEntry fitForHardware(ModelEntry e, const HardwareInfo& hw) {
 }
 
 // ---- built-in model catalog (Qwen3.8-Flash-Next family) --------------------
-// Values from strata_cli/launch/catalog.py and docs/MODELS.md.
 // memoryGb is the total memory (experts + dense) at each quant.
+// Shards: ISTA-DASLab packs are split GGUF files; counts from MODELS.md.
+
+static ModelEntry makeEntry(const char* family, const char* quant,
+                            const char* id, const char* desc,
+                            double dlGb, double memGb,
+                            double minVram, double minRam,
+                            const char* hfRepo, int nShards,
+                            const char* prefix, const char* suffix)
+{
+    ModelEntry e;
+    e.family = family; e.quant = quant; e.id = id; e.description = desc;
+    e.downloadGb = dlGb; e.memoryGb = memGb;
+    e.minVramGb = minVram; e.minRamGb = minRam;
+    double perShard = dlGb / std::max(1, nShards);
+    for (int i = 1; i <= nShards; ++i) {
+        char idx[16];
+        std::snprintf(idx, sizeof idx, "%05d", i);
+        ModelShard s;
+        s.hfRepo = hfRepo;
+        s.hfFile = std::string(prefix) + std::string(idx) + "-of-" +
+                   std::to_string(nShards) + suffix;
+        s.sizeGb = perShard;
+        e.shards.push_back(s);
+    }
+    return e;
+}
 
 static std::vector<ModelEntry> baseCatalog() {
+    const char* repo = "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF";
     return {
-        {"qwen", "Q2_0",       "qwen-q2_0",
-         "Smallest, fastest. Lower quality.",
-         34.0, 39.0,  6.0, 33.0,
-         "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "Q2_0/Q2_0-00001-of-00006.gguf"},
-        {"qwen", "IQ2_XS",     "qwen-iq2_xs",
-         "Very fast, good quality. Popular choice.",
-         39.0, 43.0,  6.0, 37.0,
-         "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "IQ2_XS/IQ2_XS-00001-of-00007.gguf"},
-        {"qwen", "IQ3_XXS",    "qwen-iq3_xxs",
-         "Balanced speed/quality. Recommended for 12GB GPUs.",
-         47.0, 51.0,  8.0, 43.0,
-         "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "IQ3_XXS/IQ3_XXS-00001-of-00008.gguf"},
-        {"qwen", "IQ3_S",      "qwen-iq3_s",
-         "Higher quality, needs 16GB+ VRAM or 64GB+ RAM.",
-         55.0, 60.0, 12.0, 48.0,
-         "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "IQ3_S/IQ3_S-00001-of-00009.gguf"},
-        {"qwen", "UD-Q4_K_XL", "qwen-ud-q4_k_xl",
-         "Unsloth's K-quant. Best quality, needs 24GB+ VRAM.",
-         62.0, 67.0, 16.0, 51.0,
-         "unsloth/Qwen3.8-Flash-Next-GGUF", "Qwen3.8-Flash-Next-UD-Q4_K_XL.gguf"},
-        {"qwen", "Coder",      "qwen-coder-iq1_m",
-         "Pruned for coding. Weaker on general text.",
-         30.0, 33.0,  4.0, 29.0,
-         "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "Coder/Coder-00001-of-00005.gguf"},
+        makeEntry("qwen","Q2_0","qwen-q2_0",
+            "Smallest, fastest. Lower quality.",
+            34.0, 39.0, 6.0, 33.0, repo, 6, "Q2_0/Q2_0-0000", "-of-00006.gguf"),
+        makeEntry("qwen","IQ2_XS","qwen-iq2_xs",
+            "Very fast, good quality. Popular choice.",
+            39.0, 43.0, 6.0, 37.0, repo, 7, "IQ2_XS/IQ2_XS-0000", "-of-00007.gguf"),
+        makeEntry("qwen","IQ3_XXS","qwen-iq3_xxs",
+            "Balanced speed/quality. Recommended for 12GB GPUs.",
+            47.0, 51.0, 8.0, 43.0, repo, 8, "IQ3_XXS/IQ3_XXS-0000", "-of-00008.gguf"),
+        makeEntry("qwen","IQ3_S","qwen-iq3_s",
+            "Higher quality, needs 16GB+ VRAM or 64GB+ RAM.",
+            55.0, 60.0, 12.0, 48.0, repo, 9, "IQ3_S/IQ3_S-0000", "-of-00009.gguf"),
+        makeEntry("qwen","UD-Q4_K_XL","qwen-ud-q4_k_xl",
+            "Unsloth's K-quant. Best quality, needs 24GB+ VRAM.",
+            62.0, 67.0, 16.0, 51.0,
+            "unsloth/Qwen3.8-Flash-Next-GGUF", 1,
+            "Qwen3.8-Flash-Next-UD-Q4_K_XL", ".gguf"),
+        makeEntry("qwen","Coder","qwen-coder-iq1_m",
+            "Pruned for coding. Weaker on general text.",
+            30.0, 33.0, 4.0, 29.0, repo, 5,
+            "Coder/Coder-0000", "-of-00005.gguf"),
     };
 }
 

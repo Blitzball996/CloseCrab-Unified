@@ -9,6 +9,7 @@
 #include "../permissions/PermissionEngine.h"
 #include "../utils/SafePopen.h"
 #include "../moe/MoEHardwareProbe.h"
+#include "../moe/MoEDownloader.h"
 #include <sstream>
 #include <iomanip>
 #include <filesystem>
@@ -533,9 +534,8 @@ public:
         // /local download <id>
         if (args.rfind("download ", 0) == 0) {
             std::string id = args.substr(9);
-            // Trim
             while (!id.empty() && (id.back()==' '||id.back()=='\r'||id.back()=='\n')) id.pop_back();
-            while (!id.empty() && (id.front()==' ')) id.erase(0,1);
+            while (!id.empty() && id.front()==' ') id.erase(0,1);
             auto hw = moe::detectHardware();
             auto cats = moe::modelCatalog(hw);
             auto it = std::find_if(cats.begin(), cats.end(),
@@ -546,28 +546,74 @@ public:
                 return CommandResult::ok();
             }
             auto& m = *it;
-            ctx.print("Model: " + m.family + " " + m.quant + "\n");
-            ctx.print("Download: " + std::to_string((int)m.downloadGb) + " GB from HuggingFace\n");
-            ctx.print("Memory needed: " + std::to_string((int)m.memoryGb) + " GB (VRAM+RAM)\n");
-            ctx.print("Fit: " + m.verdict + " — " + m.verdictWords + "\n");
-            ctx.print("\nDownloading from " + m.hfRepo + "/" + m.hfFile + "\n");
-            // Spawn a curl download into models/moe/<id>/
             std::string dir = "models/moe/" + id;
-            std::error_code ec;
-            std::filesystem::create_directories(dir, ec);
-            std::string url = "https://huggingface.co/" + m.hfRepo + "/resolve/main/" + m.hfFile;
-            std::string outPath = dir + "/" + m.hfFile.substr(m.hfFile.find_last_of('/')+1);
-            ctx.print("Saving to: " + outPath + "\n");
-            std::string cmd = "curl -L --progress-bar -o \"" + outPath + "\" \"" + url + "\"";
-            ctx.print("Running: " + cmd + "\n");
-            int rc = std::system(cmd.c_str());
-            if (rc != 0) {
-                ctx.print("Download failed (rc=" + std::to_string(rc) + ").\n");
-                ctx.print("Check your network / proxy, or download manually.\n");
-                return CommandResult::ok();
+            int nShards = (int)m.shards.size();
+            ctx.print("Model:   " + m.family + " " + m.quant + "\n");
+            ctx.print("Shards:  " + std::to_string(nShards) + " files\n");
+            ctx.print("Size:    " + std::to_string((int)m.downloadGb) + " GB\n");
+            ctx.print("Memory:  " + std::to_string((int)m.memoryGb) + " GB needed\n");
+            ctx.print("Fit:     " + m.verdict + " — " + m.verdictWords + "\n");
+            ctx.print("Output:  " + dir + "\n\n");
+
+            moe::MoEDownloader dl;
+            // Use proxy from config if set
+            std::string proxy = Config::getInstance().getString("proxy", "");
+            if (!proxy.empty()) { dl.setProxy(proxy); ctx.print("Proxy: " + proxy + "\n"); }
+
+            // Check if already present
+            if (dl.isModelPresent(m, dir)) {
+                ctx.print("Model already present. Verifying...\n");
+                if (dl.verifyModel(m, dir)) {
+                    ctx.print("Verification passed. Model is ready.\n");
+                    goto download_done;
+                }
+                ctx.print("Verification failed — re-downloading damaged shards.\n");
             }
-            ctx.print("\nDownload complete.\n");
-            ctx.print("Set provider in config.yaml:\n");
+
+            {
+                std::string lastLine;
+                int lastShard = -1;
+                bool ok = dl.downloadModel(m, dir,
+                    [&](const moe::DownloadProgress& p) {
+                        if (p.shardIndex != lastShard) {
+                            if (lastShard >= 0) ctx.print("\n");
+                            ctx.print("Shard " + std::to_string(p.shardIndex + 1) + "/" +
+                                     std::to_string(p.shardCount) + ": ");
+                            lastShard = p.shardIndex;
+                        }
+                        // Progress bar: show every ~5% change
+                        std::ostringstream bar;
+                        bar.str(""); bar.clear();
+                        if (p.percent >= 0) {
+                            int pct = (int)p.percent;
+                            bar << "\r  [";
+                            int filled = pct / 5;
+                            for (int i = 0; i < 20; ++i) bar << (i < filled ? '#' : '.');
+                            bar << "] " << pct << "% "
+                                << (int)p.downloadedMb << "/" << (int)p.totalMb << " MB";
+                        } else {
+                            bar << "\r  " << (int)p.downloadedMb << " MB";
+                        }
+                        if (p.overallPercent >= 0)
+                            bar << "  (total " << (int)p.overallPercent << "%)";
+                        std::string line = bar.str();
+                        if (line != lastLine) { ctx.print(line); lastLine = line; }
+                    });
+                ctx.print("\n");
+                if (!ok) {
+                    ctx.print("Download failed. Check network/proxy and retry.\n");
+                    return CommandResult::ok();
+                }
+            }
+
+            ctx.print("All shards downloaded. Verifying...\n");
+            if (!dl.verifyModel(m, dir))
+                ctx.print("Warning: SHA-256 verification failed on one or more shards.\n");
+            else
+                ctx.print("Verification passed.\n");
+
+            download_done:
+            ctx.print("\nModel ready. Set provider in config.yaml:\n");
             ctx.print("  provider: \"local-moe\"\n");
             ctx.print("  moe:\n");
             ctx.print("    model_path: \"" + dir + "\"\n");
