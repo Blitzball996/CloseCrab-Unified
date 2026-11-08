@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <sstream>
 
 #if defined(_WIN32)
@@ -226,7 +227,15 @@ static bool cpuHasAvx512() {
 HardwareInfo detectHardware(const std::string& modelDrive) {
     HardwareInfo hw;
     hw.ramGb      = systemRamGb();
-    hw.diskFreeGb = diskFreeGb(modelDrive.empty() ? "C:/" : modelDrive);
+    // Default: check the drive of the current working directory (where models
+    // will actually be saved), not always C: which may be a small system drive.
+    std::string drive = modelDrive;
+    if (drive.empty()) {
+        std::error_code ec;
+        auto cwd = std::filesystem::current_path(ec);
+        if (!ec) drive = cwd.string();
+    }
+    hw.diskFreeGb = diskFreeGb(drive.empty() ? "C:/" : drive);
     hw.gpus       = detectNvidia();
     if (hw.gpus.empty()) {
 #ifdef _WIN32

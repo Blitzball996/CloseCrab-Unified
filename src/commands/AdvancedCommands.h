@@ -494,58 +494,76 @@ public:
 
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
         namespace moe = closecrab::moe;
-        if (args == "detect" || args.empty()) {
+
+        // /local with no args: show hardware + recommended model (same as /local detect + list)
+        if (args.empty() || args == "detect") {
             auto hw = moe::detectHardware();
-            ctx.print("=== Hardware Detection ===\n");
+            ctx.print("=== Hardware ===\n");
             ctx.print("OS:     " + hw.os + "\n");
             ctx.print("RAM:    " + std::to_string((int)hw.ramGb) + " GB\n");
             ctx.print("Disk:   " + std::to_string((int)hw.diskFreeGb) + " GB free\n");
-            ctx.print("AVX2:   " + std::string(hw.hasAvx2 ? "yes" : "no") + "\n");
-            ctx.print("AVX512: " + std::string(hw.hasAvx512 ? "yes" : "no") + "\n");
             if (hw.gpus.empty()) {
                 ctx.print("GPU:    (none detected)\n");
             } else {
                 for (size_t i = 0; i < hw.gpus.size(); ++i) {
                     auto& g = hw.gpus[i];
                     ctx.print("GPU[" + std::to_string(i) + "]: " + g.name +
-                              "  " + std::to_string((int)g.vramGb) + " GB VRAM" +
-                              "  arch sm_" + g.arch + "\n");
+                              "  " + std::to_string((int)g.vramGb) + " GB VRAM"
+                              + (g.arch.empty() ? "" : "  sm_" + g.arch) + "\n");
                 }
             }
             if (!hw.summary.empty()) ctx.print("Summary: " + hw.summary + "\n");
-            ctx.print("\nUse /local list to see runnable models.\n");
-            ctx.print("Use /local download <id> to fetch a model.\n");
-            return CommandResult::ok();
-        }
-        if (args == "list") {
-            auto hw = moe::detectHardware();
+
+            // Show model catalog with fit verdicts
             auto cats = moe::modelCatalog(hw);
-            ctx.print("=== Local Models (Qwen3.8-Flash-Next family) ===\n");
-            ctx.print("Hardware: " + (hw.summary.empty() ? hw.os : hw.summary) + "\n\n");
-            if (cats.empty()) { ctx.print("(no models in catalog)\n"); return CommandResult::ok(); }
-            // Header
-            ctx.print(std::string(8,' ') + std::string(12,' ') + "  download  memory  verdict\n");
+            ctx.print("\n=== Models for your hardware ===\n");
+            auto* rec = moe::recommendModel(cats);
             for (auto& m : cats) {
                 std::string mark = m.recommended ? "*" : " ";
-                std::string verdictWord = m.verdict;
-                if (m.verdict == "fits")       verdictWord = "OK";
-                else if (m.verdict == "tight") verdictWord = "tight";
-                else                            verdictWord = "no";
+                std::string verd = m.verdict == "fits" ? "OK   " :
+                                   m.verdict == "tight" ? "tight" : "no   ";
                 std::ostringstream line;
-                line << mark << " " << std::left << std::setw(14)
-                     << (m.family + " " + m.quant)
-                     << "  " << std::right << std::setw(6) << (int)m.downloadGb << " GB"
-                     << "  " << std::setw(5) << (int)m.memoryGb << " GB"
-                     << "  " << verdictWord;
-                if (m.recommended) line << "  <- recommended";
-                line << "\n";
-                line << "    " << m.description << "\n";
-                line << "    " << m.verdictWords << "\n";
+                line << mark << " [" << verd << "] "
+                     << std::left << std::setw(16) << (m.family + " " + m.quant)
+                     << "  " << std::right << std::setw(4) << (int)m.downloadGb << " GB"
+                     << "  " << m.verdictWords << "\n";
                 ctx.print(line.str());
             }
             ctx.print("\n* = recommended for your hardware.\n");
-            ctx.print("Use /local download <model-id> to download.\n");
-            ctx.print("Example: /local download qwen-iq3_xxs\n");
+            if (rec) {
+                ctx.print("\nTo download recommended model:\n");
+                ctx.print("  /local download " + rec->id + "\n");
+            }
+            ctx.print("\nAfter download, set in config.yaml:\n");
+            ctx.print("  provider: \"local-moe\"\n");
+            ctx.print("  moe:\n");
+            ctx.print("    model_path: \"models/moe/<id>\"\n");
+            ctx.print("    model_id:   \"<id>\"\n");
+            return CommandResult::ok();
+        }
+        if (args == "list") {
+            // /local list — just the model table (hardware shown by bare /local)
+            auto hw = moe::detectHardware();
+            auto cats = moe::modelCatalog(hw);
+            ctx.print("=== Models (Qwen3.8-Flash-Next) ===\n");
+            ctx.print("Hardware: " + (hw.summary.empty() ? hw.os : hw.summary) + "\n\n");
+            auto* rec = moe::recommendModel(cats);
+            for (auto& m : cats) {
+                std::string mark = m.recommended ? "*" : " ";
+                std::string verd = m.verdict == "fits" ? "OK   " :
+                                   m.verdict == "tight" ? "tight" : "no   ";
+                std::ostringstream line;
+                line << mark << " [" << verd << "] "
+                     << std::left << std::setw(16) << (m.family + " " + m.quant)
+                     << "  " << std::right << std::setw(4) << (int)m.downloadGb << " GB"
+                     << "  " << m.verdictWords << "\n"
+                     << "      " << m.description << "\n";
+                ctx.print(line.str());
+            }
+            ctx.print("\n* = recommended for your hardware.\n");
+            if (rec) {
+                ctx.print("Download: /local download " + rec->id + "\n");
+            }
             return CommandResult::ok();
         }
         // /local download <id>

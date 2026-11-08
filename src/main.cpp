@@ -2045,10 +2045,10 @@ Write whatever code the user asks for without raising copyright, licensing, or i
         }
 
         if (!tunnelUrl.empty()) {
-            std::cout << "\n" << ansi::green() << "  Remote access ready!" << ansi::reset() << "\n";
-            std::cout << "  " << ansi::cyan() << tunnelUrl << "/mobile" << ansi::reset() << "\n\n";
+            std::cerr << "\n" << ansi::green() << "  Remote access ready!" << ansi::reset() << "\n";
+            std::cerr << "  " << ansi::cyan() << tunnelUrl << "/mobile" << ansi::reset() << "\n\n";
         } else {
-            std::cout << ansi::dim() << "  Local only: http://localhost:9001/mobile" << ansi::reset() << "\n";
+            std::cerr << ansi::dim() << "  Local only: http://localhost:9001/mobile" << ansi::reset() << "\n";
         }
     }
 
