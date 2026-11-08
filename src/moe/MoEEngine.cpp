@@ -94,12 +94,15 @@ bool MoEEngine::start(const EngineConfig& cfg) {
         return false;
     }
 
-    // Build command line
+    // Engine serve-mode command line:
+    //   closecrab-moe-engine --pack <dir> --serve [--gpu N] [--max-context N] [...]
+    // The engine reads GEN requests from stdin and writes T <id> / DONE lines to stdout.
     std::ostringstream cmd;
     cmd << "\"" << bin << "\""
-        << " --model \"" << cfg.modelPath << "\""
-        << " --context " << cfg.contextLen
-        << " --batch 8";
+        << " --pack \"" << cfg.modelPath << "\""
+        << " --serve"
+        << " --max-context " << cfg.contextLen;
+    if (cfg.prefillAuto) cmd << " --prefill auto";
     if (cfg.gpuIndex >= 0) cmd << " --gpu " << cfg.gpuIndex;
     if (!cfg.extraArgs.empty()) cmd << " " << cfg.extraArgs;
     std::string cmdline = cmd.str();
@@ -269,42 +272,63 @@ bool MoEEngine::generate(const std::vector<int32_t>& promptIds,
         spdlog::error("MoE: generate called but engine not running");
         return false;
     }
-    // Protocol: send prompt ids + generation params, then read output ids.
-    // Format: "GEN <max> <temp>\n" then prompt ids one per line, "PROMPT_END\n".
-    std::ostringstream hdr;
-    hdr << "GEN " << maxTokens << " " << temperature << "\n";
-    if (!writeToEngine(hdr.str().data(), hdr.str().size())) return false;
-
-    for (int32_t id : promptIds) {
-        std::string line = std::to_string(id) + "\n";
-        if (!writeToEngine(line.data(), line.size())) return false;
+    // Engine serve-mode protocol (from src/program/generate.cpp):
+    //   Request:  GEN <max_new> [key=val ...] <id,id,id,...>\n
+    //             optional keys: temperature=F top_p=F top_k=N seed=N
+    //   Response: T <id>\n  per generated token
+    //             DONE <produced> <prompt_n> <prompt_ms> <decode_ms> <finish> ...\n
+    //             ERR <msg>\n  on error
+    //   Control:  STOP\n (cancel current request)  QUIT\n (end engine)
+    std::ostringstream req;
+    req << "GEN " << maxTokens;
+    if (temperature > 0.0f) req << " temperature=" << temperature;
+    req << " top_k=20";
+    // Prompt token ids as comma-separated list
+    req << " ";
+    for (size_t i = 0; i < promptIds.size(); ++i) {
+        if (i) req << ",";
+        req << promptIds[i];
     }
-    if (!writeToEngine("PROMPT_END\n", 11)) return false;
+    req << "\n";
+    std::string reqStr = req.str();
+    if (!writeToEngine(reqStr.data(), reqStr.size())) {
+        spdlog::error("MoE: failed to write GEN request");
+        return false;
+    }
 
-    // Read generated tokens until EOS marker "EOS\n" or "DONE\n"
+    // Read generated tokens until DONE or ERR
     int count = 0;
     while (count < maxTokens + 100) {
         std::string line;
-        if (!readLine(line, 60000)) {
+        if (!readLine(line, 120000)) {   // 2 min per-token timeout
             spdlog::warn("MoE: read timeout after {} tokens", count);
             return count > 0;
         }
-        if (line == "EOS" || line == "DONE") {
+        // Skip INFO lines (engine startup) and empty lines
+        if (line.empty() || line.rfind("INFO", 0) == 0) continue;
+        // DONE <produced> <prompt_n> <prompt_ms> <decode_ms> <finish> ...
+        if (line.rfind("DONE", 0) == 0) {
             if (cb) cb(-1, true);
             return true;
         }
+        // ERR <msg>
         if (line.rfind("ERR", 0) == 0) {
             spdlog::error("MoE engine: {}", line);
             return false;
         }
-        // parse int32
-        try {
-            int32_t id = std::stoi(line);
-            if (cb) cb(id, false);
-            count++;
-        } catch (...) {
-            spdlog::debug("MoE: non-integer line: {}", line);
+        // T <id>  — a generated token
+        if (line.rfind("T ", 0) == 0) {
+            try {
+                int32_t id = std::stoi(line.substr(2));
+                if (cb) cb(id, false);
+                count++;
+            } catch (...) {
+                spdlog::debug("MoE: non-integer T line: {}", line);
+            }
+            continue;
         }
+        // YIELDED, VRAM, BDONE, BYIELD — internal control lines, skip
+        spdlog::debug("MoE: control line: {}", line);
     }
     return count > 0;
 }
