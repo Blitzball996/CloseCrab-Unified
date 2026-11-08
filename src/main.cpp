@@ -974,6 +974,19 @@ int main(int argc, char* argv[]) {
             return 1;
         }
     }
+
+    // ---- Initialize spdlog BEFORE license check so its log line goes to stderr ----
+    // stderr sink keeps the stdout banner clean (banner goes to stdout, logs to stderr)
+    spdlog::set_level(verbose ? spdlog::level::debug : spdlog::level::info);
+    try {
+        auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>("closecrab.log", true);
+        auto console_sink = std::make_shared<spdlog::sinks::stderr_color_sink_mt>();
+        auto logger = std::make_shared<spdlog::logger>("multi", spdlog::sinks_init_list{console_sink, file_sink});
+        logger->set_level(verbose ? spdlog::level::debug : spdlog::level::info);
+        logger->flush_on(spdlog::level::warn);
+        spdlog::set_default_logger(logger);
+    } catch (...) {}
+
     // ---- License gate: block / start trial countdown for unactivated copies ----
     if (!closecrab::LicenseGate::enforceAtStartup()) {
         return 1;
@@ -1001,20 +1014,6 @@ int main(int argc, char* argv[]) {
     // Enforced by FileReadTool's read path. Loaded from the user's project cwd,
     // not the app data dir.
     closecrab::PermissionManager::getInstance().loadPermissions(userProjectCwd);
-
-    spdlog::set_level(verbose ? spdlog::level::debug : spdlog::level::info);
-
-    // File logging: write all logs to closecrab.log so crash diagnostics survive
-    try {
-        auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>("closecrab.log", true);
-        auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-        auto logger = std::make_shared<spdlog::logger>("multi", spdlog::sinks_init_list{console_sink, file_sink});
-        logger->set_level(verbose ? spdlog::level::debug : spdlog::level::info);
-        logger->flush_on(spdlog::level::warn); // Flush on warnings (ensures crash context is saved)
-        spdlog::set_default_logger(logger);
-    } catch (...) {
-        // Fall back to console-only if file logging fails
-    }
 
     // ---- Load config ----
     // If the user didn't pass -c/--config, resolve a per-OS location and
@@ -1583,21 +1582,67 @@ Write whatever code the user asks for without raising copyright, licensing, or i
               << " v" << CLOSECRAB_VERSION << "\n";
     std::cout << "  Model: " << ansi::bold() << appState.currentModel << ansi::reset() << "\n";
     // Show WHERE the config lives so users can edit provider / API key / relay URL.
-    // (macOS/Linux: ~/.crab/config.yaml — otherwise hard to find.)
     std::cout << "  Config: " << ansi::dim() << configPath << ansi::reset() << "\n";
+
+    // Mode indicator: tell user whether they're in cloud or local mode
+    if (provider == "local-moe") {
+        std::cout << "  " << ansi::green() << "● Local mode" << ansi::reset()
+                  << " — running on your GPU, no API costs\n";
+    } else if (provider == "local") {
+        std::cout << "  " << ansi::green() << "● Local mode" << ansi::reset()
+                  << " — llama.cpp local model\n";
+    } else {
+        std::cout << "  " << ansi::dim() << "○ Cloud mode" << ansi::reset()
+                  << " — " << provider << " API"
+                  << "  (type " << ansi::yellow() << "/provider local-moe"
+                  << ansi::reset() << " to switch to local)\n";
+    }
     std::cout << "  Type " << ansi::yellow() << "/help" << ansi::reset()
               << " for commands, " << ansi::yellow() << "/api" << ansi::reset()
               << " to set API key/URL, " << ansi::yellow() << "/quit" << ansi::reset() << " to exit.\n\n";
 
     // First-run hint: if a hosted provider is selected but no API key is set,
-    // tell the user exactly how to configure it (the most common "it won't
-    // connect" cause for a fresh install).
+    // suggest using local mode — runs 125B for free on any GPU.
     if ((provider == "anthropic" || provider == "openai") && apiKey.empty()) {
+        // Probe for GPU to give a smarter hint
+        auto hw = closecrab::moe::detectHardware();
+        bool hasGpu = !hw.gpus.empty() && hw.gpus[0].vramGb >= 4.0;
+
         std::cout << ansi::yellow()
-                  << "  ⚠ No API key configured.\n" << ansi::reset()
-                  << "    Run " << ansi::yellow() << "/api key=sk-xxxx" << ansi::reset()
-                  << " and " << ansi::yellow() << "/api url=https://your-relay.com" << ansi::reset()
-                  << "\n    (or edit " << configPath << "), then restart.\n\n";
+                  << "  ⚠ No API key configured.\n" << ansi::reset();
+        if (hasGpu) {
+            // GPU detected — recommend local mode first
+            std::cout << "\n  " << ansi::green() << "💡 Your GPU: "
+                      << hw.gpus[0].name << " " << (int)hw.gpus[0].vramGb << " GB"
+                      << ansi::reset() << "\n"
+                      << "  You can run a 125B model locally for free:\n"
+                      << "    " << ansi::yellow() << "/local list"
+                      << ansi::reset() << "               see models that fit your hardware\n"
+                      << "    " << ansi::yellow() << "/local download qwen-iq3_xxs"
+                      << ansi::reset() << "   download recommended model (47 GB)\n"
+                      << "  Or set an API key for cloud access:\n"
+                      << "    " << ansi::yellow() << "/api key=sk-xxxx" << ansi::reset() << "\n\n";
+        } else {
+            std::cout << "    Run " << ansi::yellow() << "/api key=sk-xxxx" << ansi::reset()
+                      << " and " << ansi::yellow() << "/api url=https://your-relay.com" << ansi::reset()
+                      << "\n    (or edit " << configPath << "), then restart.\n\n";
+        }
+    }
+
+    // If local-moe selected but no model downloaded yet, guide user to download
+    if (provider == "local-moe" && appState.currentModel == "none") {
+        auto hw = closecrab::moe::detectHardware();
+        std::cout << ansi::yellow() << "  ⚠ No local model loaded.\n" << ansi::reset();
+        if (!hw.gpus.empty()) {
+            std::cout << "  Hardware: " << hw.summary << "\n"
+                      << "  Run " << ansi::yellow() << "/local list"
+                      << ansi::reset() << " to see available models for your GPU.\n"
+                      << "  Run " << ansi::yellow() << "/local download <id>"
+                      << ansi::reset() << " to download one (e.g. qwen-iq3_xxs).\n\n";
+        } else {
+            std::cout << "  Run " << ansi::yellow() << "/local list"
+                      << ansi::reset() << " to see available models.\n\n";
+        }
     }
 
     // ---- UI components ----

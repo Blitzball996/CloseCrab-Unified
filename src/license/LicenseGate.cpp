@@ -400,21 +400,21 @@ void LicenseGate::printStatus() {
     lic::Status s = status();
     switch (s.state) {
         case lic::State::Activated:
-            std::printf(tr("[CloseCrab License] Activated — edition %s (%s)\n",
+            std::fprintf(stderr, tr("[CloseCrab License] Activated — edition %s (%s)\n",
                            "[CloseCrab 授权] 已激活 — 版本 %s (%s)\n"),
                         s.edition.c_str(), s.key.c_str());
             break;
         case lic::State::Trial:
-            std::printf(tr("[CloseCrab License] Trial — run #%d, %d minutes this session\n",
+            std::fprintf(stderr, tr("[CloseCrab License] Trial — run #%d, %d minutes this session\n",
                            "[CloseCrab 授权] 试用模式 — 第 %d 次，本次额度 %d 分钟\n"),
                         s.trialRun, s.allowanceSeconds / 60);
             break;
         case lic::State::Locked:
-            std::printf(tr("[CloseCrab License] Trial used up — activate: closecrab --activate <KEY>\n",
+            std::fprintf(stderr, tr("[CloseCrab License] Trial used up — activate: closecrab --activate <KEY>\n",
                            "[CloseCrab 授权] 试用已用尽，请激活：closecrab --activate <序列号>\n"));
             break;
     }
-    std::printf(tr("        Device ID: %s\n        Server: %s\n",
+    std::fprintf(stderr, tr("        Device ID: %s\n        Server: %s\n",
                    "        设备指纹: %s\n        激活服务器: %s\n"),
                 lic::deviceId().c_str(), baseUrl().c_str());
 }
@@ -424,7 +424,7 @@ bool LicenseGate::enforceAtStartup() {
 
     if (s.state == lic::State::Activated) {
         spdlog::info("License: activated ({} {})", s.edition, s.key);
-        std::printf(tr("\033[32m✓ CloseCrab activated (%s)\033[0m\n",
+        std::fprintf(stderr, tr("\033[32m✓ CloseCrab activated (%s)\033[0m\n",
                        "\033[32m✓ CloseCrab 已激活（%s）\033[0m\n"),
                     s.edition.c_str());
         return true;
