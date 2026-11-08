@@ -23,15 +23,42 @@ provider: "anthropic"
 
 # ============================================
 # Local MoE Engine (provider: local-moe)
+#
+# How it works (125B on 12 GB GPU):
+#   GPU VRAM  : dense weights + KV cache + expert cache (~4000 hot experts)
+#   System RAM: all 24576 experts pinned for CPU fallback
+#   NVMe/SSD  : n-gram lookup table (~28 GB), read via OS page cache
+#   Router lookahead queues PCIe DMA for the next experts before they're needed
+#
+# Quick start:
+#   1. /local detect              -- check your hardware
+#   2. /local list                -- see which models fit
+#   3. /local download qwen-iq3_xxs  -- download (47 GB, resumable)
+#   4. Edit this file:
+#        provider: "local-moe"
+#        moe:
+#          model_path: "models/moe/qwen-iq3_xxs"
+#          model_id:   "qwen-iq3_xxs"
+#   5. Restart CloseCrab
+#
+# Available models (Qwen3.8-Flash-Next family):
+#   qwen-q2_0       34 GB  smallest/fastest, 6 GB VRAM min
+#   qwen-iq2_xs     39 GB  fast + good quality, 6 GB VRAM min
+#   qwen-iq3_xxs    47 GB  recommended for 12 GB GPUs
+#   qwen-iq3_s      55 GB  higher quality, 16 GB VRAM or 64 GB RAM
+#   qwen-ud-q4_k_xl 62 GB  best quality, 24 GB VRAM needed
+#   qwen-coder      30 GB  code-tuned, weaker on general text
 # ============================================
 moe:
-  # Path to the downloaded GGUF/pack directory for the model.
-  # Leave empty to auto-detect hardware and recommend a model.
+  # Full path to downloaded model pack directory.
+  # Leave empty to auto-detect hardware and pick recommended model.
   model_path: ""
-  # Model id to use (e.g. "qwen-iq3_xxs"). Auto-selected when empty.
-  model_id: ""
-  # Directory where downloaded models are stored.
+  # Model id ("qwen-iq3_xxs" etc.). Auto-selected from hardware when empty.
+  model_id:   ""
+  # Where /local download saves model files.
   models_dir: "models/moe"
+  # Context window length (tokens). 32768 is safe for most GPUs.
+  context_len: 32768
 
 # ============================================
 # API Configuration (for anthropic/openai mode)

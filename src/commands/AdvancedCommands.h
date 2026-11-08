@@ -245,17 +245,34 @@ public:
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
         if (args.empty()) {
             ctx.print("Current provider: " + ctx.appState->currentModel + "\n");
-            ctx.print("Usage: /provider <local|anthropic|openai>\n");
-            ctx.print("  After switching, use /reload to apply.\n");
+            ctx.print("Usage: /provider <anthropic|openai|local|local-moe>\n");
+            ctx.print("  anthropic  — Claude API (default, needs api.api_key)\n");
+            ctx.print("  openai     — OpenAI-compatible API\n");
+            ctx.print("  local      — llama.cpp local model (needs llm.model_path)\n");
+            ctx.print("  local-moe  — 125B MoE local model, runs on consumer GPU\n");
+            ctx.print("               Use /local list to see available models\n");
+            ctx.print("               Use /local download <id> to fetch one\n");
+            ctx.print("  After switching, edit config.yaml and restart.\n");
             return CommandResult::ok();
         }
-        if (args == "local" || args == "anthropic" || args == "openai") {
-            ctx.print("Provider set to: " + args + "\n");
-            ctx.print("Edit config/config.yaml to set provider: \"" + args + "\"\n");
-            ctx.print("Then restart the program or use /reload.\n");
-        } else {
-            ctx.print("Unknown provider: " + args + ". Use local, anthropic, or openai.\n");
+        static const std::vector<std::string> valid =
+            {"local","anthropic","openai","lmstudio","siliconflow","local-moe"};
+        if (std::find(valid.begin(), valid.end(), args) == valid.end()) {
+            ctx.print("Unknown provider: " + args + "\n");
+            ctx.print("Valid: anthropic, openai, local, local-moe\n");
+            return CommandResult::ok();
         }
+        ctx.print("Provider set to: " + args + "\n");
+        if (args == "local-moe") {
+            ctx.print("For local-moe, also set in config.yaml:\n");
+            ctx.print("  moe:\n");
+            ctx.print("    model_path: \"models/moe/<id>\"\n");
+            ctx.print("    model_id:   \"<id>\"\n");
+            ctx.print("Run /local list to see available models.\n");
+            ctx.print("Run /local download <id> to fetch one.\n");
+        }
+        ctx.print("Edit config/config.yaml: provider: \"" + args + "\"\n");
+        ctx.print("Then restart CloseCrab to apply.\n");
         return CommandResult::ok();
     }
 };
