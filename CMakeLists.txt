@@ -315,7 +315,32 @@ if(USE_MOE_ENGINE)
     if(EXISTS "${MOE_PATH}/CMakeLists.txt")
         include(ExternalProject)
         set(MOE_BINARY_DIR "${CMAKE_BINARY_DIR}/moe-engine-build")
-        set(MOE_OUTPUT_DIR "$<TARGET_FILE_DIR:closecrab-unified>")
+
+        # Auto-detect GPU compute capability via nvidia-smi so the engine
+        # binary is built for the actual card on this machine.
+        # Falls back to "89;86;80;75" (Ada/Ampere/Turing) for distribution builds.
+        set(MOE_CUDA_ARCH "89;86;80;75")
+        if(USE_CUDA)
+            find_program(_NVIDIA_SMI nvidia-smi)
+            if(_NVIDIA_SMI)
+                execute_process(
+                    COMMAND "${_NVIDIA_SMI}"
+                        --query-gpu=compute_cap --format=csv,noheader
+                    OUTPUT_VARIABLE _SMI_CC
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET TIMEOUT 5)
+                if(_SMI_CC)
+                    # Convert "8.9\n8.9" -> "89" (first GPU, strip dot/whitespace)
+                    string(REGEX REPLACE "[\r\n\t .]" "" _SMI_CC "${_SMI_CC}")
+                    string(REGEX REPLACE "^([0-9]+).*" "\\1" _SMI_ARCH "${_SMI_CC}")
+                    if(_SMI_ARCH MATCHES "^[0-9]+$")
+                        set(MOE_CUDA_ARCH "${_SMI_ARCH}")
+                        message(STATUS "MoE engine CUDA arch: ${MOE_CUDA_ARCH} (detected from nvidia-smi)")
+                    endif()
+                endif()
+            endif()
+        endif()
+        message(STATUS "MoE engine CUDA architectures: ${MOE_CUDA_ARCH}")
 
         ExternalProject_Add(moe_engine_build
             SOURCE_DIR   "${MOE_PATH}"
@@ -327,7 +352,7 @@ if(USE_MOE_ENGINE)
                 -DCC_MOE_ENABLE_SYCL=OFF
                 -DCC_MOE_BUILD_TESTS=OFF
                 -DCC_MOE_PORTABLE=OFF
-                -DCMAKE_CUDA_ARCHITECTURES=89
+                -DCMAKE_CUDA_ARCHITECTURES=${MOE_CUDA_ARCH}
                 -DSTRATA_GGML_DIR=${CMAKE_CURRENT_SOURCE_DIR}/external/llama.cpp
                 -DCC_MOE_GGML_DIR=${CMAKE_CURRENT_SOURCE_DIR}/external/llama.cpp
                 -DCC_MOE_MMQ_KQUANTS=OFF
