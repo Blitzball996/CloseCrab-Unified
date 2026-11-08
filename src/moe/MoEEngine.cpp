@@ -174,7 +174,44 @@ bool MoEEngine::start(const EngineConfig& cfg) {
 #endif
 
     running_ = true;
-    spdlog::info("MoE: engine started (pid {})", childPid_);
+    spdlog::info("MoE: engine started (pid {}), waiting for INFO ready...", childPid_);
+
+    // Engine emits an INFO line when the model is loaded and ready.
+    // Wait up to 120 s for that line; quit early if process dies or ERR is seen.
+    bool engineReady = false;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    while (std::chrono::steady_clock::now() < deadline) {
+        std::string line;
+        if (!readLine(line, 5000)) {
+#if defined(_WIN32)
+            DWORD code = 0;
+            if (GetExitCodeProcess(static_cast<HANDLE>(hProcess_), &code) &&
+                code != STILL_ACTIVE) {
+                spdlog::error("MoE: engine exited early (code={})", code);
+                break;
+            }
+#else
+            int st = 0;
+            if (waitpid(childPid_, &st, WNOHANG) > 0) {
+                spdlog::error("MoE: engine exited early"); break;
+            }
+#endif
+            continue;
+        }
+        if (line.rfind("INFO", 0) == 0) {
+            spdlog::info("MoE: engine ready - {}", line.substr(0, 100));
+            engineReady = true;
+            break;
+        }
+        if (line.rfind("ERR", 0) == 0) {
+            spdlog::error("MoE: engine error: {}", line); break;
+        }
+        spdlog::debug("MoE init: {}", line);
+    }
+    if (!engineReady) {
+        spdlog::error("MoE: engine did not become ready within 120s");
+        stop(); return false;
+    }
     return true;
 }
 

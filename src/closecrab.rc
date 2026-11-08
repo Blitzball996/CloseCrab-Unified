@@ -21,12 +21,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Blitzball Labs"
             VALUE "FileDescription", "CloseCrab - Claude Code CLI"
-            VALUE "FileVersion", "0.4.9.0"
+            VALUE "FileVersion", "0.4.10.0"
             VALUE "InternalName", "closecrab"
             VALUE "LegalCopyright", "Copyright (C) 2026"
             VALUE "OriginalFilename", "closecrab.exe"
             VALUE "ProductName", "CloseCrab-Unified"
-            VALUE "ProductVersion", "0.4.9.0"
+            VALUE "ProductVersion", "0.4.10.0"
         END
     END
     BLOCK "VarFileInfo"
