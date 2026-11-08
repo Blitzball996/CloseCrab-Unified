@@ -4,6 +4,7 @@
 #include "../api/APIClient.h"
 #include "MoEEngine.h"
 #include "MoEHardwareProbe.h"
+#include "MoETokenizer.h"
 #include <memory>
 #include <string>
 
@@ -39,9 +40,8 @@ private:
     std::string                     modelPath_;
     moe::HardwareInfo               hw_;
     moe::EngineConfig               engineCfg_;
-    std::shared_ptr<moe::MoEEngine> engine_;
-
-    static constexpr double kCharsPerToken = 4.0;
+    std::shared_ptr<moe::MoEEngine>     engine_;
+    std::shared_ptr<moe::MoETokenizer>  tokenizer_;
 };
 
 } // namespace closecrab

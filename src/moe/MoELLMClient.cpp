@@ -1,15 +1,40 @@
 // MoELLMClient.cpp — implements streamChat() using closecrab-moe-engine subprocess.
-// Builds a Qwen chat-format prompt, feeds it to the engine process via
-// MoEEngine, and streams decoded tokens back through the StreamCallback.
-
 #include "MoELLMClient.h"
 #include "../utils/UUID.h"
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
+#include <filesystem>
 #include <regex>
 #include <sstream>
 
+namespace fs = std::filesystem;
+
 namespace closecrab {
+
+// Find tokenizer GGUF in the pack directory.
+// Strata pack layout: pack/full/tokenizer/tokenizer.gguf  or  pack/full/tokenizer.gguf
+// or any .gguf in the root that contains vocab.
+static std::string findTokenizerGguf(const std::string& packDir) {
+    // Common locations inside a Qwen/Strata pack:
+    static const std::vector<std::string> candidates = {
+        "pack/full/tokenizer/tokenizer.gguf",
+        "pack/full/tokenizer.gguf",
+        "tokenizer.gguf",
+        "pack/tokenizer/tokenizer.gguf",
+    };
+    for (auto& rel : candidates) {
+        fs::path p = fs::path(packDir) / rel;
+        if (fs::exists(p)) return p.string();
+    }
+    // Fallback: any .gguf file in root (first model shard also carries vocab)
+    try {
+        for (auto& entry : fs::directory_iterator(packDir)) {
+            if (entry.path().extension() == ".gguf")
+                return entry.path().string();
+        }
+    } catch (...) {}
+    return "";
+}
 
 MoELLMClient::MoELLMClient(const std::string& modelId,
                              const std::string& modelPath)
@@ -18,14 +43,24 @@ MoELLMClient::MoELLMClient(const std::string& modelId,
     hw_ = moe::detectHardware();
     spdlog::info("MoELLMClient: hardware: {}", hw_.summary);
 
+    // Load tokenizer from pack directory
+    tokenizer_ = std::make_shared<moe::MoETokenizer>();
+    std::string tokGguf = findTokenizerGguf(modelPath_);
+    if (!tokGguf.empty()) {
+        if (!tokenizer_->load(tokGguf))
+            spdlog::warn("MoELLMClient: tokenizer load failed, will use char estimate");
+    } else {
+        spdlog::warn("MoELLMClient: no tokenizer.gguf found in {}, using char estimate",
+                     modelPath_);
+    }
+
     engineCfg_.modelPath   = modelPath_;
     engineCfg_.contextLen  = 32768;
     engineCfg_.prefillAuto = true;
 
     engine_ = std::make_shared<moe::MoEEngine>();
-    if (!engine_->start(engineCfg_)) {
-        spdlog::error("MoELLMClient: failed to start MoE engine for model '{}'", modelId_);
-    }
+    if (!engine_->start(engineCfg_))
+        spdlog::error("MoELLMClient: failed to start engine for '{}'", modelId_);
 }
 
 std::vector<moe::ModelEntry> MoELLMClient::availableModels() const {
@@ -33,7 +68,11 @@ std::vector<moe::ModelEntry> MoELLMClient::availableModels() const {
 }
 
 int MoELLMClient::countTokens(const std::string& text) const {
-    return static_cast<int>(text.size() / kCharsPerToken);
+    if (tokenizer_ && tokenizer_->isLoaded()) {
+        auto ids = tokenizer_->encode(text, false);
+        return static_cast<int>(ids.size());
+    }
+    return static_cast<int>(text.size() / 4);
 }
 
 // ---- prompt building (Qwen chat format) ------------------------------------
@@ -137,43 +176,84 @@ void MoELLMClient::streamChat(const std::vector<Message>& messages,
         return;
     }
 
-    std::string prompt = buildPrompt(messages, systemPrompt);
+    // Build Qwen chat prompt string
+    std::string promptText = buildPrompt(messages, systemPrompt);
 
-    // Estimate token ids from characters (real tokenization in engine).
-    // We send character bytes as a stand-in; the actual engine protocol
-    // accepts raw text mode "TEXT_GEN" if no tokenizer is pre-loaded.
-    // For now, use a simple whitespace-split byte encoding as prompt ids.
-    // A proper BPE tokenizer integration is in the MoETokenizer module.
-    std::vector<int32_t> dummyIds;
-    dummyIds.reserve(prompt.size() / 4);
-    for (unsigned char c : prompt) dummyIds.push_back(static_cast<int32_t>(c));
+    // Tokenize prompt text -> ids
+    std::vector<int32_t> promptIds;
+    if (tokenizer_ && tokenizer_->isLoaded()) {
+        promptIds = tokenizer_->encode(promptText, false);
+        spdlog::debug("MoELLMClient: prompt {} chars -> {} tokens",
+                      promptText.size(), promptIds.size());
+    } else {
+        // Fallback: raw bytes as token ids (ASCII-safe subset only)
+        promptIds.reserve(promptText.size());
+        for (unsigned char c : promptText)
+            promptIds.push_back(static_cast<int32_t>(c));
+        spdlog::warn("MoELLMClient: no tokenizer — using byte ids (output may be garbled)");
+    }
 
-    std::string accumulated;
-    bool hadToolCall = false;
-    std::string toolName, toolUseId;
-    nlohmann::json toolInput;
+    if (promptIds.empty()) {
+        callback(StreamEvent::error("MoE: tokenization produced empty id list."));
+        return;
+    }
+
+    // Accumulate generated ids for detokenization
+    std::vector<int32_t> generatedIds;
+    generatedIds.reserve(static_cast<size_t>(config.maxTokens > 0 ? config.maxTokens : 4096));
+
+    // Pending partial UTF-8: detokenize incrementally, stream text chunks.
+    // Strategy: decode the full generated sequence each time (avoids split UTF-8
+    // multibyte chars) but only stream the new suffix since last decode.
+    size_t lastDecodedLen = 0;
 
     bool ok = engine_->generate(
-        dummyIds,
+        promptIds,
         config.maxTokens > 0 ? config.maxTokens : 4096,
         config.temperature,
         [&](int32_t tokenId, bool isEos) {
             if (isEos) return;
-            // Convert raw byte token back to char (byte-level stand-in)
-            if (tokenId >= 0 && tokenId < 256) {
-                char c = static_cast<char>(tokenId);
-                accumulated += c;
-                callback(StreamEvent::text(std::string(1, c)));
+            generatedIds.push_back(tokenId);
+
+            if (tokenizer_ && tokenizer_->isLoaded()) {
+                // Decode full sequence, stream only the new suffix
+                std::string full = tokenizer_->decode(generatedIds);
+                if (full.size() > lastDecodedLen) {
+                    std::string chunk = full.substr(lastDecodedLen);
+                    lastDecodedLen = full.size();
+                    callback(StreamEvent::text(chunk));
+                }
+            } else {
+                // Byte fallback: emit char directly
+                if (tokenId >= 32 && tokenId < 127) {
+                    callback(StreamEvent::text(std::string(1, static_cast<char>(tokenId))));
+                }
             }
         }
     );
 
-    if (!ok) {
+    if (!ok && generatedIds.empty()) {
         callback(StreamEvent::error("MoE engine generation failed."));
         return;
     }
 
-    // Check if accumulated output contains a tool call
+    // Final decode pass to flush any remaining partial state
+    if (tokenizer_ && tokenizer_->isLoaded() && !generatedIds.empty()) {
+        std::string full = tokenizer_->decode(generatedIds);
+        if (full.size() > lastDecodedLen)
+            callback(StreamEvent::text(full.substr(lastDecodedLen)));
+    }
+
+    // Check accumulated output for tool calls
+    std::string accumulated;
+    if (tokenizer_ && tokenizer_->isLoaded())
+        accumulated = tokenizer_->decode(generatedIds);
+    else
+        for (int32_t id : generatedIds)
+            if (id >= 32 && id < 127) accumulated += static_cast<char>(id);
+
+    std::string toolName, toolUseId;
+    nlohmann::json toolInput;
     if (parseToolCall(accumulated, toolName, toolUseId, toolInput)) {
         StreamEvent te;
         te.type      = StreamEvent::EVT_TOOL_USE;

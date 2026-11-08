@@ -443,6 +443,7 @@ add_executable(closecrab-unified
     src/moe/MoEHardwareProbe.cpp
     src/moe/MoEEngine.cpp
     src/moe/MoELLMClient.cpp
+    src/moe/MoETokenizer.cpp
     src/tools/ToolRegistry.cpp
     src/commands/CommandRegistry.cpp
     src/permissions/PermissionEngine.cpp
