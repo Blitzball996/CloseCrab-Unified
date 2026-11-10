@@ -5,6 +5,7 @@
 #include <thread>
 #include <chrono>
 #include "ConsoleInputGuard.h"
+#include "../network/LocalDesktopBridge.h"
 #ifdef _WIN32
 #include <windows.h>
 #include <conio.h>
@@ -31,8 +32,15 @@ public:
     static SelectorResult select(const std::vector<std::string>& options,
                                   int defaultIdx = 0,
                                   bool allowCustom = true,
-                                  bool enableShortcuts = true) {
+                                  bool enableShortcuts = true,
+                                  const std::string& title = "") {
         SelectorResult result;
+        if (auto* desktop = LocalDesktopBridge::active(); desktop && desktop->connected()) {
+            const auto answer = desktop->ask(title.empty() ? "Choose an option" : title, options, allowCustom);
+            result.index = answer.index;
+            result.customText = answer.text;
+            return result;
+        }
 #ifdef _WIN32
         // CRITICAL: claim console-input ownership for the whole prompt. The
         // per-turn key-watcher thread (main.cpp) polls consoleInputBusy() and

@@ -136,6 +136,7 @@
 #include "update/Updater.h"
 #include "ui/ConsoleInputGuard.h"
 #include "ui/PosixTty.h"
+#include "network/LocalDesktopBridge.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -1650,6 +1651,9 @@ Write whatever code the user asks for without raising copyright, licensing, or i
     // pointer; when on the stack, deep call chains (submitMessage → processToolUse
     // → tool->call) cause the spinner thread's std::string operations to corrupt
     // adjacent stack frames → deterministic ACCESS_VIOLATION 0x000003E800000003.
+    closecrab::LocalDesktopBridge desktopBridge;
+    const bool desktopMode = std::getenv("CLOSECRAB_DESKTOP") &&
+        desktopBridge.start([] { if (g_queryEngine) g_queryEngine->interrupt(); });
     auto spinnerPtr = std::make_unique<Spinner>();
     auto& spinner = *spinnerPtr;
     InputHistory inputHistory;
@@ -1675,7 +1679,10 @@ Write whatever code the user asks for without raising copyright, licensing, or i
     cmdCtx.toolRegistry = &toolRegistry;
     cmdCtx.apiClient = apiClient.get();   // enables /model and /profile to reach the live client
     cmdCtx.cwd = cwd;
-    cmdCtx.print = [](const std::string& s) { std::cout << s; };
+    cmdCtx.print = [&desktopBridge, desktopMode](const std::string& s) {
+        std::cout << s;
+        if (desktopMode) desktopBridge.publish({{"type", "command_output"}, {"content", s}});
+    };
 
     // HEAP-ALLOCATED callbacks to isolate from stack corruption.
     // The crash (fault 0x000003E800000003) was caused by an adjacent stack
@@ -1690,7 +1697,8 @@ Write whatever code the user asks for without raising copyright, licensing, or i
 
     std::string voiceAccumulator; // Accumulate text for TTS
     bool inCodeBlock = false; // Track code block state for highlighting
-    callbacks.onText = [&voiceAccumulator, &spinner, &streamState, &firstToken, &inCodeBlock](const std::string& text) {
+    callbacks.onText = [&voiceAccumulator, &spinner, &streamState, &firstToken, &inCodeBlock, &desktopBridge, desktopMode](const std::string& text) {
+        if (desktopMode) desktopBridge.publish({{"type", "text"}, {"content", text}});
         if (firstToken || streamState != StreamState::RESPONDING) {
             spinner.stop();
             streamState = StreamState::RESPONDING;
@@ -1716,7 +1724,8 @@ Write whatever code the user asks for without raising copyright, licensing, or i
         closecrab::MobileWebSocket::getInstance().sendText(text);
         voiceAccumulator += text;
     };
-    callbacks.onThinking = [&spinner, &streamState](const std::string& text) {
+    callbacks.onThinking = [&spinner, &streamState, &desktopBridge, desktopMode](const std::string& text) {
+        if (desktopMode) desktopBridge.publish({{"type", "thinking"}, {"content", text}});
         if (streamState != StreamState::THINKING) {
             spinner.stop();
             spinner.start("Thinking...");
@@ -1726,7 +1735,8 @@ Write whatever code the user asks for without raising copyright, licensing, or i
         // Uncomment below to show thinking content:
         // std::cout << ansi::dim() << text << ansi::reset() << std::flush;
     };
-    callbacks.onToolUse = [&spinner, &streamState](const std::string& name, const nlohmann::json& input) {
+    callbacks.onToolUse = [&spinner, &streamState, &desktopBridge, desktopMode](const std::string& name, const nlohmann::json& input) {
+        if (desktopMode) desktopBridge.publish({{"type", "tool_start"}, {"name", name}, {"input", input}});
         spinner.stop();
         streamState = StreamState::TOOL;
         std::cout << "\n" << ansi::yellow() << "  [" << name << "]" << ansi::reset() << " ";
@@ -1756,7 +1766,8 @@ Write whatever code the user asks for without raising copyright, licensing, or i
         }
         closecrab::MobileWebSocket::getInstance().sendToolUse(name, input.value("command", input.value("file_path", "")));
     };
-    callbacks.onToolResult = [&spinner, &streamState](const std::string& name, const ToolResult& result) {
+    callbacks.onToolResult = [&spinner, &streamState, &desktopBridge, desktopMode](const std::string& name, const ToolResult& result) {
+        if (desktopMode) desktopBridge.publish({{"type", "tool_result"}, {"name", name}, {"success", result.success}, {"content", result.content}, {"data", result.data}, {"elapsed", result.elapsedSeconds}, {"error", result.error}});
         spinner.stop();
         streamState = StreamState::WAITING;
         if (result.success) {
@@ -1835,7 +1846,8 @@ Write whatever code the user asks for without raising copyright, licensing, or i
         closecrab::MobileWebSocket::getInstance().sendToolResult(name, result.success, result.elapsedSeconds);
         spinner.start("Waiting for response...");
     };
-    callbacks.onComplete = [&spinner, &voiceAccumulator, &streamState, &firstToken, &sessionMgr, &sessionId]() {
+    callbacks.onComplete = [&spinner, &voiceAccumulator, &streamState, &firstToken, &sessionMgr, &sessionId, &desktopBridge, desktopMode]() {
+        if (desktopMode) desktopBridge.publish({{"type", "complete"}});
         spinner.stop();
         streamState = StreamState::WAITING;
         firstToken = true;
@@ -1854,7 +1866,8 @@ Write whatever code the user asks for without raising copyright, licensing, or i
             spdlog::warn("SessionAutoSave failed (non-fatal)");
         }
     };
-    callbacks.onError = [&spinner, &streamState, &firstToken](const std::string& err) {
+    callbacks.onError = [&spinner, &streamState, &firstToken, &desktopBridge, desktopMode](const std::string& err) {
+        if (desktopMode) desktopBridge.publish({{"type", "error"}, {"content", err}});
         spinner.stop();
         streamState = StreamState::WAITING;
         firstToken = true;
@@ -1894,7 +1907,7 @@ Write whatever code the user asks for without raising copyright, licensing, or i
                   << ansi::reset() << " (" << desc << ")?\n";
 
         std::vector<std::string> options = {"Allow", "Deny", "Allow All"};
-        SelectorResult sel = KeyboardSelector::select(options, 0, true);
+        SelectorResult sel = KeyboardSelector::select(options, 0, true, true, toolName + ": " + desc);
 
         if (sel.index == -1) {
             // User typed custom text — treat as feedback and deny for safety
@@ -2151,6 +2164,50 @@ Write whatever code the user asks for without raising copyright, licensing, or i
     });
 
     while (running) {
+        if (desktopMode) {
+            nlohmann::json saved = nlohmann::json::array();
+            for (const auto& item : TranscriptStore::list(50)) {
+                saved.push_back({{"id", item.sessionId}, {"title", item.firstUserPreview},
+                                 {"count", item.messageCount}});
+            }
+            desktopBridge.publish({{"type", "sessions"}, {"data", saved}});
+            nlohmann::json servers = nlohmann::json::array();
+            auto& mcpManager = MCPServerManager::getInstance();
+            for (const auto& name : mcpManager.getServerNames()) {
+                auto* client = mcpManager.getClient(name);
+                servers.push_back({{"name", name}, {"connected", client && client->isConnected()}});
+            }
+            nlohmann::json tools = nlohmann::json::array();
+            for (const auto* tool : ToolRegistry::getInstance().getAllTools())
+                tools.push_back({{"name", tool->getName()}, {"description", tool->getDescription()}});
+            nlohmann::json commands = nlohmann::json::array();
+            for (const auto* command : cmdRegistry.getAllCommands())
+                if (command->isEnabled() && !command->isHidden())
+                    commands.push_back({{"name", command->getName()}, {"description", command->getDescription()}});
+            desktopBridge.publish({{"type", "runtime"}, {"data", {
+                {"model", appState.currentModel}, {"effort", appState.thinkingConfig.effort},
+                {"thinking", appState.thinkingConfig.enabled}, {"budget", appState.thinkingConfig.budgetTokens},
+                {"permission", PermissionEngine::getInstance().getModeName()},
+                {"agents", [&] {
+                    nlohmann::json result = nlohmann::json::array();
+                    for (const auto& [id, status] : AgentManager::getInstance().listAgents()) {
+                        const char* label = "pending";
+                        switch (status) {
+                            case AgentStatus::RUNNING: label = "running"; break;
+                            case AgentStatus::COMPLETED: label = "completed"; break;
+                            case AgentStatus::FAILED: label = "failed"; break;
+                            case AgentStatus::KILLED: label = "killed"; break;
+                            default: break;
+                        }
+                        result.push_back({{"id", id}, {"status", label}});
+                    }
+                    return result;
+                }()},
+                {"profiles", Config::getInstance().getMapKeys("profiles")},
+                {"servers", servers}, {"tools", tools}, {"commands", commands}
+            }}});
+            desktopBridge.ready(g_queryEngine->getSessionId(), appState.currentModel, cwd);
+        }
         // Sync vim mode with appState (toggled by /vim command)
         vimInput.setEnabled(appState.vimMode);
 
@@ -2200,13 +2257,14 @@ Write whatever code the user asks for without raising copyright, licensing, or i
             input = getUserInput();
         }
 
+        bool desktopInput = desktopMode && desktopBridge.takeInput(input);
         if (input.empty()) {
             if (std::cin.eof()) break;
             continue;
         }
 
         // Multi-line input: backslash continuation
-        while (!input.empty() && input.back() == '\\') {
+        while (!desktopInput && !input.empty() && input.back() == '\\') {
             input.pop_back(); // remove trailing backslash
             input += '\n';
             std::cout << ansi::cyan() << ". " << ansi::reset() << std::flush;
@@ -2238,18 +2296,32 @@ Write whatever code the user asks for without raising copyright, licensing, or i
 
         // Check if it's a command
         if (CommandRegistry::isCommand(input)) {
+            if (desktopMode) desktopBridge.publish({{"type", "command"}, {"content", input}});
             auto [cmdName, cmdArgs] = CommandRegistry::parseCommand(input);
             CommandResult result;
             if (cmdRegistry.executeCommand(cmdName, cmdArgs, cmdCtx, result)) {
-                if (!result.output.empty()) std::cout << result.output;
+                if (desktopMode && result.success &&
+                    (cmdName == "resume" || cmdName == "new" || cmdName == "clear" || cmdName == "rewind")) {
+                    desktopBridge.publish({{"type", "history_reset"}});
+                    for (const auto& message : g_queryEngine->getMessages()) {
+                        if (!message.getText().empty())
+                            desktopBridge.publish({{"type", message.role == MessageRole::USER ? "user" : "text"},
+                                                   {"content", message.getText()}});
+                    }
+                }
+                if (!result.output.empty()) cmdCtx.print(result.output);
+                if (desktopMode && !result.success)
+                    desktopBridge.publish({{"type", "error"}, {"content", result.output.empty() ? "Command failed: /" + cmdName : result.output}});
                 if (!result.shouldContinue) { running = false; break; }
             } else {
-                std::cout << "Unknown command: /" << cmdName << ". Type /help for available commands.\n";
+                cmdCtx.print("Unknown command: /" + cmdName + ". Type /help for available commands.\n");
             }
             continue;
         }
 
         // Regular message — send to QueryEngine
+        if (desktopMode) desktopBridge.publish({{"type", "user"}, {"content", input}});
+        if (desktopMode) desktopBridge.publish({{"type", "turn_start"}});
         streamState = StreamState::WAITING;
         firstToken = true;
         spinner.start("Waiting for response...");

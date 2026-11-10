@@ -105,7 +105,7 @@ public:
                 // allowCustom=true gives a "[Type response...]" entry → index -1
                 // with the typed text (the "Other" path). enableShortcuts=false so
                 // a free-text answer starting with y/n/a isn't hijacked.
-                SelectorResult sel = KeyboardSelector::select(labels, 0, true, false);
+                SelectorResult sel = KeyboardSelector::select(labels, 0, true, false, question);
 
                 if (sel.index >= 0 && sel.index < (int)optionLabels.size()) {
                     answers[question] = optionLabels[sel.index];
@@ -116,7 +116,7 @@ public:
             } else {
                 // Free-text question: full-line custom input via the selector's
                 // text path (consistent console handling).
-                SelectorResult sel = KeyboardSelector::select({}, 0, true, false);
+                SelectorResult sel = KeyboardSelector::select({}, 0, true, false, question);
                 answers[question] = sel.customText;
             }
         }
