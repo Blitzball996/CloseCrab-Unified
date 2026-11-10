@@ -529,6 +529,7 @@ set(CLOSECRAB_LIBS
     capstone
     CURL::libcurl
     ZLIB::ZLIB
+    OpenSSL::Crypto
 )
 
 if(USE_ONNX)
