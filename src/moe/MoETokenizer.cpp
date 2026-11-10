@@ -1,7 +1,9 @@
 // MoETokenizer.cpp — Qwen BPE tokenizer via llama.cpp vocab API.
 #include "MoETokenizer.h"
 #include <spdlog/spdlog.h>
+#ifdef CLOSECRAB_HAS_LOCAL_LLM
 #include <llama.h>
+#endif
 #include <array>
 #include <filesystem>
 #include <sstream>
@@ -11,6 +13,7 @@ namespace closecrab::moe {
 
 MoETokenizer::MoETokenizer() = default;
 
+#ifdef CLOSECRAB_HAS_LOCAL_LLM
 MoETokenizer::~MoETokenizer() {
     if (model_) { llama_model_free(model_); model_ = nullptr; }
 }
@@ -98,6 +101,18 @@ std::string MoETokenizer::decode(const std::vector<int32_t>& ids) const {
     if (n <= 0) return "";
     return std::string(buf.data(), static_cast<size_t>(n));
 }
+
+#else
+MoETokenizer::~MoETokenizer() = default;
+bool MoETokenizer::load(const std::string&) {
+    spdlog::error("MoE tokenizer requires a build with local LLM support");
+    return false;
+}
+int MoETokenizer::vocabSize() const { return 0; }
+std::vector<int32_t> MoETokenizer::encode(const std::string&, bool) const { return {}; }
+std::string MoETokenizer::tokenToPiece(int32_t) const { return {}; }
+std::string MoETokenizer::decode(const std::vector<int32_t>&) const { return {}; }
+#endif
 
 // static
 std::string MoETokenizer::buildQwenPrompt(
