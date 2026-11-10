@@ -518,6 +518,7 @@ endif()
 # Link libraries (cross-platform)
 # ============================================
 
+find_package(OpenSSL REQUIRED)
 set(CLOSECRAB_LIBS
     spdlog::spdlog
     nlohmann_json::nlohmann_json
