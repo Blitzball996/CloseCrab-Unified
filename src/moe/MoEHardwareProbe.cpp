@@ -21,6 +21,7 @@
 #  include <windows.h>
 #elif defined(__APPLE__)
 #  include <sys/sysctl.h>
+#  include <sys/statvfs.h>
 #  include <sys/utsname.h>
 #else
 #  include <sys/statvfs.h>
@@ -201,6 +202,8 @@ static std::vector<GpuInfo> detectWindowsAdapters() {
 static bool cpuHasAvx2() {
 #if defined(_WIN32)
     return IsProcessorFeaturePresent(PF_AVX2_INSTRUCTIONS_AVAILABLE) != 0;
+#elif defined(__aarch64__) || defined(__arm64__)
+    return false;
 #elif defined(__AVX2__)
     return true;
 #else
@@ -213,6 +216,8 @@ static bool cpuHasAvx2() {
 static bool cpuHasAvx512() {
 #if defined(_WIN32)
     return IsProcessorFeaturePresent(PF_AVX512F_INSTRUCTIONS_AVAILABLE) != 0;
+#elif defined(__aarch64__) || defined(__arm64__)
+    return false;
 #elif defined(__AVX512F__)
     return true;
 #else
