@@ -98,6 +98,7 @@ private:
     std::vector<std::string> getAllowedTools(AgentType type) const;
 
     struct AgentInstance {
+        mutable std::mutex mutex;
         std::string id;
         AgentConfig config;
         AgentStatus status = AgentStatus::PENDING;

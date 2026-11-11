@@ -617,7 +617,7 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
 }
 
 void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks& callbacks) {
-    interrupted_ = false;
+    if (!config_.abortFlag) interrupted_ = false;
 
     // Add user message
     messages_.push_back(Message::makeUser(prompt));

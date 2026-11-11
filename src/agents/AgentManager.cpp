@@ -117,6 +117,7 @@ std::string AgentManager::spawnAgent(const AgentConfig& config, APIClient* apiCl
             agentSlots().acquire();
             struct SlotGuard { ~SlotGuard() { agentSlots().release(); } } slotGuard;
             try {
+                if (agentPtr->interrupted) return;
                 // Create sub-QueryEngine
                 QueryEngineConfig qeConfig;
                 qeConfig.cwd = cwd;
@@ -132,6 +133,7 @@ std::string AgentManager::spawnAgent(const AgentConfig& config, APIClient* apiCl
                 // Previous 800-token budget truncated files to ~3.2KB causing repeated reads.
                 // Recursive-spawn guard: sub-agents cannot launch their own agents.
                 qeConfig.allowSubagents = false;
+                qeConfig.abortFlag = &agentPtr->interrupted;
 
                 QueryEngine subEngine(qeConfig);
 
@@ -160,7 +162,8 @@ std::string AgentManager::spawnAgent(const AgentConfig& config, APIClient* apiCl
                     AgentActivitySink::getInstance().log(aid, "  " + name + " -> " + suffix);
                 };
                 callbacks.onError = [&](const std::string& err) {
-                    agentPtr->error = err;
+                    std::lock_guard<std::mutex> lock(agentPtr->mutex);
+                    if (!agentPtr->interrupted) agentPtr->error = err;
                 };
                 callbacks.onRetry = [aid](int attempt, int maxAttempts, int /*delayMs*/, const std::string& reason) {
                     AgentActivitySink::getInstance().log(aid,
@@ -174,14 +177,21 @@ std::string AgentManager::spawnAgent(const AgentConfig& config, APIClient* apiCl
                 AgentProgress::getInstance().setProgress(aid, 5, "starting");
                 subEngine.submitMessage(config.prompt, callbacks);
 
+                std::lock_guard<std::mutex> lock(agentPtr->mutex);
                 agentPtr->output = accumulated;
-                agentPtr->status = AgentStatus::COMPLETED;
-                AgentProgress::getInstance().setProgress(aid, 100, "done");
+                if (!agentPtr->interrupted) {
+                    agentPtr->status = agentPtr->error.empty() ? AgentStatus::COMPLETED : AgentStatus::FAILED;
+                    AgentProgress::getInstance().setProgress(aid, 100, agentPtr->error.empty() ? "done" : "failed");
+                }
             } catch (const std::exception& e) {
+                std::lock_guard<std::mutex> lock(agentPtr->mutex);
+                if (agentPtr->interrupted) return;
                 agentPtr->error = e.what();
                 agentPtr->status = AgentStatus::FAILED;
                 AgentProgress::getInstance().setProgress(agentPtr->id, 100, "failed");
             } catch (...) {
+                std::lock_guard<std::mutex> lock(agentPtr->mutex);
+                if (agentPtr->interrupted) return;
                 agentPtr->error = "Unknown exception in agent";
                 agentPtr->status = AgentStatus::FAILED;
                 AgentProgress::getInstance().setProgress(agentPtr->id, 100, "failed");
@@ -208,13 +218,15 @@ AgentResult AgentManager::getResult(const std::string& agentId, bool block) {
         // C++ needs a safety net; 1800s (30min) is generous enough for any task.
         auto status = instance->future.wait_for(std::chrono::seconds(1800));
         if (status == std::future_status::timeout) {
+            std::lock_guard<std::mutex> lock(instance->mutex);
             instance->status = AgentStatus::FAILED;
             instance->error = "Agent timed out after 1800s";
             instance->interrupted = true;
-            spdlog::warn("Agent {} timed out after 300s", agentId);
+            spdlog::warn("Agent {} timed out after 1800s", agentId);
         }
     }
 
+    std::lock_guard<std::mutex> lock(instance->mutex);
     return {instance->id, instance->status, instance->output, instance->error};
 }
 
@@ -222,9 +234,12 @@ void AgentManager::cancelAgent(const std::string& agentId) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = agents_.find(agentId);
     if (it != agents_.end()) {
+        std::lock_guard<std::mutex> stateLock(it->second->mutex);
+        if (it->second->status != AgentStatus::RUNNING && it->second->status != AgentStatus::PENDING) return;
         it->second->interrupted = true;
-        it->second->status = AgentStatus::FAILED;
+        it->second->status = AgentStatus::KILLED;
         it->second->error = "Cancelled by user";
+        AgentProgress::getInstance().setProgress(agentId, 100, "cancelled");
         spdlog::info("Agent {} cancelled", agentId);
     }
 }
@@ -247,6 +262,8 @@ void AgentManager::killAgent(const std::string& agentId) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = agents_.find(agentId);
     if (it != agents_.end()) {
+        std::lock_guard<std::mutex> stateLock(it->second->mutex);
+        if (it->second->status != AgentStatus::RUNNING && it->second->status != AgentStatus::PENDING) return;
         it->second->interrupted = true;
         it->second->status = AgentStatus::KILLED;
     }
@@ -256,6 +273,7 @@ std::vector<std::pair<std::string, AgentStatus>> AgentManager::listAgents() cons
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<std::pair<std::string, AgentStatus>> result;
     for (const auto& [id, inst] : agents_) {
+        std::lock_guard<std::mutex> stateLock(inst->mutex);
         result.push_back({id, inst->status});
     }
     return result;

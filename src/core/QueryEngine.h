@@ -45,6 +45,7 @@ struct QueryEngineConfig {
     // their own Agent sub-agents (mirrors JackProAi's fork recursion guard).
     // Prevents unbounded thread explosion that crashed the process.
     bool allowSubagents = true;
+    std::atomic<bool>* abortFlag = nullptr;
 };
 
 // Callbacks for UI integration
@@ -137,7 +138,8 @@ private:
     QueryEngineConfig config_;
     std::vector<Message> messages_;
     std::string sessionId_;
-    std::atomic<bool> interrupted_{false};
+    std::atomic<bool> ownInterrupted_{false};
+    std::atomic<bool>& interrupted_ = config_.abortFlag ? *config_.abortFlag : ownInterrupted_;
     HistoryCompactor compactor_;
     ContextCollapse contextCollapse_;
 

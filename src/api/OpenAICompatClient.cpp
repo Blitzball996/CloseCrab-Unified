@@ -137,7 +137,8 @@ static void performOAICurl(
     const std::string& url,
     const std::string& bodyStr,
     const std::string& apiKey,
-    OAIStreamCtx& curlCtx
+    OAIStreamCtx& curlCtx,
+    const std::atomic<bool>* abortFlag
 ) {
     CURL* curl = curl_easy_init();
     if (!curl) {
@@ -156,6 +157,15 @@ static void performOAICurl(
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &curlCtx);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    if (abortFlag) {
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, abortFlag);
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION,
+            +[](void* flag, curl_off_t, curl_off_t, curl_off_t, curl_off_t) -> int {
+                return static_cast<const std::atomic<bool>*>(flag)->load() ? 1 : 0;
+            });
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    }
     closecrab::applyProxyToCurl(curl);   // honor proxy / CLOSECRAB_NO_PROXY (墙内可达性)
 
     CURLcode res = curl_easy_perform(curl);
@@ -164,6 +174,7 @@ static void performOAICurl(
 
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
+    if (abortFlag && abortFlag->load()) return;
 
     // A C++ exception was caught inside the write callback (and converted to a
     // CURLE_WRITE_ERROR abort). Surface the REAL cause, not curl's generic
@@ -278,7 +289,7 @@ void OpenAICompatClient::streamChat(
     OAIStreamCtx curlCtx{&parser};
 
     withRetry([&]() {
-        performOAICurl(url, bodyStr, apiKey_, curlCtx);
+        performOAICurl(url, bodyStr, apiKey_, curlCtx, config.abortFlag);
     }, 3);
 
     parser.finish();
