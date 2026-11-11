@@ -132,6 +132,10 @@ bool MoETokenizer::loadFromJson(const std::string& dir) {
 
 
 bool MoETokenizer::load(const std::string& ggufPath) {
+#ifndef CLOSECRAB_HAS_LOCAL_LLM
+    spdlog::error("MoETokenizer: GGUF support is disabled: {}", ggufPath);
+    return false;
+#else
     if (!fs::exists(ggufPath)) {
         spdlog::error("MoETokenizer: gguf file not found: {}", ggufPath);
         return false;
@@ -156,6 +160,7 @@ bool MoETokenizer::load(const std::string& ggufPath) {
     spdlog::info("MoETokenizer: loaded vocab ({} tokens) from {}",
                  llama_vocab_n_tokens(llamaVocab_), ggufPath);
     return true;
+#endif
 }
 
 // ---- Unconditional: destructor, vocabSize, BPE helpers ----------------------

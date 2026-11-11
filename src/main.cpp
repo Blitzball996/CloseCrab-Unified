@@ -2330,6 +2330,13 @@ Write whatever code the user asks for without raising copyright, licensing, or i
         }
 
         // Regular message — send to QueryEngine
+        if (desktopMode) {
+            std::cout << "\n> ";
+            for (unsigned char c : input) {
+                if (c >= 32 || c == '\n' || c == '\t') std::cout << c;
+            }
+            std::cout << "\n" << std::flush;
+        }
         if (desktopMode) desktopBridge.publish({{"type", "user"}, {"content", input}});
         if (desktopMode) desktopBridge.publish({{"type", "turn_start"}});
         streamState = StreamState::WAITING;
