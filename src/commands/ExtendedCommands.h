@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <fstream>
 #include <chrono>
+#include <algorithm>
 
 namespace closecrab {
 
@@ -163,6 +164,38 @@ public:
     std::string getDescription() const override { return "List running and completed agents"; }
 
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        auto& manager = AgentManager::getInstance();
+        if (args.rfind("spawn ", 0) == 0) {
+            try {
+                const auto request = nlohmann::json::parse(args.substr(6));
+                const auto type = request.value("type", "explore");
+                if (type != "explore" && type != "plan" && type != "code-guide")
+                    return CommandResult::fail("Only read-only agent types are available here");
+                AgentConfig config;
+                config.type = parseAgentType(type);
+                config.prompt = request.at("prompt").get<std::string>();
+                config.runInBackground = true;
+                if (config.prompt.empty() || config.prompt.size() > 32000)
+                    return CommandResult::fail("Agent task must contain 1 to 32000 bytes");
+                if (!ctx.apiClient || !ctx.appState || !ctx.toolRegistry)
+                    return CommandResult::fail("Agent context is unavailable");
+                const auto id = manager.spawnAgent(config, ctx.apiClient, ctx.toolRegistry, ctx.appState, ctx.cwd);
+                ctx.print("Started agent " + id + "\n");
+                return CommandResult::ok();
+            } catch (const std::exception& error) {
+                return CommandResult::fail(std::string("Cannot start agent: ") + error.what());
+            }
+        }
+        if (args.rfind("stop ", 0) == 0 || args.rfind("result ", 0) == 0) {
+            const bool stopping = args.rfind("stop ", 0) == 0;
+            const auto id = args.substr(stopping ? 5 : 7);
+            const auto known = manager.listAgents();
+            if (std::none_of(known.begin(), known.end(), [&](const auto& agent) { return agent.first == id; }))
+                return CommandResult::fail("Agent not found");
+            if (stopping) { manager.cancelAgent(id); ctx.print("Stop requested: " + id + "\n"); }
+            else { const auto result = manager.getResult(id, false); ctx.print(result.error.empty() ? result.output + "\n" : result.error + "\n"); }
+            return CommandResult::ok();
+        }
         auto agents = AgentManager::getInstance().listAgents();
         if (agents.empty()) {
             ctx.print("No agents.\n");
