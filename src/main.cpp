@@ -1870,7 +1870,7 @@ Write whatever code the user asks for without raising copyright, licensing, or i
         // JackProAi: persistSession → recordTranscript(messages) after each turn
         try {
             if (g_queryEngine) {
-                SessionAutoSave::save(&sessionMgr, sessionId, g_queryEngine->getMessages());
+                SessionAutoSave::save(&sessionMgr, g_queryEngine->getSessionId(), g_queryEngine->getMessages());
             }
         } catch (...) {
             spdlog::warn("SessionAutoSave failed (non-fatal)");
@@ -2422,7 +2422,7 @@ Write whatever code the user asks for without raising copyright, licensing, or i
     // Save session messages for /resume
     if (g_queryEngine && !g_queryEngine->getMessages().empty()) {
         auto msgJson = g_queryEngine->serializeMessages();
-        sessionMgr.updateContext(sessionId, msgJson.dump());
+        sessionMgr.updateContext(g_queryEngine->getSessionId(), msgJson.dump());
         spdlog::info("Saved {} messages to session {}", g_queryEngine->getMessages().size(), sessionId);
     }
 

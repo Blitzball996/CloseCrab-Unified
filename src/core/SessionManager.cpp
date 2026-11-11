@@ -1,4 +1,5 @@
 #include "SessionManager.h"
+#include "../utils/UUID.h"
 #include <spdlog/spdlog.h>
 #include <sstream>
 #include <chrono>
@@ -55,7 +56,7 @@ std::string SessionManager::createSession(const std::string& userId) {
     // ���ɼ򵥵�ʱ��� ID
     auto now = std::chrono::system_clock::now();
     auto timestamp = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
-    std::string sessionId = userId + "_" + std::to_string(timestamp);
+    std::string sessionId = userId + "_" + closecrab::generateUUID();
 
     const char* sql = "INSERT INTO sessions (id, user_id, context, created_at, updated_at) VALUES (?, ?, '{}', ?, ?)";
     sqlite3_stmt* stmt;
@@ -116,7 +117,9 @@ bool SessionManager::updateContext(const std::string& sessionId, const std::stri
     auto now = std::chrono::system_clock::now();
     auto timestamp = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
 
-    const char* sql = "UPDATE sessions SET context = ?, updated_at = ? WHERE id = ?";
+    const char* sql = "INSERT INTO sessions (id, user_id, context, created_at, updated_at) "
+                      "VALUES (?3, 'default', ?1, ?2, ?2) "
+                      "ON CONFLICT(id) DO UPDATE SET context=excluded.context, updated_at=excluded.updated_at";
     sqlite3_stmt* stmt;
     int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
     if (rc != SQLITE_OK) {

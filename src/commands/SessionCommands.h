@@ -7,6 +7,7 @@
 #include "../core/SessionManager.h"
 #include "../core/TranscriptStore.h"
 #include "../services/CompactSummary.h"
+#include "../utils/UUID.h"
 #include <filesystem>
 #include <fstream>
 #include <chrono>
@@ -47,12 +48,8 @@ public:
         // Generate a fresh session id so this conversation gets its OWN
         // <id>.jsonl transcript instead of being appended onto the previous
         // session's file (the "/resume shows everything tangled together" bug).
-        // Monotonic per-process counter guards against same-second collisions.
-        static std::atomic<uint64_t> s_seq{0};
-        auto secs = std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
-        std::string newId = "default_" + std::to_string(secs) + "_" +
-                            std::to_string(s_seq.fetch_add(1));
+        // UUIDs also separate sessions created by different desktop processes.
+        std::string newId = "default_" + generateUUID();
         ctx.queryEngine->startNewSession(newId);
         if (ctx.appState) ctx.appState->sessionId = newId;
         ctx.print("New session started [" + newId + "].\n");
@@ -190,7 +187,9 @@ private:
 
         try {
             auto data = nlohmann::json::parse(session->context);
+            ctx.queryEngine->startNewSession(sessionId);
             ctx.queryEngine->deserializeMessages(data);
+            if (ctx.appState) ctx.appState->sessionId = sessionId;
             ctx.print("Restored " + std::to_string(ctx.queryEngine->getMessages().size()) +
                       " messages from session [" + sessionId + "]\n");
             renderRestoredHistory(ctx);
