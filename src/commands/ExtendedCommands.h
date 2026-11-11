@@ -2,6 +2,8 @@
 
 #include "Command.h"
 #include "../api/RemoteAPIClient.h"
+#include "../api/OpenAICompatClient.h"
+#include "../api/SwitchableAPIClient.h"
 #include "../config/Config.h"
 #include "../core/AppState.h"
 #include "../hooks/HookManager.h"
@@ -948,11 +950,14 @@ public:
         if (baseUrl.empty()) baseUrl = "https://api.anthropic.com";
 
         // Create new client with the requested model
-        static std::shared_ptr<closecrab::RemoteAPIClient> s_activeClient;
-        s_activeClient = std::make_shared<closecrab::RemoteAPIClient>(apiKey, baseUrl, args);
-
-        // Swap into QueryEngine
-        ctx.queryEngine->setApiClient(s_activeClient.get());
+        auto* connection=dynamic_cast<SwitchableAPIClient*>(ctx.apiClient);
+        if(!connection)return CommandResult::fail("Session does not support model switching");
+        auto provider=config.getString("provider", "anthropic");
+        if(provider=="openai"||provider=="lmstudio"||provider=="siliconflow")
+            connection->replace(std::make_shared<OpenAICompatClient>(apiKey,baseUrl,args));
+        else if(provider=="anthropic")
+            connection->replace(std::make_shared<RemoteAPIClient>(apiKey,baseUrl,args));
+        else return CommandResult::fail("Use /reload with a local model configuration to switch local models");
         ctx.appState->currentModel = args;
 
         ctx.print("Model switched to: " + args + "\n");

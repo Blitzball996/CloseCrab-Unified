@@ -2,6 +2,15 @@
 
 #include "Command.h"
 #include "../api/APIClient.h"
+#include "../api/RemoteAPIClient.h"
+#include "../api/OpenAICompatClient.h"
+#include "../api/LocalLLMClient.h"
+#include "../api/SwitchableAPIClient.h"
+#include "../moe/MoELLMClient.h"
+#include "../llm/LLMEngine.h"
+#include "../core/QueryEngine.h"
+#include "../config/Config.h"
+#include <yaml-cpp/yaml.h>
 #ifdef CLOSECRAB_HAS_ONNX
 #include "../rag/RAGManager.h"
 #endif
@@ -14,6 +23,7 @@
 #include <iomanip>
 #include <filesystem>
 #include <fstream>
+#include <filesystem>
 
 namespace closecrab {
 
@@ -236,6 +246,55 @@ public:
     }
 };
 
+// writeYamlValue — edit (or append) a top-level or nested key in a YAML config.
+// Shared by /provider and /api. Lives here as a free function so command classes
+// can use it regardless of declaration order.
+static bool writeYamlValue(const std::string& path, const std::string& key,
+                           const std::string& value, bool nested) {
+    namespace fs = std::filesystem;
+    std::ifstream in(path);
+    std::vector<std::string> lines;
+    std::string line;
+    if (in.is_open()) { while (std::getline(in, line)) lines.push_back(line); in.close(); }
+
+    std::string quoted = "\"" + value + "\"";
+    std::string newLine = nested ? ("  " + key + ": " + quoted)
+                                  : (key + ": " + quoted);
+
+    bool inApi = false, done = false;
+    for (size_t i = 0; i < lines.size() && !done; i++) {
+        const std::string& L = lines[i];
+        std::string ltrim = L; size_t p = ltrim.find_first_not_of(" \t");
+        std::string body = (p == std::string::npos) ? "" : ltrim.substr(p);
+        bool indented = (p != std::string::npos && p > 0);
+
+        if (nested) {
+            if (!indented && body.rfind("api:", 0) == 0) { inApi = true; continue; }
+            if (!indented && !body.empty() && body[0] != '#') inApi = false; // left the api block
+            if (inApi && body.rfind(key + ":", 0) == 0) { lines[i] = newLine; done = true; }
+        } else {
+            if (!indented && body.rfind(key + ":", 0) == 0) { lines[i] = newLine; done = true; }
+        }
+    }
+    if (!done) {
+        // Key not found — append (under api: if nested and that block exists).
+        if (nested) {
+            bool placed = false;
+            for (size_t i = 0; i < lines.size(); i++) {
+                if (lines[i].rfind("api:", 0) == 0) { lines.insert(lines.begin() + i + 1, newLine); placed = true; break; }
+            }
+            if (!placed) { lines.push_back("api:"); lines.push_back(newLine); }
+        } else {
+            lines.push_back(newLine);
+        }
+    }
+
+    std::ofstream out(path, std::ios::trunc);
+    if (!out.is_open()) return false;
+    for (const auto& l : lines) out << l << "\n";
+    return true;
+}
+
 // /provider - switch provider at runtime
 class ProviderCommand : public Command {
 public:
@@ -244,15 +303,14 @@ public:
 
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
         if (args.empty()) {
-            ctx.print("Current provider: " + ctx.appState->currentModel + "\n");
-            ctx.print("Usage: /provider <anthropic|openai|local|local-moe>\n");
-            ctx.print("  anthropic  — Claude API (default, needs api.api_key)\n");
-            ctx.print("  openai     — OpenAI-compatible API\n");
-            ctx.print("  local      — llama.cpp local model (needs llm.model_path)\n");
-            ctx.print("  local-moe  — 125B MoE local model, runs on consumer GPU\n");
-            ctx.print("               Use /local list to see available models\n");
-            ctx.print("               Use /local download <id> to fetch one\n");
-            ctx.print("  After switching, edit config.yaml and restart.\n");
+            ctx.print("Current provider: " + ctx.appState->currentModel + "\n\n");
+            ctx.print("Usage: /provider <name>\n");
+            ctx.print("  anthropic   — Claude API (cloud)\n");
+            ctx.print("  openai      — OpenAI-compatible API (cloud)\n");
+            ctx.print("  local       — llama.cpp local model\n");
+            ctx.print("  local-moe   — 125B MoE local model on your GPU\n\n");
+            ctx.print("Example: /provider anthropic   (switch back to cloud)\n");
+            ctx.print("         /provider local-moe   (switch to local 125B)\n");
             return CommandResult::ok();
         }
         static const std::vector<std::string> valid =
@@ -262,17 +320,20 @@ public:
             ctx.print("Valid: anthropic, openai, local, local-moe\n");
             return CommandResult::ok();
         }
-        ctx.print("Provider set to: " + args + "\n");
-        if (args == "local-moe") {
-            ctx.print("For local-moe, also set in config.yaml:\n");
-            ctx.print("  moe:\n");
-            ctx.print("    model_path: \"models/moe/<id>\"\n");
-            ctx.print("    model_id:   \"<id>\"\n");
-            ctx.print("Run /local list to see available models.\n");
-            ctx.print("Run /local download <id> to fetch one.\n");
+        const std::string cfgPath = ctx.appState ? ctx.appState->configPath
+                                                 : "config/config.yaml";
+        if (!writeYamlValue(cfgPath, "provider", args, false)) {
+            return CommandResult::fail("Could not write to " + cfgPath);
         }
-        ctx.print("Edit config/config.yaml: provider: \"" + args + "\"\n");
-        ctx.print("Then restart CloseCrab to apply.\n");
+        ctx.print("Provider saved: " + args + "\n");
+        if (args == "local-moe") {
+            ctx.print("Run /local to see available models and download one.\n");
+        } else if (args == "anthropic" || args == "openai") {
+            std::string key = Config::getInstance().getString("api.api_key", "");
+            if (key.empty())
+                ctx.print("Tip: set your API key with /api key=sk-xxxx\n");
+        }
+        ctx.print("Restart CloseCrab to apply (or /reload if available).\n");
         return CommandResult::ok();
     }
 };
@@ -345,63 +406,63 @@ private:
     // Line-based YAML edit that PRESERVES comments/formatting (yaml-cpp rewrite
     // would strip them). `nested` keys live under the `api:` block (2-space indent);
     // otherwise it's a top-level key. Creates the line if missing.
-    static bool writeYamlValue(const std::string& path, const std::string& key,
-                               const std::string& value, bool nested) {
-        namespace fs = std::filesystem;
-        std::ifstream in(path);
-        std::vector<std::string> lines;
-        std::string line;
-        if (in.is_open()) { while (std::getline(in, line)) lines.push_back(line); in.close(); }
-
-        std::string quoted = "\"" + value + "\"";
-        std::string newLine = nested ? ("  " + key + ": " + quoted)
-                                      : (key + ": " + quoted);
-
-        bool inApi = false, done = false;
-        for (size_t i = 0; i < lines.size() && !done; i++) {
-            const std::string& L = lines[i];
-            std::string ltrim = L; size_t p = ltrim.find_first_not_of(" \t");
-            std::string body = (p == std::string::npos) ? "" : ltrim.substr(p);
-            bool indented = (p != std::string::npos && p > 0);
-
-            if (nested) {
-                if (!indented && body.rfind("api:", 0) == 0) { inApi = true; continue; }
-                if (!indented && !body.empty() && body[0] != '#') inApi = false; // left the api block
-                if (inApi && body.rfind(key + ":", 0) == 0) { lines[i] = newLine; done = true; }
-            } else {
-                if (!indented && body.rfind(key + ":", 0) == 0) { lines[i] = newLine; done = true; }
-            }
-        }
-        if (!done) {
-            // Key not found — append (under api: if nested and that block exists).
-            if (nested) {
-                bool placed = false;
-                for (size_t i = 0; i < lines.size(); i++) {
-                    if (lines[i].rfind("api:", 0) == 0) { lines.insert(lines.begin() + i + 1, newLine); placed = true; break; }
-                }
-                if (!placed) { lines.push_back("api:"); lines.push_back(newLine); }
-            } else {
-                lines.push_back(newLine);
-            }
-        }
-
-        std::ofstream out(path, std::ios::trunc);
-        if (!out.is_open()) return false;
-        for (const auto& l : lines) out << l << "\n";
-        return true;
-    }
 };
 
-// /reload - reload configuration (restart hint)
+// /reload - replace the API client between turns, preserving conversation history.
 class ReloadCommand : public Command {
 public:
     std::string getName() const override { return "reload"; }
-    std::string getDescription() const override { return "Reload configuration (requires restart)"; }
+    std::string getDescription() const override { return "Reload API connection without restarting the session"; }
 
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
-        ctx.print("Configuration reload requires restarting the program.\n");
-        ctx.print("Please exit (/quit) and restart.\n");
-        return CommandResult::ok();
+        if (!ctx.appState || !ctx.queryEngine) return CommandResult::fail("Session unavailable");
+        auto* connection=dynamic_cast<SwitchableAPIClient*>(ctx.apiClient);
+        if(!connection)return CommandResult::fail("Session does not support connection reload");
+        const auto path = args.empty() ? ctx.appState->configPath : args;
+        try {
+            auto document = YAML::LoadFile(path);
+            auto provider = document["provider"].as<std::string>("");
+            auto api = document["api"];
+            auto key = api["api_key"].as<std::string>("");
+            auto url = api["base_url"].as<std::string>("");
+            auto model = api["model"].as<std::string>("");
+            if (provider != "local" && provider != "local-moe" && provider != "anthropic" && provider != "openai")
+                return CommandResult::fail("Unsupported provider");
+            if ((provider == "anthropic" || provider == "openai") && (key.empty() || model.empty() || (url.rfind("https://",0)!=0 && url.rfind("http://",0)!=0)))
+                return CommandResult::fail("API key, HTTP URL and model are required");
+            std::unique_ptr<LLMEngine> nextEngine;
+            std::unique_ptr<APIClient> next;
+            if (provider == "anthropic") next = std::make_unique<RemoteAPIClient>(key,url,model);
+            else if (provider == "openai") next = std::make_unique<OpenAICompatClient>(key,url,model);
+            else if (provider == "local") {
+                auto modelPath=api["model_path"].as<std::string>(document["llm"]["model_path"].as<std::string>(""));
+                if(modelPath.empty()) return CommandResult::fail("Local model path is required (api.model_path or llm.model_path)");
+                if(!std::filesystem::is_regular_file(modelPath))return CommandResult::fail("Local model file does not exist; active connection unchanged");
+                auto engine=std::make_unique<LLMEngine>(modelPath,1,document["gpu"]["cpu_moe"].as<int>(0));
+                if(!engine->isLoaded()) return CommandResult::fail("Could not load local model; active connection unchanged");
+                next=std::make_unique<LocalLLMClient>(engine.get());
+                nextEngine=std::move(engine);
+                model="local:"+std::filesystem::path(modelPath).filename().string();
+            } else {
+                auto modelPath=document["moe"]["model_path"].as<std::string>("");
+                auto modelId=api["model"].as<std::string>(document["moe"]["model_id"].as<std::string>(""));
+                if(modelPath.empty()) return CommandResult::fail("MoE model path is required");
+                auto engine=std::make_unique<MoELLMClient>(modelId,modelPath);
+                if(!engine->isReady()) return CommandResult::fail("Could not start MoE engine; active connection unchanged");
+                next=std::move(engine);
+                model=next->getModelName();
+            }
+            if (!Config::getInstance().load(path)) return CommandResult::fail("Could not load configuration");
+            auto engine=std::shared_ptr<LLMEngine>(std::move(nextEngine));
+            auto client=std::shared_ptr<APIClient>(next.release(),[engine](APIClient* value){delete value;});
+            connection->replace(std::move(client));
+            ctx.appState->configPath = path;
+            ctx.appState->currentModel = model;
+            ctx.print("API connection reloaded; conversation preserved.\n");
+            return CommandResult::ok();
+        } catch (const std::exception&) {
+            return CommandResult::fail("Invalid API configuration; connection unchanged");
+        }
     }
 };
 
@@ -581,7 +642,9 @@ public:
                 return CommandResult::ok();
             }
             auto& m = *it;
-            std::string dir = "models/moe/" + id;
+            // Output dir: honor moe.models_dir from config, else models/moe/<id>.
+            std::string baseDir = Config::getInstance().getString("moe.models_dir", "models/moe");
+            std::string dir = baseDir + "/" + id;
             int nShards = (int)m.shards.size();
             ctx.print("Model:   " + m.family + " " + m.quant + "\n");
             ctx.print("Shards:  " + std::to_string(nShards) + " files\n");
@@ -589,6 +652,21 @@ public:
             ctx.print("Memory:  " + std::to_string((int)m.memoryGb) + " GB needed\n");
             ctx.print("Fit:     " + m.verdict + " — " + m.verdictWords + "\n");
             ctx.print("Output:  " + dir + "\n\n");
+
+            // Disk space check on the output drive
+            std::error_code ec;
+            std::filesystem::create_directories(dir, ec);
+            std::filesystem::space_info si = std::filesystem::space(dir, ec);
+            if (!ec && si.available > 0) {
+                double availGb = static_cast<double>(si.available) / (1024.0*1024.0*1024.0);
+                ctx.print("Free:    " + std::to_string((int)availGb) + " GB on this drive\n");
+                if (availGb < m.downloadGb) {
+                    ctx.print("\n⚠ Not enough free disk space.\n");
+                    ctx.print("  Set moe.models_dir in config.yaml to a drive with more space.\n");
+                    ctx.print("  Example: moe:\\n    models_dir: \"D:/models/moe\"\n");
+                    return CommandResult::ok();
+                }
+            }
 
             moe::MoEDownloader dl;
             // Use proxy from config if set

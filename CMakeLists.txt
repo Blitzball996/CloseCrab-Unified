@@ -356,7 +356,8 @@ if(USE_MOE_ENGINE)
                 -DSTRATA_GGML_DIR=${CMAKE_CURRENT_SOURCE_DIR}/external/llama.cpp
                 -DCC_MOE_GGML_DIR=${CMAKE_CURRENT_SOURCE_DIR}/external/llama.cpp
                 -DCC_MOE_MMQ_KQUANTS=OFF
-                -DCC_MOE_NATIVE_EXPERTS=OFF
+                -DCC_MOE_NATIVE_EXPERTS=ON
+                -DCC_MOE_BUILD_MMQ=OFF
                 -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared
                 -DCC_MOE_MMQ_TQ_OVERLAY=OFF
                 -DFETCHCONTENT_SOURCE_DIR_STRATA_LLAMACPP=${CMAKE_CURRENT_SOURCE_DIR}/external/llama.cpp
@@ -518,6 +519,7 @@ endif()
 # Link libraries (cross-platform)
 # ============================================
 
+find_package(OpenSSL REQUIRED)
 set(CLOSECRAB_LIBS
     spdlog::spdlog
     nlohmann_json::nlohmann_json
@@ -528,6 +530,7 @@ set(CLOSECRAB_LIBS
     capstone
     CURL::libcurl
     ZLIB::ZLIB
+    OpenSSL::Crypto
 )
 
 if(USE_ONNX)
@@ -598,6 +601,12 @@ if(EXISTS ${IXWEBSOCKET_PATH})
 endif()
 
 target_include_directories(closecrab-unified PRIVATE ${CLOSECRAB_INCLUDES})
+if(PLATFORM_WINDOWS AND USE_MOE_ENGINE AND USE_LOCAL_LLM)
+    # The prebuilt llama DLL does not export its Unicode tokenizer helpers.
+    target_sources(closecrab-unified PRIVATE
+        ${LLAMA_PATH}/src/unicode.cpp
+        ${LLAMA_PATH}/src/unicode-data.cpp)
+endif()
 
 # Ship the binary as the short command name `closecrab` on every platform
 # (the CMake target stays `closecrab-unified`, so --target references are unchanged).
@@ -658,6 +667,22 @@ message(STATUS "========================================")
 # ============================================
 # Tests (optional)
 # ============================================
+if(PLATFORM_WINDOWS)
+    add_executable(bash-pipe-probe EXCLUDE_FROM_ALL tests/bash_pipe_probe.cpp)
+    target_include_directories(bash-pipe-probe PRIVATE ${CLOSECRAB_INCLUDES})
+    target_link_libraries(bash-pipe-probe PRIVATE spdlog::spdlog nlohmann_json::nlohmann_json)
+endif()
+if(USE_MOE_ENGINE AND USE_LOCAL_LLM)
+    add_executable(moe-tokenizer-probe EXCLUDE_FROM_ALL
+        tests/moe_tokenizer_probe.cpp src/moe/MoETokenizer.cpp)
+    target_include_directories(moe-tokenizer-probe PRIVATE ${CLOSECRAB_INCLUDES})
+    target_compile_definitions(moe-tokenizer-probe PRIVATE CLOSECRAB_HAS_LOCAL_LLM)
+    target_link_libraries(moe-tokenizer-probe PRIVATE llama spdlog::spdlog nlohmann_json::nlohmann_json)
+    if(PLATFORM_WINDOWS)
+        target_sources(moe-tokenizer-probe PRIVATE
+            ${LLAMA_PATH}/src/unicode.cpp ${LLAMA_PATH}/src/unicode-data.cpp)
+    endif()
+endif()
 
 if(BUILD_TESTS)
     find_package(GTest CONFIG QUIET)

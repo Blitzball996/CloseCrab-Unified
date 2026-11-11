@@ -94,15 +94,63 @@ bool MoEEngine::start(const EngineConfig& cfg) {
         return false;
     }
 
-    // Engine serve-mode command line:
-    //   closecrab-moe-engine --pack <dir> --serve [--gpu N] [--max-context N] [...]
-    // The engine reads GEN requests from stdin and writes T <id> / DONE lines to stdout.
+    // Engine serve-mode command line (confirmed from Strata bench/results):
+    //   closecrab-moe-engine --pack <dir> --native <shard1.gguf> --ple-gguf <shard2.gguf> --serve ...
+    // --pack <dir>       : directory containing native_experts.txt and pack metadata
+    // --native <gguf>    : shard 1 (experts, largest file, -00001-of-00002)
+    // --ple-gguf <gguf>  : shard 2 (PLE n-gram table, -00002-of-00002)
+    // For single-file packs (no native_experts.txt), only --native is needed.
+
+    // Scan cfg.modelPath for gguf files, sort by name so 00001 < 00002
+    std::string shard1, shard2;
+    std::error_code ec;
+    std::vector<std::string> ggufs;
+    for (auto& entry : fs::directory_iterator(cfg.modelPath, ec)) {
+        if (entry.is_regular_file()) {
+            std::string extLo = entry.path().extension().string();
+            for (auto& c : extLo) c = (char)std::tolower((unsigned char)c);
+            if (extLo == ".gguf") ggufs.push_back(entry.path().string());
+        }
+    }
+    if (ec) {
+        spdlog::error("MoE: cannot read model directory '{}': {}", cfg.modelPath, ec.message());
+        return false;
+    }
+    std::sort(ggufs.begin(), ggufs.end());
+    if (ggufs.empty()) {
+        spdlog::error("MoE: no .gguf files found in '{}'", cfg.modelPath);
+        return false;
+    }
+    shard1 = ggufs[0];
+    if (ggufs.size() >= 2) shard2 = ggufs[1];
+
+    // Check if native_experts.txt is present (required for i-quant packs)
+    bool hasNativeExperts = fs::exists(fs::path(cfg.modelPath) / "native_experts.txt");
+
+    spdlog::info("MoE: shard1={}", shard1);
+    if (!shard2.empty()) spdlog::info("MoE: shard2={}", shard2);
+    spdlog::info("MoE: native_experts.txt={}", hasNativeExperts ? "found" : "not found");
+
     std::ostringstream cmd;
-    cmd << "\"" << bin << "\""
-        << " --pack \"" << cfg.modelPath << "\""
-        << " --serve"
-        << " --max-context " << cfg.contextLen;
-    if (cfg.prefillAuto) cmd << " --prefill auto";
+    cmd << "\"" << bin << "\"";
+    // Always pass --pack so engine can find native_experts.txt
+    cmd << " --pack \"" << cfg.modelPath << "\"";
+    cmd << " --native \"" << shard1 << "\"";
+    if (!shard2.empty())
+        cmd << " --ple-gguf \"" << shard2 << "\"";
+    cmd << " --serve";
+    if (hasNativeExperts) {
+        // Native IQ packs: --spec 2 + profile-filled VRAM expert cache.
+        // q4_0 KV at 32768 ctx = ~1.5 GB; leaves ~2.5 GB free on 11 GB VRAM.
+        int serveCtx = std::min(cfg.contextLen, 32768);
+        std::string profilePath = cfg.modelPath + "/expert-profile.bin";
+        cmd << " --max-context " << serveCtx
+            << " --spec 2 --kv q4_0 --prefill 8192"
+            << " --expert-cache 128 --expert-profile \"" << profilePath << "\"";
+    } else {
+        cmd << " --max-context " << cfg.contextLen;
+        if (cfg.prefillAuto) cmd << " --prefill auto";
+    }
     if (cfg.gpuIndex >= 0) cmd << " --gpu " << cfg.gpuIndex;
     if (!cfg.extraArgs.empty()) cmd << " " << cfg.extraArgs;
     std::string cmdline = cmd.str();
@@ -127,7 +175,12 @@ bool MoEEngine::start(const EngineConfig& cfg) {
     si.dwFlags = STARTF_USESTDHANDLES;
     si.hStdInput  = hChildStdinR;
     si.hStdOutput = hChildStdoutW;
-    si.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
+    // Preserve native diagnostics without mixing them into the protocol pipe.
+    si.hStdError = CreateFileA("moe-engine-stderr.log", FILE_APPEND_DATA,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                               OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (si.hStdError == INVALID_HANDLE_VALUE)
+        si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
 
     PROCESS_INFORMATION pi{};
     std::string mutableCmd = cmdline;
@@ -141,6 +194,7 @@ bool MoEEngine::start(const EngineConfig& cfg) {
     // Close child ends on our side
     if (hChildStdinR)  CloseHandle(hChildStdinR);
     if (hChildStdoutW) CloseHandle(hChildStdoutW);
+    if (si.hStdError != GetStdHandle(STD_ERROR_HANDLE)) CloseHandle(si.hStdError);
     if (!ok) {
         spdlog::error("MoE: CreateProcess failed ({}): {}", GetLastError(), cmdline);
         return false;
@@ -177,9 +231,10 @@ bool MoEEngine::start(const EngineConfig& cfg) {
     spdlog::info("MoE: engine started (pid {}), waiting for INFO ready...", childPid_);
 
     // Engine emits an INFO line when the model is loaded and ready.
-    // Wait up to 120 s for that line; quit early if process dies or ERR is seen.
+    // Wait up to 300 s for that line (mmap-mode loading of a 52 GB IQ3_S pack can take 2+ min);
+    // quit early if process dies or ERR is seen.
     bool engineReady = false;
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(300);
     while (std::chrono::steady_clock::now() < deadline) {
         std::string line;
         if (!readLine(line, 5000)) {
@@ -198,10 +253,14 @@ bool MoEEngine::start(const EngineConfig& cfg) {
 #endif
             continue;
         }
-        if (line.rfind("INFO", 0) == 0) {
+        if (line.rfind("READY", 0) == 0) {
             spdlog::info("MoE: engine ready - {}", line.substr(0, 100));
             engineReady = true;
             break;
+        }
+        if (line.rfind("INFO", 0) == 0) {
+            spdlog::info("MoE init: {}", line);
+            continue;
         }
         if (line.rfind("ERR", 0) == 0) {
             spdlog::error("MoE: engine error: {}", line); break;
@@ -209,7 +268,7 @@ bool MoEEngine::start(const EngineConfig& cfg) {
         spdlog::debug("MoE init: {}", line);
     }
     if (!engineReady) {
-        spdlog::error("MoE: engine did not become ready within 120s");
+        spdlog::error("MoE: engine did not become ready within 300s");
         stop(); return false;
     }
     return true;
@@ -339,7 +398,9 @@ bool MoEEngine::generate(const std::vector<int32_t>& promptIds,
         std::string line;
         if (!readLine(line, 120000)) {   // 2 min per-token timeout
             spdlog::warn("MoE: read timeout after {} tokens", count);
-            return count > 0;
+            // A timed-out response must never become the next request's output.
+            stop();
+            return false;
         }
         // Skip INFO lines (engine startup) and empty lines
         if (line.empty() || line.rfind("INFO", 0) == 0) continue;
@@ -367,7 +428,8 @@ bool MoEEngine::generate(const std::vector<int32_t>& promptIds,
         // YIELDED, VRAM, BDONE, BYIELD — internal control lines, skip
         spdlog::debug("MoE: control line: {}", line);
     }
-    return count > 0;
+    spdlog::error("MoE: generation exceeded token response limit");
+    return false;
 }
 
 // ---- tokenize / detokenize -------------------------------------------------

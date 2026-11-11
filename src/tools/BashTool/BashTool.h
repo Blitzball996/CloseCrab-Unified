@@ -104,7 +104,7 @@ public:
             return runInBackground(cmd, ctx);
         }
 
-        return executeWithTimeout(cmd, timeout, ctx.abortFlag, ctx.onStreamOutput, ctx.cwd, ctx.sessionCwd);
+        return executeWithTimeout(cmd, timeout, ctx.abortFlag, ctx.onStreamOutput, ctx.cwd, ctx.sessionCwd, ctx.localMoE);
     }
 
     std::string getActivityDescription(const nlohmann::json& input) const override {
@@ -162,9 +162,9 @@ private:
                                    std::atomic<bool>* abortFlag,
                                    std::function<void(const std::string&)> streamCb = nullptr,
                                    const std::string& cwd = "",
-                                   std::string* sessionCwdOut = nullptr) {
+                                   std::string* sessionCwdOut = nullptr, bool localMoE = false) {
 #ifdef _WIN32
-        return executeWithTimeoutWin32(cmd, timeoutMs, abortFlag, streamCb, cwd, sessionCwdOut);
+        return executeWithTimeoutWin32(cmd, timeoutMs, abortFlag, streamCb, cwd, sessionCwdOut, localMoE);
 #else
         return executeWithTimeoutPosix(cmd, timeoutMs, abortFlag);
 #endif
@@ -175,7 +175,7 @@ private:
                                        std::atomic<bool>* abortFlag,
                                        std::function<void(const std::string&)> streamCb,
                                        const std::string& cwd = "",
-                                       std::string* sessionCwdOut = nullptr) {
+                                       std::string* sessionCwdOut = nullptr, bool localMoE = false) {
         // Create pipes for stdout
         SECURITY_ATTRIBUTES sa = {};
         sa.nLength = sizeof(sa);
@@ -278,11 +278,24 @@ private:
 
         // Read output in a thread while waiting for process
         std::string output;
-        std::atomic<bool> readDone{false};
+        std::atomic<bool> processDone{false};
         std::thread reader([&]() {
             char buf[4096];
             DWORD bytesRead;
-            while (ReadFile(hReadPipe, buf, sizeof(buf) - 1, &bytesRead, nullptr) && bytesRead > 0) {
+            while (true) {
+                DWORD toRead = sizeof(buf) - 1;
+                if (localMoE) {
+                DWORD available = 0;
+                if (!PeekNamedPipe(hReadPipe, nullptr, 0, nullptr, &available, nullptr)) break;
+                if (available == 0) {
+                    // A detached child may keep its inherited write handle open.
+                    if (processDone.load()) break;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    continue;
+                }
+                toRead = available < sizeof(buf) - 1 ? available : sizeof(buf) - 1;
+                }
+                if (!ReadFile(hReadPipe, buf, toRead, &bytesRead, nullptr) || bytesRead == 0) break;
                 buf[bytesRead] = '\0';
                 output += buf;
                 // Stream output line-by-line to UI
@@ -294,7 +307,6 @@ private:
                     break;
                 }
             }
-            readDone = true;
         });
 
         // Wait with timeout
@@ -307,6 +319,7 @@ private:
         }
 
         // Wait for reader to finish
+        processDone = true;
         if (reader.joinable()) reader.join();
 
         DWORD exitCode = 0;

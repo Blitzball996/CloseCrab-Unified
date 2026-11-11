@@ -21,6 +21,7 @@
 #  include <windows.h>
 #elif defined(__APPLE__)
 #  include <sys/sysctl.h>
+#  include <sys/statvfs.h>
 #  include <sys/utsname.h>
 #else
 #  include <sys/statvfs.h>
@@ -201,6 +202,8 @@ static std::vector<GpuInfo> detectWindowsAdapters() {
 static bool cpuHasAvx2() {
 #if defined(_WIN32)
     return IsProcessorFeaturePresent(PF_AVX2_INSTRUCTIONS_AVAILABLE) != 0;
+#elif defined(__aarch64__) || defined(__arm64__)
+    return false;
 #elif defined(__AVX2__)
     return true;
 #else
@@ -213,6 +216,8 @@ static bool cpuHasAvx2() {
 static bool cpuHasAvx512() {
 #if defined(_WIN32)
     return IsProcessorFeaturePresent(PF_AVX512F_INSTRUCTIONS_AVAILABLE) != 0;
+#elif defined(__aarch64__) || defined(__arm64__)
+    return false;
 #elif defined(__AVX512F__)
     return true;
 #else
@@ -272,10 +277,9 @@ std::string hwSummary(const HardwareInfo& hw) {
 }
 
 // ---- fit (mirrors catalog.py fit_on + verdict) -----------------------------
-// Constants match strata_cli/launch/catalog.py:
-static constexpr double DENSE_GB          = 5.0;     // dense weights + KV headroom
-static constexpr double SYSTEM_ROOM_GB     = 10.0;    // RAM reserved for OS + app
-static constexpr double DENSE_EXTRA_GB     = 1.0;     // dense overhead beyond experts
+// memoryGb is the total RAM+VRAM the model needs, from Strata's MODELS.md.
+// We compare against available = VRAM + (RAM - system reserve).
+static constexpr double SYSTEM_ROOM_GB = 10.0;  // RAM reserved for OS + app
 
 ModelEntry fitForHardware(ModelEntry e, const HardwareInfo& hw) {
     if (hw.gpus.empty() || hw.ramGb <= 0) {
@@ -284,23 +288,22 @@ ModelEntry fitForHardware(ModelEntry e, const HardwareInfo& hw) {
         return e;
     }
     double vram = hw.gpus[0].vramGb;
-    // memoryGb already includes dense overhead in our catalog entries.
-    double experts = std::max(0.0, e.memoryGb - DENSE_EXTRA_GB);
-    double onGpu   = std::max(0.0, std::min(experts, vram - DENSE_GB));
     double ramRoom = std::max(0.0, hw.ramGb - SYSTEM_ROOM_GB);
-    double spill   = std::max(0.0, experts - onGpu - ramRoom);
-    double inRam    = std::max(0.0, experts - onGpu - spill);
+    double available = vram + ramRoom;
 
-    // verdict logic (mirrors catalog.py verdict())
-    if (spill > 0) {
-        if (spill > experts * 0.3) { e.verdict = "no";    e.verdictWords = "too big (can still try)"; }
-        else                       { e.verdict = "tight"; e.verdictWords = "tight: much read from SSD"; }
-    } else if (inRam > 0 && onGpu < experts) {
-        e.verdict = "fits"; e.verdictWords = "fits, part read from SSD";
-    } else if (onGpu >= experts * 0.95) {
-        e.verdict = "fits"; e.verdictWords = "fits";
+    double slack = available - e.memoryGb;
+    if (slack < 0) {
+        // Doesn't fit in RAM+VRAM; experts spill to SSD (very slow)
+        double spill = -slack;
+        if (spill > e.memoryGb * 0.2) {
+            e.verdict = "no";    e.verdictWords = "too big — too much SSD reading, very slow";
+        } else {
+            e.verdict = "tight"; e.verdictWords = "tight: some experts read from SSD";
+        }
+    } else if (slack < e.memoryGb * 0.15) {
+        e.verdict = "fits";  e.verdictWords = "fits — close other programs for best speed";
     } else {
-        e.verdict = "tight"; e.verdictWords = "tight: close other programs";
+        e.verdict = "fits";  e.verdictWords = "fits";
     }
     // Disk check
     if (e.downloadGb > 0 && hw.diskFreeGb > 0 && e.downloadGb > hw.diskFreeGb) {
@@ -325,43 +328,57 @@ static ModelEntry makeEntry(const char* family, const char* quant,
     e.downloadGb = dlGb; e.memoryGb = memGb;
     e.minVramGb = minVram; e.minRamGb = minRam;
     double perShard = dlGb / std::max(1, nShards);
-    for (int i = 1; i <= nShards; ++i) {
-        char idx[16];
-        std::snprintf(idx, sizeof idx, "%05d", i);
+    if (nShards == 1) {
+        // Single-file model (e.g. Unsloth flat GGUF): filename is just prefix+suffix
         ModelShard s;
         s.hfRepo = hfRepo;
-        s.hfFile = std::string(prefix) + std::string(idx) + "-of-" +
-                   std::to_string(nShards) + suffix;
-        s.sizeGb = perShard;
+        s.hfFile = std::string(prefix) + suffix;
+        s.sizeGb = dlGb;
         e.shards.push_back(s);
+    } else {
+        for (int i = 1; i <= nShards; ++i) {
+            char idx[16];
+            std::snprintf(idx, sizeof idx, "%05d", i);
+            ModelShard s;
+            s.hfRepo = hfRepo;
+            s.hfFile = std::string(prefix) + std::string(idx) + "-of-" +
+                       std::to_string(nShards) + suffix;
+            s.sizeGb = perShard;
+            e.shards.push_back(s);
+        }
     }
     return e;
 }
 
 static std::vector<ModelEntry> baseCatalog() {
+    // Source: Strata MODELS.md reviewed 2026-10-25 v0.2.5
+    // All ISTA-DASLab packs = 2 shards: shard1=experts, shard2=n-gram table (~28 GB on SSD)
+    // memoryGb = RAM+VRAM needed (from "Pick by memory" table in MODELS.md)
+    // downloadGb = shard1 + shard2 combined
+    // Filenames confirmed from bench/results READMEs
     const char* repo = "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF";
     return {
         makeEntry("qwen","Q2_0","qwen-q2_0",
-            "Smallest, fastest. Lower quality.",
-            34.0, 39.0, 6.0, 33.0, repo, 6, "Q2_0/Q2_0-0000", "-of-00006.gguf"),
+            "Fastest. 37.6 GB RAM+VRAM needed.",
+            62.0, 37.6, 6.0, 32.0, repo, 2,
+            "Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-0000", "-of-00002.gguf"),
         makeEntry("qwen","IQ2_XS","qwen-iq2_xs",
-            "Very fast, good quality. Popular choice.",
-            39.0, 43.0, 6.0, 37.0, repo, 7, "IQ2_XS/IQ2_XS-0000", "-of-00007.gguf"),
+            "Fast, better quality. 39.2 GB RAM+VRAM needed.",
+            64.5, 39.2, 6.0, 34.0, repo, 2,
+            "IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-0000", "-of-00002.gguf"),
         makeEntry("qwen","IQ3_XXS","qwen-iq3_xxs",
-            "Balanced speed/quality. Recommended for 12GB GPUs.",
-            47.0, 51.0, 8.0, 43.0, repo, 8, "IQ3_XXS/IQ3_XXS-0000", "-of-00008.gguf"),
+            "Great quality. 47.0 GB RAM+VRAM needed.",
+            76.0, 47.0, 8.0, 42.0, repo, 2,
+            "IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-0000", "-of-00002.gguf"),
         makeEntry("qwen","IQ3_S","qwen-iq3_s",
-            "Higher quality, needs 16GB+ VRAM or 64GB+ RAM.",
-            55.0, 60.0, 12.0, 48.0, repo, 9, "IQ3_S/IQ3_S-0000", "-of-00009.gguf"),
-        makeEntry("qwen","UD-Q4_K_XL","qwen-ud-q4_k_xl",
-            "Unsloth's K-quant. Best quality, needs 24GB+ VRAM.",
-            62.0, 67.0, 16.0, 51.0,
-            "unsloth/Qwen3.8-Flash-Next-GGUF", 1,
-            "Qwen3.8-Flash-Next-UD-Q4_K_XL", ".gguf"),
-        makeEntry("qwen","Coder","qwen-coder-iq1_m",
-            "Pruned for coding. Weaker on general text.",
-            30.0, 33.0, 4.0, 29.0, repo, 5,
-            "Coder/Coder-0000", "-of-00005.gguf"),
+            "Best ISTA quality. 54.8 GB RAM+VRAM. Matches full model on tests.",
+            83.6, 54.8, 8.0, 48.0, repo, 2,
+            "IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-0000", "-of-00002.gguf"),
+        makeEntry("qwen","Coder","qwen-coder",
+            "Code-tuned, half the experts. 32 GB RAM+VRAM. Weaker on general text.",
+            58.0, 32.0, 4.0, 28.0,
+            "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF", 2,
+            "Coder/Qwen3.8-Flash-Next-GSQ-RCO-Coder-IQ1_M-0000", "-of-00002.gguf"),
     };
 }
 

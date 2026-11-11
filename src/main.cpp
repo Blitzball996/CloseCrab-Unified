@@ -58,6 +58,7 @@
 #include "api/LocalLLMClient.h"
 #include "api/RemoteAPIClient.h"
 #include "api/OpenAICompatClient.h"
+#include "api/SwitchableAPIClient.h"
 #include "moe/MoELLMClient.h"
 
 // Tools
@@ -226,7 +227,9 @@ static void registerBuiltinCommands(CommandRegistry& reg) {
             if (args.empty()) {
                 ctx.print("Current model: " + ctx.appState->currentModel + "\n\n");
                 // Try to list upstream models via the live API client
-                auto* remote = dynamic_cast<closecrab::RemoteAPIClient*>(ctx.apiClient);
+                auto* connection=dynamic_cast<closecrab::SwitchableAPIClient*>(ctx.apiClient);
+                auto pinned=connection?connection->snapshot():std::shared_ptr<closecrab::APIClient>{};
+                auto* remote = dynamic_cast<closecrab::RemoteAPIClient*>(pinned?pinned.get():ctx.apiClient);
                 if (remote) {
                     ctx.print("Fetching models from upstream ...\n");
                     auto models = remote->listModels();
@@ -244,7 +247,9 @@ static void registerBuiltinCommands(CommandRegistry& reg) {
             } else {
                 ctx.appState->currentModel = args;
                 // Also update the live API client so the change is immediate
-                auto* remote = dynamic_cast<closecrab::RemoteAPIClient*>(ctx.apiClient);
+                auto* connection=dynamic_cast<closecrab::SwitchableAPIClient*>(ctx.apiClient);
+                auto pinned=connection?connection->snapshot():std::shared_ptr<closecrab::APIClient>{};
+                auto* remote = dynamic_cast<closecrab::RemoteAPIClient*>(pinned?pinned.get():ctx.apiClient);
                 if (remote) remote->setModel(args);
                 // Persist to config.yaml so the change survives restart
                 bool saved = Config::getInstance().setString("api.model", args);
@@ -299,7 +304,9 @@ static void registerBuiltinCommands(CommandRegistry& reg) {
             }
 
             // Apply to live client
-            auto* remote = dynamic_cast<closecrab::RemoteAPIClient*>(ctx.apiClient);
+            auto* connection=dynamic_cast<closecrab::SwitchableAPIClient*>(ctx.apiClient);
+            auto pinned=connection?connection->snapshot():std::shared_ptr<closecrab::APIClient>{};
+            auto* remote = dynamic_cast<closecrab::RemoteAPIClient*>(pinned?pinned.get():ctx.apiClient);
             if (remote) {
                 remote->setBaseUrl(profileUrl);
                 if (!profileKey.empty())   remote->setApiKey(profileKey);
@@ -1192,7 +1199,8 @@ int main(int argc, char* argv[]) {
             spdlog::info("MoE engine started: {}", appState.currentModel);
             apiClient = std::move(moeClient);
         }();
-        // Local LLM
+    } else if (provider == "local") {
+        // Local LLM via llama.cpp
         std::string mpath = modelPath.empty()
             ? config.getString("llm.model_path", "")
             : modelPath;
@@ -1205,13 +1213,15 @@ int main(int argc, char* argv[]) {
         } else {
             spdlog::warn("No model path specified and no API configured.");
             spdlog::warn("Use --provider anthropic/openai or --model <path>");
-            // Fall back to a dummy that errors
             apiClient = std::make_unique<RemoteAPIClient>("", "http://localhost", "none");
             appState.currentModel = "none";
         }
     }
-
-    // ---- Initialize registries ----
+    if(apiClient){
+        auto engine=std::shared_ptr<LLMEngine>(std::move(llmEngine));
+        auto initial=std::shared_ptr<APIClient>(apiClient.release(),[engine](APIClient* client){delete client;});
+        apiClient=std::make_unique<SwitchableAPIClient>(std::move(initial));
+    }
     auto& toolRegistry = ToolRegistry::getInstance();
     auto& cmdRegistry = CommandRegistry::getInstance();
     auto& permEngine = PermissionEngine::getInstance();

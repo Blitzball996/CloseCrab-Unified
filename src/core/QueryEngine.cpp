@@ -113,25 +113,38 @@ std::string QueryEngine::buildSystemPrompt() const {
         prompt += "\n\n" + config_.appState->claudeMdContent;
     }
 
-    // For local models: inject tool descriptions into system prompt
-    // (Remote APIs use native tool_use, but local models need text-based tool info)
+    // For local models: inject tool schemas in Qwen native function-calling format.
+    // Uses the same ALWAYS_LOAD set as the cloud path (10 tools) so behavior matches.
+    // Strata exposes an OpenAI-compat HTTP layer that handles tool_use format conversion;
+    // we replicate that here by injecting <tools> into the system prompt.
     if (config_.toolRegistry && config_.apiClient && config_.apiClient->isLocal()) {
-        prompt += "\n\n# Available Tools\n"
-                  "When you need to use a tool, respond with:\n"
-                  "SKILL: <tool_name>\nPARAMS: <json_params>\n\n";
-
         bool planMode = config_.appState && config_.appState->planMode;
         bool coordMode = config_.appState && config_.appState->coordinatorMode;
+        static const std::set<std::string> COORD_TOOLS = {"Agent", "TaskStop", "AskUserQuestion", "TodoWrite"};
+        static const std::set<std::string> ALWAYS_LOAD = {
+            "Read", "Write", "Edit", "Glob", "Grep", "Bash"
+        };
+
+        nlohmann::json toolArray = nlohmann::json::array();
         for (Tool* t : config_.toolRegistry->getAllTools()) {
             if (!t->isEnabled() || t->isHidden()) continue;
             if (planMode && !t->isReadOnly()) continue;
-            // Coordinator mode: only expose orchestration tools
-            if (coordMode) {
-                std::string name = t->getName();
-                if (name != "Agent" && name != "TaskStop" && name != "AskUserQuestion"
-                    && name != "TodoWrite") continue;
-            }
-            prompt += "- " + t->getName() + ": " + t->getDescription() + "\n";
+            if (coordMode && COORD_TOOLS.find(t->getName()) == COORD_TOOLS.end()) continue;
+            if (!coordMode && ALWAYS_LOAD.find(t->getName()) == ALWAYS_LOAD.end()) continue;
+            toolArray.push_back({
+                {"type", "function"},
+                {"function", {
+                    {"name", t->getName()},
+                    {"description", t->getDescription()},
+                    {"parameters", t->getInputSchema()}
+                }}
+            });
+        }
+        if (!toolArray.empty()) {
+            prompt += "\n\n<tools>\n" + toolArray.dump() + "\n</tools>\n";
+            prompt += "\nTo use a tool, output exactly:\n"
+                      "<tool_call>\n<function=ToolName>\n<parameter=param>\nvalue\n</parameter>\n</function>\n</tool_call>\n"
+                      "Output ONLY the tool call — no other text after it. Wait for the result before continuing.\n";
         }
     }
 
@@ -518,6 +531,7 @@ void QueryEngine::processToolUse(const StreamEvent& event, const QueryCallbacks&
     ctx.permissionEngine = config_.permissionEngine;
     ctx.abortFlag = &interrupted_;
     ctx.apiClient = config_.apiClient;
+    ctx.localMoE = config_.apiClient && config_.apiClient->getModelName().rfind("local-moe:", 0) == 0;
     ctx.toolRegistry = config_.toolRegistry;
     ctx.systemPrompt = buildSystemPrompt(); // For AgentTool cache sharing
     ctx.readFileState = &readFileState_;
@@ -840,6 +854,8 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                         break;
 
                     case StreamEvent::EVT_ERROR:
+                        if (config_.apiClient && config_.apiClient->getModelName().rfind("local-moe:", 0) == 0)
+                            apiCallFailed = true;
                         if (callbacks.onError) callbacks.onError(event.content);
                         break;
 
@@ -1073,6 +1089,7 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                         ctx.permissionEngine = config_.permissionEngine;
                         ctx.abortFlag = &interrupted_;
                         ctx.apiClient = config_.apiClient;
+                        ctx.localMoE = config_.apiClient && config_.apiClient->getModelName().rfind("local-moe:", 0) == 0;
                         ctx.toolRegistry = config_.toolRegistry;
                         ctx.readFileState = &readFileState_;
                         // No sessionCwd pointer in parallel mode — avoid concurrent
@@ -1127,38 +1144,6 @@ void QueryEngine::submitMessage(const std::string& prompt, const QueryCallbacks&
                     messages_.push_back(Message::makeToolResult(pr.event.toolUseId, resultJson, !pr.result.success,
                                                                 "", pImgB64, pImgMedia));
                 }
-            }
-
-            // For local models: tool executed successfully, do ONE more turn
-            // to let the model summarize, then stop regardless.
-            // Remote APIs (Claude/OpenAI) handle multi-turn naturally.
-            if (config_.apiClient && config_.apiClient->isLocal()) {
-                // One more turn for summary
-                turnCount++;
-                if (turnCount >= config_.maxTurns) break;
-
-                std::string summaryText;
-                config_.apiClient->streamChat(messages_, systemPrompt, modelConfig,
-                    [&](const StreamEvent& event) {
-                        if (interrupted_) return;
-                        if (event.type == StreamEvent::EVT_TEXT) {
-                            // Filter special tokens
-                            if (event.content.find("<|im_") == std::string::npos &&
-                                event.content.find("<|endoftext|>") == std::string::npos) {
-                                summaryText += event.content;
-                                if (callbacks.onText) callbacks.onText(event.content);
-                            }
-                        }
-                    }
-                );
-
-                if (!summaryText.empty()) {
-                    messages_.push_back(Message::makeAssistant(summaryText));
-                    if (config_.memorySystem && !sessionId_.empty()) {
-                        config_.memorySystem->addMemory(sessionId_, "assistant", summaryText);
-                    }
-                }
-                break; // Done — don't loop again
             }
 
             // --- Loop detection: check for repetitive tool calls ---

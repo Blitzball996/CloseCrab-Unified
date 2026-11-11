@@ -28,6 +28,7 @@ public:
     bool supportsThinking() const override { return false; }
 
     const moe::HardwareInfo& hardwareInfo() const { return hw_; }
+    bool isReady() const { return engine_ && engine_->isRunning(); }
     std::vector<moe::ModelEntry> availableModels() const;
 
 private:
