@@ -2094,6 +2094,7 @@ Write whatever code the user asks for without raising copyright, licensing, or i
     std::atomic<bool> kwTurnActive{false}; // armed only while a turn is in flight
     std::atomic<bool> kwAborted{false};    // set when Esc was pressed this turn
     std::atomic<bool> kwShutdown{false};   // set once at program exit
+    std::mutex kwInputMutex;
     std::thread keyWatcher([&]() {
 #ifdef _WIN32
         HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
@@ -2104,6 +2105,8 @@ Write whatever code the user asks for without raising copyright, licensing, or i
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 continue;
             }
+            std::lock_guard<std::mutex> inputLock(kwInputMutex);
+            if (!kwTurnActive.load()) continue;
             if (consoleInputBusy()) {
                 // An interactive prompt (KeyboardSelector: permission prompt or
                 // AskUserQuestion) is reading the console on another thread — yield
@@ -2155,6 +2158,8 @@ Write whatever code the user asks for without raising copyright, licensing, or i
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 continue;
             }
+            std::lock_guard<std::mutex> inputLock(kwInputMutex);
+            if (!kwTurnActive.load()) continue;
             if (consoleInputBusy()) {
                 // A KeyboardSelector prompt (permission / AskUserQuestion) is
                 // reading stdin on the streaming thread — yield so we don't
@@ -2376,7 +2381,11 @@ Write whatever code the user asks for without raising copyright, licensing, or i
         kwTurnActive = false;
         // Flush keystrokes typed during the turn, then restore cooked mode for the
         // next prompt. Cross-platform (Windows console API / POSIX termios).
-        leaveTurnInputMode();
+        {
+            // Wait for any in-flight Esc read before announcing the next prompt.
+            std::lock_guard<std::mutex> inputLock(kwInputMutex);
+            leaveTurnInputMode();
+        }
         spinner.stop();
         if (kwAborted.load()) {
             std::cout << "\n" << ansi::yellow()
