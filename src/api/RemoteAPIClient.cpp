@@ -105,6 +105,7 @@ static bool modelSupportsEffort(const std::string& model) {
     if (m.find("sonnet-4-6") != std::string::npos) return true;
     if (m.find("opus-4-7") != std::string::npos) return true;
     if (m.find("opus-4-8") != std::string::npos) return true;
+    if (m == "claude-opus-5-5") return true;
     if (m.find("sonnet-4-8") != std::string::npos) return true;
     if (m.find("fable-5") != std::string::npos) return true;
     if (m.find("fable5") != std::string::npos) return true;
