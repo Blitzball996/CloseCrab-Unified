@@ -246,6 +246,11 @@ std::vector<std::string> MoETokenizer::bpeEncode(const std::string& word) const 
 }
 
 std::vector<int32_t> MoETokenizer::encode(const std::string& text, bool addSpecial) const {
+#ifndef CLOSECRAB_HAS_LOCAL_LLM
+    (void)text;
+    (void)addSpecial;
+    return {};
+#else
     if (llamaVocab_) {
         int n = llama_tokenize(llamaVocab_, text.c_str(), (int32_t)text.size(),
                                nullptr, 0, addSpecial, true);
@@ -305,21 +310,25 @@ std::vector<int32_t> MoETokenizer::encode(const std::string& text, bool addSpeci
 
     if (addSpecial) ids.push_back(eosId_);
     return ids;
+#endif
 }
 
 std::string MoETokenizer::tokenToPiece(int32_t tokenId) const {
+#ifdef CLOSECRAB_HAS_LOCAL_LLM
     if (llamaVocab_) {
         std::array<char, 256> buf{};
         int n = llama_token_to_piece(llamaVocab_, tokenId, buf.data(), (int32_t)buf.size(), 0, true);
         if (n <= 0) return "";
         return std::string(buf.data(), (size_t)n);
     }
+#endif
     if (tokenId >= 0 && (size_t)tokenId < idToToken_.size())
         return bpeTokenToBytes(idToToken_[(size_t)tokenId]);
     return "";
 }
 
 std::string MoETokenizer::decode(const std::vector<int32_t>& ids) const {
+#ifdef CLOSECRAB_HAS_LOCAL_LLM
     if (llamaVocab_) {
         if (ids.empty()) return "";
         size_t bufSize = ids.size() * 8 + 64;
@@ -334,6 +343,7 @@ std::string MoETokenizer::decode(const std::vector<int32_t>& ids) const {
         if (n <= 0) return "";
         return std::string(buf.data(), (size_t)n);
     }
+#endif
     // JSON path: decode each token piece and concatenate
     std::string out;
     for (int32_t id : ids) {
