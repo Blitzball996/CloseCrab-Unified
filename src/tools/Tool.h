@@ -66,6 +66,7 @@ struct ToolResult {
 // ============================================================
 
 struct ToolContext {
+    bool localMoE = false;
     std::string cwd;
     std::vector<Message>* messages = nullptr;
     AppState* appState = nullptr;
