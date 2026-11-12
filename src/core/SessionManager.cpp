@@ -18,6 +18,8 @@ SessionManager::SessionManager(const std::string& dbPath) : db(nullptr) {
         spdlog::error("Can't open database: {}", sqlite3_errmsg(db));
         return;
     }
+    // Desktop sessions share the database across processes; wait for short writes.
+    sqlite3_busy_timeout(db, 10000);
     initDatabase();
     spdlog::info("SessionManager initialized with database: {}", dbPath);
 }
