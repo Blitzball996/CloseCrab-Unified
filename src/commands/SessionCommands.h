@@ -6,6 +6,7 @@
 #include "../memory/SessionSearch.h"
 #include "../core/SessionManager.h"
 #include "../core/TranscriptStore.h"
+#include "../config/Config.h"
 #include "../services/CompactSummary.h"
 #include "../utils/UUID.h"
 #include <filesystem>
@@ -30,6 +31,24 @@ public:
     std::string getDescription() const override { return "Show current session info"; }
 
     CommandResult execute(const std::string& args, CommandContext& ctx) override {
+        if (args.rfind("delete ", 0) == 0) {
+            const auto id = args.substr(7);
+            if (id.empty() || id == "." || id == ".." ||
+                id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.") != std::string::npos)
+                return CommandResult::fail("Invalid session identifier");
+            if (!ctx.queryEngine || id == ctx.queryEngine->getSessionId())
+                return CommandResult::fail("Cannot delete the active session");
+            const auto path = TranscriptStore::pathFor(id);
+            std::error_code ec;
+            if (!std::filesystem::is_regular_file(path, ec) || std::filesystem::is_symlink(path, ec))
+                return CommandResult::fail("Session transcript not found in this project");
+            SessionManager mgr(Config::getInstance().getString("database.path", "data/closecrab.db"));
+            if (!mgr.deleteSession(id)) return CommandResult::fail("Cannot delete session database record");
+            if (!std::filesystem::remove(path, ec) || ec)
+                return CommandResult::fail("Cannot delete session transcript");
+            ctx.print("Session permanently deleted: " + id + "\n");
+            return CommandResult::ok();
+        }
         ctx.print("Session ID: " + ctx.queryEngine->getSessionId() + "\n");
         ctx.print("Working dir: " + ctx.cwd + "\n");
         ctx.print("Messages: " + std::to_string(ctx.queryEngine->getMessages().size()) + "\n");
